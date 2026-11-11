@@ -1,0 +1,2 @@
+verdict=API_CHANGED detail=no_initial_state http=200 kind=smoke
+sector=T1205 page=1 ua=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36

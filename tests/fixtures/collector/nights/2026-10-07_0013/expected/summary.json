@@ -1,0 +1,203 @@
+{
+ "night": "2026-10-07",
+ "dry_run": false,
+ "budget": 550,
+ "spent": 22,
+ "stopped": "queue_empty",
+ "stop_class": null,
+ "stop_detail": null,
+ "smoke": {
+  "sector": "T0611",
+  "verdict": "OK",
+  "offers": 28,
+  "total": 87
+ },
+ "ticket": true,
+ "cookie_age_h": 438.9,
+ "ladder_step_valid": true,
+ "ladder_result": "passed",
+ "sectors_touched": 8,
+ "sectors_complete": 7,
+ "duplicate_ids_total": 0,
+ "stateless_pagination_ok": true,
+ "served_vs_total_median": 1.0,
+ "collect_file": "tiles.geojson",
+ "tile_mode": true,
+ "split_threshold": 400,
+ "split_events": [
+  {
+   "parent": "T1112",
+   "total_offers": 425,
+   "children": [
+    "T1112a",
+    "T1112b",
+    "T1112c",
+    "T1112d"
+   ]
+  }
+ ],
+ "sectors": {
+  "T1112": {
+   "name": "Сбор T1112",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": true,
+   "children": [
+    "T1112a",
+    "T1112b",
+    "T1112c",
+    "T1112d"
+   ],
+   "total_offers": 425,
+   "pages_planned": 16,
+   "pages_done": [
+    1
+   ],
+   "served_end": true,
+   "unique_ids": 28,
+   "duplicate_ids": 0,
+   "complete": false,
+   "served_vs_total": null
+  },
+  "T0713cac": {
+   "name": "Сбор T0713cac",
+   "status": "collect",
+   "level": 3,
+   "parent": "T0713ca",
+   "split": false,
+   "children": [],
+   "total_offers": 444,
+   "pages_planned": 16,
+   "pages_done": [
+    1
+   ],
+   "served_end": true,
+   "unique_ids": 6,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 0.01
+  },
+  "T0611": {
+   "name": "Сбор T0611",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 87,
+   "pages_planned": 4,
+   "pages_done": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "served_end": true,
+   "unique_ids": 87,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 1.0
+  },
+  "T1307": {
+   "name": "Сбор T1307",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 33,
+   "pages_planned": 2,
+   "pages_done": [
+    1,
+    2
+   ],
+   "served_end": true,
+   "unique_ids": 33,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 1.0
+  },
+  "T1112a": {
+   "name": "Сбор T1112a",
+   "status": "collect",
+   "level": 1,
+   "parent": "T1112",
+   "split": false,
+   "children": [],
+   "total_offers": 177,
+   "pages_planned": 7,
+   "pages_done": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "served_end": true,
+   "unique_ids": 110,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 0.62
+  },
+  "T1112b": {
+   "name": "Сбор T1112b",
+   "status": "collect",
+   "level": 1,
+   "parent": "T1112",
+   "split": false,
+   "children": [],
+   "total_offers": 3,
+   "pages_planned": 1,
+   "pages_done": [
+    1
+   ],
+   "served_end": true,
+   "unique_ids": 3,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 1.0
+  },
+  "T1112c": {
+   "name": "Сбор T1112c",
+   "status": "collect",
+   "level": 1,
+   "parent": "T1112",
+   "split": false,
+   "children": [],
+   "total_offers": 128,
+   "pages_planned": 5,
+   "pages_done": [
+    1,
+    2,
+    3
+   ],
+   "served_end": true,
+   "unique_ids": 84,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 0.66
+  },
+  "T1112d": {
+   "name": "Сбор T1112d",
+   "status": "collect",
+   "level": 1,
+   "parent": "T1112",
+   "split": false,
+   "children": [],
+   "total_offers": 120,
+   "pages_planned": 5,
+   "pages_done": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "served_end": true,
+   "unique_ids": 120,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 1.0
+  }
+ }
+}

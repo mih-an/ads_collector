@@ -1,0 +1,237 @@
+{
+ "stopped": "queue_empty",
+ "cells": {
+  "T1112": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "425",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "split",
+    "total": "425",
+    "level": "0",
+    "children": "T1112a,T1112b,T1112c,T1112d"
+   }
+  ],
+  "T1112a": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "177",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "177",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "177",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "200",
+    "offers": "26",
+    "total": "177",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T1112b": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "3",
+    "total": "3",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T1112c": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "128",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "128",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "128",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "301",
+    "offers": "0",
+    "total": "-",
+    "verdict": "PAGE_END",
+    "err": "redirect_to_p1_301"
+   },
+   {
+    "event": "sector_end",
+    "why": "redirect_to_p1_301"
+   }
+  ],
+  "T1112d": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "120",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "120",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "120",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "200",
+    "offers": "28",
+    "total": "120",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "5",
+    "http": "200",
+    "offers": "8",
+    "total": "120",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T0713cac": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "6",
+    "total": "444",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   },
+   {
+    "event": "split_floor",
+    "level": "3",
+    "total": "444",
+    "note": "дно деления: листаем"
+   }
+  ],
+  "T0611": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "200",
+    "offers": "3",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T1307": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "33",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "5",
+    "total": "33",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ]
+ }
+}
