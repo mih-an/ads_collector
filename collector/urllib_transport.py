@@ -9,6 +9,7 @@ transport.HttpReply как с провода или бросает NetworkFailur
 
 from __future__ import annotations
 
+import http.client
 import http.cookiejar
 import urllib.error
 import urllib.request
@@ -73,11 +74,16 @@ class UrllibTransport:
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(jar), NoRedirect()
         )
+        # заголовков opener по умолчанию не шлём: иначе при неполном наборе
+        # от PageFetcher уходит свой User-Agent Python-urllib (21.80)
+        self.opener.addheaders = []
 
     def get(self, url: str, headers: dict[str, str]) -> HttpReply:
         """→ HttpReply; сбой сети — NetworkFailure. Слова детали — как в
         night.log прежних ночей: тайм-аут соединения urllib заворачивает в
-        URLError — urlerror:timed out (DECISIONS, block/transport)."""
+        URLError — urlerror:timed out (DECISIONS, block/transport).
+        Оговорка к «заголовки ровно как переданы»: urllib в do_open
+        подменяет любой Connection на close — свойство библиотеки (21.80)."""
         request = urllib.request.Request(url, headers=headers)
         try:
             with self._open(request) as response:
@@ -87,7 +93,9 @@ class UrllibTransport:
             raise NetworkFailure(f"urlerror:{error.reason}") from error
         except TimeoutError as error:
             raise NetworkFailure("timeout") from error
-        except OSError as error:
+        # обрыв протокола (BadStatusLine, IncompleteRead) — не OSError, но
+        # такой же сбой сети с повторами (21.29)
+        except (OSError, http.client.HTTPException) as error:
             raise NetworkFailure(f"oserror:{error}") from error
 
     def _open(self, request: urllib.request.Request):

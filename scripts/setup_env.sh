@@ -43,6 +43,9 @@ esac
 
 ./.venv/bin/pip install -r requirements-dev.txt
 
+# проверка результата: библиотеки разработки импортируются (set -e роняет скрипт)
+./.venv/bin/python -c "import httpx, pytest"
+
 echo
 echo "Готово:"
 ./.venv/bin/python -V

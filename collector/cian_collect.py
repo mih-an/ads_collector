@@ -168,8 +168,14 @@ def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             "установка: pip install -r requirements.txt"
         )
     for flag, path in (("--cookies", args.cookies), ("--ua", args.ua)):
-        if path is not None and not os.path.exists(path):
+        if path is None:
+            continue
+        if not os.path.isfile(path):
             ap.error(f"{flag}: нет файла {path}")
+        # явно названный пустой файл — ошибка запуска; без флагов пустой
+        # cookies.txt и ua.txt — по-прежнему без билета (21.52, 21.82)
+        if not _file_text(path):
+            ap.error(f"{flag}: пустой файл {path}")
 
 
 def parse_settings(argv: list[str]) -> Settings:
@@ -215,14 +221,17 @@ def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
 
 
 def make_transport(name: str, cookie_header: str | None) -> Transport:
-    """Транспорт по имени флага --transport (выбор argparse: urllib или httpx)."""
+    """Транспорт по имени флага --transport (urllib или httpx); незнакомое
+    имя — ValueError (21.81)."""
+    if name == "urllib":
+        return urllib_transport.UrllibTransport(cookie_header)
     if name == "httpx":
         # httpx — внешняя библиотека: импорт только здесь, без неё сборщик с
         # urllib работает (решение Андрея 11.11, страж 21.78)
         from collector import httpx_transport
 
         return httpx_transport.HttpxTransport(cookie_header)
-    return urllib_transport.UrllibTransport(cookie_header)
+    raise ValueError(f"make_transport: незнакомый транспорт name={name!r}")
 
 
 def main(

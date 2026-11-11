@@ -39,11 +39,20 @@ class HttpxTransport:
     def get(self, url: str, headers: dict[str, str]) -> HttpReply:
         """→ HttpReply; тело — iter_raw, без распаковки. Сбой сети —
         NetworkFailure: детали как у urllib на том же событии (DECISIONS,
-        block/transport): тайм-аут соединения — urlerror, как URLError."""
+        block/transport): сбой до конца отправки — urlerror, как URLError."""
         try:
             with self.client.stream("GET", url, headers=headers) as response:
                 body = b"".join(response.iter_raw())
-        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+        # как urllib заворачивает сбои до конца отправки в URLError; ловится
+        # раньше общего TimeoutException — ConnectTimeout и WriteTimeout его
+        # наследники (21.29)
+        except (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.WriteError,
+            httpx.WriteTimeout,
+            httpx.ProxyError,
+        ) as error:
             raise NetworkFailure(f"urlerror:{error}") from error
         except httpx.TimeoutException as error:
             raise NetworkFailure("timeout") from error

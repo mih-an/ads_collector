@@ -95,7 +95,10 @@ class Clock:
 
 @dataclass(frozen=True)
 class CrawlInput:
-    """Неизменяемые входы обхода, и только они."""
+    """Входы, которые обход не заменяет: настройки, билет, клетки, сетка.
+    Собраны вместе из-за предела 5 аргументов (CLAUDE.md §6); fetcher,
+    clock и rnd идут в Crawl отдельно — это внешний мир (DECISIONS,
+    block/transport)."""
 
     settings: Settings
     ticket: Ticket

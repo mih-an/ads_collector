@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from typing import Protocol
 
 HTTP_TIMEOUT_S = 45
-# домен кук билета: строка Cookie из браузера кладётся в банк кук на него
+# домен кук билета: строка Cookie из браузера кладётся в банк кук на него.
+# Должен покрывать хост search_page.CIAN_BASE_URL; здесь, а не в search_page,
+# — транспорт из пакета знает только себя (исключение из правила чисел,
+# CLAUDE.md §6, рядом с HTTP_TIMEOUT_S)
 COOKIE_DOMAIN = ".cian.ru"
 
 
@@ -32,7 +35,8 @@ class HttpReply:
 
 class NetworkFailure(Exception):
     """Ответа нет: сбой сети. str — деталь для night.log и plan.json:
-    timeout, urlerror:<причина>, oserror:<текст> (21.29)."""
+    timeout, urlerror:<причина>, oserror:<текст> (21.29) или ответ 2xx с
+    битым сжатием — decode:<текст> (З167)."""
 
 
 class Transport(Protocol):
