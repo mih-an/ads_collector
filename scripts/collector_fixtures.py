@@ -21,22 +21,22 @@ expected/ этот скрипт не пишет: это папка прогон�
 что в tests/test_collector_nights.py (replay_night), с seed из meta.json;
 записал её разовый скрипт вне репозитория. Нынешняя версия скрипта
 отличается от запущенной только проверками (коммит 467536e и правки по
-ревью PR #116) и загрузкой serp/geometry по пути (PR #121); выход у неё
-тот же байт в байт. Выборка ночи 2026-09-18_2306 убрана вместе с её
-фикстурой (З165); поля NightSample, нужные только ей, оставлены. Текст
+ревью PR #116) и импортом serp/geometry из пакета collector (раньше —
+загрузка файлом по пути, PR #121); выход у неё тот же байт в байт.
+Выборка ночи 2026-09-18_2306 убрана вместе с её фикстурой (З165); поля
+NightSample, нужные только ей, оставлены. Текст
 README приведён к tests/fixtures/collector/README.md (пояснение к
 servicepipe/, З155).
 
-Запуск один раз из корня репозитория (каталога <out>/nights ещё нет):
-  .venv/bin/python scripts/collector_fixtures.py --runs-dir data/runs \
+Запуск один раз из корня репозитория (каталога <out>/nights ещё нет),
+модулем — так пакет collector виден из корня:
+  .venv/bin/python -m scripts.collector_fixtures --runs-dir data/runs \
     --tiles geo/cian_collect_tiles.geojson \
     --servicepipe var/scratch/servicepipe --out <каталог>
 """
 
 import argparse
-import functools
 import gzip
-import importlib.util
 import json
 import lzma
 import shutil
@@ -44,7 +44,8 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from types import ModuleType
+
+from collector import geometry, serp
 
 # Потолок всех фикстур сборщика (решение Андрея 10.11, задание п. 7).
 SIZE_LIMIT = 3_000_000
@@ -71,24 +72,6 @@ class FixtureError(Exception):
     """Выборка не сходится с ночью или с ограничениями фикстур."""
 
 
-@functools.cache
-def load_collector_module(name: str) -> ModuleType:
-    """Модуль сборщика collector/<name>.py, загруженный по пути при первом
-    обращении (дальше — тот же модуль)."""
-    # По пути, а не import collector: скрипт попадает в копию бэкапа, а тест
-    # 12.15 разрешает ему только стандартную библиотеку, land_monitor и
-    # scripts. serp и geometry не импортируют пакет (тест 21.78), поэтому
-    # каждый грузится файлом сам по себе. Лениво, а не при импорте скрипта:
-    # в копии бэкапа нет collector/, и импорт скрипта там не должен падать.
-    path = Path(__file__).resolve().parents[1] / "collector" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise FixtureError(f"не загрузить модуль сборщика: {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @dataclass
 class NightSample:
     """Выборка одной ночи: клетки и страницы, seed, отличия от настоящей ночи."""
@@ -107,7 +90,6 @@ class NightSample:
     check_rings: bool = False  # есть снимок охвата ночи для сверки колец
     user_agent: str | None = None  # None — из plan.json ночи
     pages_from_json: bool = True  # блок страниц — из json.gz ночи
-    has_html: bool = True
 
 
 # Выборки — цифры data-checker (10.11). Seed подобран один раз разовым
@@ -296,7 +278,7 @@ def night_results(night_dir: Path, page_id: tuple[str, int], from_json: bool) ->
 def html_results(path: Path) -> dict:
     """Блок results, который сборщик нашёл бы в сохранённом HTML."""
     html = gzip.decompress(path.read_bytes()).decode("utf-8")
-    state = load_collector_module("serp").extract_initial_state(html)
+    state = serp.extract_initial_state(html)
     if state is None:
         raise FixtureError(f"{path}: initialState с results.offers не найден")
     results = state["results"]
@@ -329,12 +311,12 @@ def page_results(
     cell, page = page_id
     results = night_results(night_dir, page_id, sample.pages_from_json)
     wrapper = reduced_html(results)
-    state = load_collector_module("serp").extract_initial_state(wrapper)
+    state = serp.extract_initial_state(wrapper)
     if state is None or state["results"] != results:
         raise FixtureError(f"{night_dir}: обёртка {cell} p{page} ≠ блоку страницы")
     # HTML против json.gz — только если блок взят из json.gz: у ночи без
     # json.gz (11-08) блок и так взят из HTML, сверять не с чем.
-    if sample.has_html and sample.pages_from_json:
+    if sample.pages_from_json:
         html_path = night_dir / "raw" / f"{cell}_p{page}.html.gz"
         if html_results(html_path) != results:
             raise FixtureError(f"{html_path}: блок HTML ≠ json.gz ночи")
@@ -358,7 +340,7 @@ def has_offers_block(html: str, position: int) -> bool:
     brace = html.find("{", end)
     if brace == -1 or brace - end > 40:
         return False
-    blob = load_collector_module("serp")._balanced_object(html, brace)
+    blob = serp._balanced_object(html, brace)
     try:
         state = json.loads(blob) if blob else None
     except (ValueError, RecursionError):
@@ -469,7 +451,7 @@ def tiles_at(tiles: dict, start: datetime, cells: list[str], where: str) -> dict
 def check_grid_cells(tiles: dict, where: str) -> None:
     """Есть две целые клетки уровня 0 в разных рядах и колонках: иначе
     main() не восстановит сетку (collector/geometry.py, infer_tile_grid)."""
-    tile_key_re = load_collector_module("geometry").TILE_KEY_RE
+    tile_key_re = geometry.TILE_KEY_RE
     whole = []
     for feature in tiles["features"]:
         props = feature["properties"]
