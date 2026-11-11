@@ -2,24 +2,28 @@
 cian_collect.py — запуск боевого сборщика ЦИАН и его края (часы, сон, билет).
 
 Получает argv (parse_settings → Settings), файл клеток сбора [E-42], входной
-билет из папки запуска (read_ticket → Ticket). Собирает Edges — запрос выдачи
-(net.Fetcher), случайность, часы, сон — и отдаёт ночь crawl.Crawl; печатает
-сетку и итог ночи в stdout. Сети здесь нет: она вся в collector/net.py.
-Python 3.12, только stdlib; сервер, cron и запуск — collector/README.md.
+билет (read_ticket → Ticket). Собирает транспорт (make_transport), запрос
+страницы page_fetch.PageFetcher, часы crawl.Clock, случайность — и отдаёт
+ночь crawl.Crawl; печатает сетку и итог ночи в stdout. Сети здесь нет: она в
+реализациях транспорта. Python 3.12; сервер и запуск — collector/README.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import random
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 
-from collector import net
-from collector.crawl import Crawl, Edges, Settings, Ticket
+from collector import urllib_transport
+from collector.crawl import Clock, Crawl, CrawlInput, Settings, Ticket
 from collector.geometry import infer_tile_grid, load_sectors
+from collector.page_fetch import PageFetcher
+from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
 
@@ -27,6 +31,14 @@ from collector.geometry import infer_tile_grid, load_sectors
 RUNS_DIR = "runs"
 BUDGET = 50
 WINDOW_HOURS = 8.0
+# транспорт по умолчанию — urllib: на сервере сборщик идёт голым python3
+# (решение Андрея 11.11)
+TRANSPORTS = ("urllib", "httpx")
+TRANSPORT = "urllib"
+# входной билет без флагов --cookies и --ua — файлы в папке запуска (cron
+# делает cd ~/calib2)
+COOKIES_FILE = "cookies.txt"
+UA_FILE = "ua.txt"
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -43,7 +55,7 @@ USER_AGENTS = [
 
 def now_local() -> datetime:
     """Время стены машины с её поясом (МСК на сервере): метка папки, колонка
-    night.log, split_at, ЧЧММСС служебных файлов — через Edges.now."""
+    night.log, split_at, ЧЧММСС служебных файлов — через Clock.now."""
     return datetime.now().astimezone()
 
 
@@ -56,11 +68,10 @@ def _file_text(path: str) -> str:
 
 
 def read_ticket(settings: Settings, now_ts: float, rnd: random.Random) -> Ticket:
-    """Входной билет из папки запуска (cookies.txt и ua.txt, имена —
-    crawl.Settings): куки и UA браузера, прошедшего челлендж WAF. Файлы
-    ищутся в каталоге запуска (cron делает cd ~/calib2); пустой или
-    отсутствующий cookies.txt — без билета (анонимный режим); возраст кук —
-    по mtime и часам now_ts."""
+    """Входной билет (файлы --cookies и --ua, без флагов — cookies.txt и
+    ua.txt в папке запуска): куки и UA браузера, прошедшего челлендж WAF.
+    Пустой или отсутствующий файл кук — без билета (анонимный режим);
+    возраст кук — по mtime и часам now_ts."""
     cookie_header = _file_text(settings.cookies_file) or None
     age_h = None
     if cookie_header:
@@ -125,9 +136,9 @@ def print_summary(report: dict, folder: str) -> None:
 # ─────────────────────────────── CLI ────────────────────────────────
 
 
-def parse_settings(argv: list[str]) -> Settings:
-    """Аргументы запуска → Settings; нет --seed — случайный seed (первый вызов
-    случайности ночи, записывается в plan.json для повтора)."""
+def build_parser() -> argparse.ArgumentParser:
+    """Аргументы запуска; у --cookies и --ua умолчание None — так видно, что
+    файл назван явно (21.82)."""
     ap = argparse.ArgumentParser(description="Сборщик ЦИАН: обход клеток сбора")
     ap.add_argument(
         "--budget", type=int, default=BUDGET, help="максимум HTTP-запросов за ночь"
@@ -140,7 +151,33 @@ def parse_settings(argv: list[str]) -> Settings:
     )
     ap.add_argument("--no-start-delay", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument(
+        "--transport", choices=TRANSPORTS, default=TRANSPORT, help="сетевой транспорт"
+    )
+    ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
+    ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
+    return ap
+
+
+def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
+    паузы старта (21.81, 21.82)."""
+    if args.transport == "httpx" and importlib.util.find_spec("httpx") is None:
+        ap.error(
+            "--transport httpx: не установлена библиотека httpx; "
+            "установка: pip install -r requirements.txt"
+        )
+    for flag, path in (("--cookies", args.cookies), ("--ua", args.ua)):
+        if path is not None and not os.path.exists(path):
+            ap.error(f"{flag}: нет файла {path}")
+
+
+def parse_settings(argv: list[str]) -> Settings:
+    """Аргументы запуска → Settings; нет --seed — случайный seed (первый вызов
+    случайности ночи, записывается в plan.json для повтора)."""
+    ap = build_parser()
     args = ap.parse_args(argv)
+    check_args(ap, args)
     seed = args.seed if args.seed is not None else random.randrange(2**31)
     return Settings(
         budget=args.budget,
@@ -150,6 +187,9 @@ def parse_settings(argv: list[str]) -> Settings:
         smoke_only=args.smoke_only,
         start_delay=not args.no_start_delay,
         seed=seed,
+        transport=args.transport,
+        cookies_file=args.cookies or COOKIES_FILE,
+        ua_file=args.ua or UA_FILE,
     )
 
 
@@ -164,20 +204,34 @@ def print_grid(grid: dict, settings: Settings) -> None:
     )
 
 
-def wait_start(settings: Settings, rnd: random.Random) -> None:
+def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
     """Случайное смещение старта ночи U(0; start_jitter_max_s) перед прогоном;
     нет у --smoke-only и --no-start-delay (кейс 21.58)."""
     if settings.smoke_only or not settings.start_delay:
         return
     delay = rnd.uniform(0, settings.start_jitter_max_s)
     print(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …", flush=True)
-    time.sleep(delay)
+    clock.sleep(delay)
 
 
-def main() -> None:
-    """Запуск ночи: настройки, клетки и сетка, пауза старта, билет, края ночи
-    (Edges), прогон и печать итога. Порядок вызовов случайности — часть
-    поведения: seed → пауза старта → UA → джиттер клеток → перемешивание."""
+def make_transport(name: str, cookie_header: str | None) -> Transport:
+    """Транспорт по имени флага --transport (выбор argparse: urllib или httpx)."""
+    if name == "httpx":
+        # httpx — внешняя библиотека: импорт только здесь, без неё сборщик с
+        # urllib работает (решение Андрея 11.11, страж 21.78)
+        from collector import httpx_transport
+
+        return httpx_transport.HttpxTransport(cookie_header)
+    return urllib_transport.UrllibTransport(cookie_header)
+
+
+def main(
+    transport_factory: Callable[[str, str | None], Transport] = make_transport,
+) -> None:
+    """Запуск ночи: настройки, клетки и сетка, пауза старта, билет, транспорт,
+    запрос страницы, прогон и печать итога. Порядок вызовов случайности —
+    часть поведения: seed → пауза старта → UA → джиттер клеток →
+    перемешивание. transport_factory — точка подмены транспорта в тестах."""
     settings = parse_settings(sys.argv[1:])
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
@@ -190,13 +244,17 @@ def main() -> None:
     except ValueError as error:
         sys.exit(f"файл клеток {settings.tiles_path}: {error}")
     print_grid(grid, settings)
-    wait_start(settings, rnd)
+    # time берётся по имени модуля в момент вызова: так часы подменяют тесты
+    # (cian_collect.time, cian_collect.datetime)
+    clock = Clock(now=now_local, sleep=time.sleep)
+    wait_start(settings, rnd, clock)
     ticket = read_ticket(settings, time.time(), rnd)
-    # Fetcher и time берутся по имени модуля в момент вызова: так их подменяют
-    # тесты (net.Fetcher, cian_collect.time)
-    fetcher = net.Fetcher(ticket.ua, ticket.cookie_header)
-    edges = Edges(get_serp=fetcher.get_serp, rnd=rnd, now=now_local, sleep=time.sleep)
-    crawl = Crawl(settings, tiles, grid, ticket, edges)
+    transport = transport_factory(settings.transport, ticket.cookie_header)
+    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
+    crawl_input = CrawlInput(
+        settings=settings, ticket=ticket, raw_tiles=tiles, grid=grid
+    )
+    crawl = Crawl(crawl_input, fetcher, clock, rnd)
     print_summary(crawl.run(), crawl.paths.folder)
 
 

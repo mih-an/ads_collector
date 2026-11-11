@@ -4,8 +4,8 @@ search_page.py — контракт выдачи ЦИАН: ссылка на с�
 Получает кольцо полигона и номер страницы (page_url) или код, тело и
 заголовки ответа (classify_page → Classified). Отдаёт ссылку, класс ответа
 (OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью, totalOffers и
-объявления, id объявлений и оценку числа страниц. Response — ответ на запрос
-выдачи. Чистые функции: без сети, диска и часов.
+объявления, id объявлений и оценку числа страниц. Чистые функции: без
+сети, диска и часов.
 """
 
 from __future__ import annotations
@@ -15,17 +15,6 @@ import math
 import re
 import urllib.parse
 from typing import NamedTuple
-
-
-class Response(NamedTuple):
-    """Ответ на запрос выдачи; neterr заполнен при сетевом сбое."""
-
-    code: int
-    body: str
-    size: int
-    ms: float
-    neterr: str | None
-    headers: dict
 
 
 class Classified(NamedTuple):

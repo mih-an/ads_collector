@@ -8,7 +8,7 @@
 
 | Что | Где |
 |---|---|
-| пакет сборщика | `collector/`: `cian_collect.py` (запуск), `net.py` (сеть), `night.py` (правила и дирижёр ночи), `serp.py`, `geometry.py`, `run_folder.py`, `status.py`; описание и запуск — `collector/README.md` |
+| пакет сборщика | `collector/`: `cian_collect.py` (запуск), `transport.py`, `urllib_transport.py`, `httpx_transport.py` (сеть), `page_fetch.py` (запрос страницы), `crawl.py` (правила и дирижёр обхода), `search_page.py`, `geometry.py`, `run_folder.py`, `status.py`; описание и запуск — `collector/README.md` |
 | инструменты разработчика | `scripts/` |
 | тесты и фикстуры | `tests/`, `tests/fixtures/collector/` |
 | документы | `docs/` |

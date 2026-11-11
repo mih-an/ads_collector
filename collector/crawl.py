@@ -1,12 +1,12 @@
 """
 crawl.py — обход выдачи ЦИАН: данные, правила обхода и дирижёр Crawl.
 
-Данные: Settings, Ticket, Edges (связь с внешним миром), TileState, PageTask,
+Данные: Settings, Ticket, Clock (часы и сон), CrawlInput, TileState, PageTask,
 CrawlState. Правила — функции без внешнего мира: интервал и паузы, пул пробы,
 деление [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень,
 повторы, словари plan.json и summary.json. Crawl ведёт ночь: проба, очередь,
-листание, деление, бюджет, стоп; внешний мир — только Edges, run_folder и
-geometry.update_tiles_file.
+листание, деление, бюджет, стоп; внешний мир — только запрос страницы
+(page_fetch.PageFetcher), Clock, rnd, run_folder и geometry.update_tiles_file.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from collector import geometry, run_folder, search_page
+from collector import geometry, page_fetch, run_folder, search_page
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -34,6 +34,12 @@ class Settings:
     smoke_only: bool
     start_delay: bool
     seed: int
+    # сетевой транспорт: urllib или httpx (флаг --transport)
+    transport: str
+    # «входной билет»: куки и UA браузера, прошедшего проверку WAF (флаги
+    # --cookies и --ua; умолчания — в cian_collect)
+    cookies_file: str
+    ua_file: str
     # [E-42] totalOffers стр. 1 больше порога — клетка делится (0 — деления нет)
     split_threshold: int = 400
     # дно деления (10 км → 1,25 км): на дне клетка листается — защита от
@@ -58,9 +64,6 @@ class Settings:
     # мельче в пул пробы не берём: крохи после нарезок легитимно пусты
     # (T0713caa: 0 лотов), а пустая выдача — провал пробы; ложная тревога 22.09
     smoke_min_area_km2: float = 15
-    # «входной билет»: куки и UA браузера, прошедшего проверку WAF, — в папке запуска
-    cookies_file: str = "cookies.txt"
-    ua_file: str = "ua.txt"
 
     @property
     def tile_mode(self) -> bool:
@@ -83,13 +86,21 @@ class Ticket:
 
 
 @dataclass(frozen=True)
-class Edges:
-    """Связь ночи с внешним миром: запрос выдачи, случайность, часы, сон."""
+class Clock:
+    """Часы ночи: который час (стена машины с поясом) и подождать, с."""
 
-    get_serp: Callable[[str, str | None], search_page.Response]
-    rnd: random.Random
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
+
+
+@dataclass(frozen=True)
+class CrawlInput:
+    """Неизменяемые входы обхода, и только они."""
+
+    settings: Settings
+    ticket: Ticket
+    raw_tiles: list[dict]
+    grid: dict
 
 
 @dataclass
@@ -406,36 +417,38 @@ def summary_report(
 
 class Crawl:
     """Дирижёр ночи: проба, очередь клеток, листание, деление, бюджет, повторы,
-    стоп, Ctrl+C. Правила — функции выше, запись файлов — run_folder; сеть,
-    часы, сон и случайность — только через edges."""
+    стоп, Ctrl+C. Правила — функции выше, запись файлов — run_folder; сеть —
+    только через fetcher, часы и сон — через clock, случайность — rnd."""
 
     def __init__(
         self,
-        settings: Settings,
-        raw_tiles: list[dict],
-        grid: dict,
-        ticket: Ticket,
-        edges: Edges,
+        crawl_input: CrawlInput,
+        fetcher: page_fetch.PageFetcher,
+        clock: Clock,
+        rnd: random.Random,
     ) -> None:
+        settings = crawl_input.settings
         self.settings = settings
-        self.grid = grid
-        self.ticket = ticket
-        self.edges = edges
+        self.grid = crawl_input.grid
+        self.ticket = crawl_input.ticket
+        self.fetcher = fetcher
+        self.clock = clock
+        self.rnd = rnd
         self.tile_mode = settings.tile_mode
         self.state = CrawlState()
-        self.started_at = edges.now()
+        self.started_at = clock.now()
         self.paths = run_folder.create_folder(
             settings.runs_dir, self.started_at, settings.smoke_only
         )
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # джиттер — один раз на (клетка, ночь), в порядке файла
-        for raw_tile in raw_tiles:
+        for raw_tile in crawl_input.raw_tiles:
             self._register(raw_tile)
         # клетки вперемешку, страницы внутри клетки — подряд (решение Андрея
         # 15.09: листание подряд — единственный человеческий паттерн)
         order = list(self.tiles)
-        edges.rnd.shuffle(order)
+        rnd.shuffle(order)
         self.state.pending = order
 
     def _register(self, raw_tile: dict) -> None:
@@ -444,7 +457,7 @@ class Crawl:
             name=raw_tile["name"],
             status=raw_tile.get("status", ""),
             area_km2=raw_tile.get("area_km2") or 0.0,
-            ring=geometry.jitter_ring(raw_tile["ring"], self.edges.rnd),
+            ring=geometry.jitter_ring(raw_tile["ring"], self.rnd),
             ring_canonical=[(float(a), float(b)) for a, b in raw_tile["ring"]],
             level=raw_tile.get("level"),
             parent=raw_tile.get("parent"),
@@ -503,7 +516,7 @@ class Crawl:
                 return  # ночь остановлена (блок, сеть, бюджет)
             self.save_plan()
             if state.pending and state.spent < budget:
-                factor = self.edges.rnd.uniform(*self.settings.inter_tile_pause)
+                factor = self.rnd.uniform(*self.settings.inter_tile_pause)
                 self.sleep_between(factor)
         state.stopped = state.stopped or "queue_empty"
 
@@ -517,7 +530,7 @@ class Crawl:
         candidates = smoke_pool(
             self.tiles, settings.smoke_min_area_km2, settings.smoke_pool_size
         )
-        self.edges.rnd.shuffle(candidates)
+        self.rnd.shuffle(candidates)
         for key in candidates[: settings.smoke_max_tries]:
             answer = self.request(key, 1, "smoke")
             state.spent += 1
@@ -595,7 +608,7 @@ class Crawl:
     def _retry_pause(self, key: str, page: int, attempts: int) -> None:
         """Пауза перед повтором номер attempts + 1 после сбоя сети."""
         retry_pauses = self.settings.net_retry_pauses
-        pause = self.edges.rnd.uniform(*retry_pauses[attempts])
+        pause = self.rnd.uniform(*retry_pauses[attempts])
         self.log(
             event="retry",
             sector=key,
@@ -604,7 +617,7 @@ class Crawl:
             of=len(retry_pauses),
             after_s=int(pause),
         )
-        self.edges.sleep(pause)
+        self.clock.sleep(pause)
 
     def step(self, task: PageTask) -> str:
         """Один запрос обхода. → вердикт; стоп-вердикты попутно ставят stopped."""
@@ -658,7 +671,7 @@ class Crawl:
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
         referer = search_page.page_url(ring, page - 1) if page > 1 else None
-        response = self.edges.get_serp(search_page.page_url(ring, page), referer)
+        response = self.fetcher.fetch(search_page.page_url(ring, page), referer)
         headers = response.headers
         verdict, detail, total, offers = search_page.classify_page(
             response.code,
@@ -714,7 +727,7 @@ class Crawl:
 
     def _stamp_hms(self) -> str:
         """Время ЧЧММСС в именах служебных файлов (часы машины)."""
-        return self.edges.now().strftime("%H%M%S")
+        return self.clock.now().strftime("%H%M%S")
 
     # ── деление (E-42) ────────────────────────────────────────────
 
@@ -749,7 +762,7 @@ class Crawl:
             self.log(event="split_skip", sector=key, note="нет непустых четвертей")
             return False
         self._queue_children(key, children)
-        split_at = self.edges.now().isoformat(timespec="seconds")
+        split_at = self.clock.now().isoformat(timespec="seconds")
         geometry.update_tiles_file(self.settings.tiles_path, key, children, split_at)
         self.save_plan()
         return True
@@ -763,7 +776,7 @@ class Crawl:
         tile.children = [child["sector"] for child in children]
         for child in children:
             self._register(child)  # джиттер ребёнка, затем его место в очереди
-            position = self.edges.rnd.randint(0, len(self.state.pending))
+            position = self.rnd.randint(0, len(self.state.pending))
             self.state.pending.insert(position, child["sector"])
         event = {
             "parent": key,
@@ -789,11 +802,11 @@ class Crawl:
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
-        self.edges.sleep(self.edges.rnd.uniform(low, high))
+        self.clock.sleep(self.rnd.uniform(low, high))
 
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
-        stamp = self.edges.now().isoformat(timespec="seconds")
+        stamp = self.clock.now().isoformat(timespec="seconds")
         run_folder.append_log(self.paths, stamp, fields)
 
     def _log_request(self, answer: run_folder.PageAnswer) -> None:
