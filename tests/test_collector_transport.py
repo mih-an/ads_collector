@@ -26,19 +26,34 @@ from dataclasses import dataclass, field
 
 import httpx
 import pytest
-from collector_support import no_network  # noqa: F401 — автофикстура
+from collector_support import (
+    FAKE_COOKIE,
+    USER_AGENT,
+    no_network,  # noqa: F401 — автофикстура
+)
 
 from collector import httpx_transport, transport, urllib_transport
 
 URL = "https://www.cian.ru/cat.php?deal_type=sale&p=2"
+# Адрес страницы поиска вида page_url (21.16): скобки и запятые в запросе —
+# уже закодированные %5B, %5D, %2C.
+URL_P1 = (
+    "https://www.cian.ru/cat.php?deal_type=sale&engine_version=2"
+    "&in_polygon%5B1%5D=37.1000000_55.1000000%2C37.2000000_55.2000000"
+    "%2C37.1000000_55.1000000&object_type%5B0%5D=3&offer_type=suburban"
+    "&polygon_name%5B1%5D=default_name_1"
+)
 
 
 @dataclass
 class Wire:
     """Что «провод» отвечает на один запрос: код, заголовки по порядку (с
-    повторами), тело байтами — или сбой failure: "connect" (не соединились,
-    причина dns), "timeout" (тайм-аут), "read_timeout" (тайм-аут при чтении
-    тела), "other" (прочий сбой сокета, текст reset)."""
+    повторами), тело байтами — или сбой failure:
+    "connect" — соединение не установлено (причина dns);
+    "connect_timeout" — тайм-аут соединения;
+    "read_timeout" — соединились, тайм-аут ожидания ответа;
+    "body_timeout" — ответ пришёл, тайм-аут при чтении тела;
+    "other" — прочий сбой сокета (текст reset)."""
 
     status: int = 200
     headers: list[tuple[str, str]] = field(default_factory=list)
@@ -48,9 +63,11 @@ class Wire:
 
 @dataclass
 class Seen:
-    """Запрос, дошедший до «провода»: адрес, заголовки (имена в нижнем
-    регистре) и тайм-ауты запроса, с."""
+    """Запрос, дошедший до «провода»: метод, адрес (схема и хост + цель
+    запроса — путь с запросом так, как он уходит в строку запроса HTTP),
+    заголовки (имена в нижнем регистре) и тайм-ауты запроса, с."""
 
+    method: str
     url: str
     headers: dict[str, str]
     timeouts: set[float]
@@ -64,10 +81,21 @@ class FailingBody(io.BytesIO):
 
 
 class WireUrllib(urllib.request.BaseHandler):
-    """Обработчик urllib вместо сети: отдаёт ответы wires по порядку, так
-    же, как их отдал бы http.client (сбой соединения — URLError, тайм-аут —
-    TimeoutError, сбой сокета — OSError, иной код — ответ, который дальше
-    разбирают настоящие обработчики транспорта)."""
+    """Обработчик urllib вместо сети: стоит на месте настоящего
+    HTTPSHandler.do_open (urllib/request.py) и отдаёт ответы wires по
+    порядку так, как их отдал бы do_open:
+    - сбой при соединении и отправке запроса do_open заворачивает в
+      URLError(исходная ошибка): нет соединения — URLError("dns"), тайм-аут
+      соединения — URLError(TimeoutError("timed out"));
+    - тайм-аут ожидания ответа (getresponse) выходит голым TimeoutError,
+      тайм-аут при чтении тела — тоже голым TimeoutError из read;
+    - прочий сбой сокета при ожидании ответа — голый ConnectionResetError
+      (OSError);
+    - иной код — ответ, который дальше разбирают настоящие обработчики
+      транспорта.
+    Заголовки записывает как их шлёт do_open: заголовки запроса и
+    добавленные обработчиками (Host, Cookie), Connection всегда close —
+    do_open подменяет любой переданный (план 1.8)."""
 
     handler_order = 0  # раньше настоящего HTTPSHandler
 
@@ -77,11 +105,15 @@ class WireUrllib(urllib.request.BaseHandler):
 
     def https_open(self, request: urllib.request.Request):
         headers = {name.lower(): value for name, value in request.header_items()}
-        self.seen.append(Seen(request.full_url, headers, {request.timeout}))
+        headers["connection"] = "close"  # так делает do_open
+        url = f"https://{request.host}{request.selector}"
+        self.seen.append(Seen(request.get_method(), url, headers, {request.timeout}))
         wire = self.wires.pop(0)
         if wire.failure == "connect":
             raise urllib.error.URLError("dns")
-        if wire.failure == "timeout":
+        if wire.failure == "connect_timeout":
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        if wire.failure == "read_timeout":
             raise TimeoutError("timed out")
         if wire.failure == "other":
             raise ConnectionResetError("reset")
@@ -89,7 +121,7 @@ class WireUrllib(urllib.request.BaseHandler):
         for name, value in wire.headers:
             message[name] = value  # повтор имени добавляет второй заголовок
         body = io.BytesIO(wire.body)
-        if wire.failure == "read_timeout":
+        if wire.failure == "body_timeout":
             body = FailingBody()
         response = urllib.response.addinfourl(
             body, message, request.full_url, wire.status
@@ -107,9 +139,10 @@ class FailingStream(httpx.SyncByteStream):
 
 class WireHttpx:
     """Обработчик httpx.MockTransport вместо сети: отдаёт ответы wires по
-    порядку, так же, как их отдал бы httpx (сбой соединения — ConnectError,
-    тайм-аут — ConnectTimeout, сбой сокета — ReadError). Тело — потоком
-    ByteStream: так httpx не дописывает в ответ Content-Length."""
+    порядку, так же, как их отдал бы httpx: соединение не установлено —
+    ConnectError, тайм-аут соединения — ConnectTimeout, тайм-аут ожидания
+    ответа и чтения тела — ReadTimeout, сбой сокета — ReadError. Тело —
+    потоком ByteStream: так httpx не дописывает в ответ Content-Length."""
 
     def __init__(self, wires: list[Wire], seen: list[Seen]) -> None:
         self.wires = wires
@@ -118,16 +151,20 @@ class WireHttpx:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         headers = {name.lower(): value for name, value in request.headers.items()}
         timeouts = set(request.extensions["timeout"].values())
-        self.seen.append(Seen(str(request.url), headers, timeouts))
+        target = request.url.raw_path.decode("ascii")  # путь с запросом на проводе
+        url = f"{request.url.scheme}://{request.url.host}{target}"
+        self.seen.append(Seen(request.method, url, headers, timeouts))
         wire = self.wires.pop(0)
         if wire.failure == "connect":
             raise httpx.ConnectError("dns", request=request)
-        if wire.failure == "timeout":
+        if wire.failure == "connect_timeout":
             raise httpx.ConnectTimeout("timed out", request=request)
+        if wire.failure == "read_timeout":
+            raise httpx.ReadTimeout("timed out", request=request)
         if wire.failure == "other":
             raise httpx.ReadError("reset", request=request)
         stream: httpx.SyncByteStream = httpx.ByteStream(wire.body)
-        if wire.failure == "read_timeout":
+        if wire.failure == "body_timeout":
             stream = FailingStream()
         return httpx.Response(wire.status, headers=wire.headers, stream=stream)
 
@@ -258,10 +295,15 @@ def test_21_28_no_redirect(kit):
     )
 
 
+# Вид сбоя → деталь NetworkFailure, одна для обоих транспортов (DECISIONS,
+# block/transport, «деталь сбоя у httpx»): тайм-аут соединения urllib
+# заворачивает в URLError — отсюда urlerror:timed out, как в фикстурах ночи
+# 2026-10-08_0032.
 NETWORK_FAILURES = {
-    "соединение": ("connect", "urlerror:dns"),
-    "тайм-аут": ("timeout", "timeout"),
-    "тайм-аут чтения тела": ("read_timeout", "timeout"),
+    "соединение не установлено": ("connect", "urlerror:dns"),
+    "тайм-аут соединения": ("connect_timeout", "urlerror:timed out"),
+    "тайм-аут чтения": ("read_timeout", "timeout"),
+    "тайм-аут при чтении тела": ("body_timeout", "timeout"),
     "прочий сбой": ("other", "oserror:reset"),
 }
 
@@ -270,9 +312,10 @@ NETWORK_FAILURES = {
     ("failure", "detail"), list(NETWORK_FAILURES.values()), ids=list(NETWORK_FAILURES)
 )
 def test_21_29_network_failures(kit, failure, detail):
-    """21.29 Сбои сети: соединение → urlerror:<причина>, тайм-аут (и при
-    чтении тела) → timeout, прочий сбой → oserror:<текст>; транспорт бросает
-    NetworkFailure, str — деталь. Модуль 21."""
+    """21.29 Сбои сети: соединение не установлено → urlerror:<причина>,
+    тайм-аут соединения → urlerror:timed out, тайм-аут чтения (ожидание
+    ответа и чтение тела) → timeout, прочий сбой → oserror:<текст>;
+    транспорт бросает NetworkFailure, str — деталь. Модуль 21."""
     with pytest.raises(transport.NetworkFailure, match=f"^{re.escape(detail)}$"):
         get_one(kit, Wire(failure=failure))
 
@@ -315,31 +358,56 @@ def test_21_80_error_status_is_reply(kit):
     )
 
 
+# Полный набор заголовков браузера, как его передаёт PageFetcher с билетом
+# (test_collector.py, BROWSER_HEADERS и 21.24).
+GIVEN_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+    "image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-User": "?1",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Site": "same-origin",
+    "Referer": "https://www.cian.ru/",
+}
+
+
 def test_21_80_request_headers_delivered(kit):
-    """21.80 Заголовки, переданные в get, доходят до провода как есть
-    (имена — без учёта регистра). Модуль 21."""
-    given = {
-        "User-Agent": "TestAgent/1.0",
-        "Referer": "https://www.cian.ru/",
-        "Accept-Encoding": "gzip, deflate",
-        "Sec-Fetch-Site": "same-origin",
-    }
-    kit.transport(None, [Wire(body=b"x")]).get(URL, given)
-    delivered = {name.lower(): kit.seen[0].headers.get(name.lower()) for name in given}
-    assert delivered == {name.lower(): value for name, value in given.items()}
+    """21.80 Полный набор заголовков браузера, переданный в get с билетом,
+    уходит на провод ровно таким (имена — без учёта регистра) плюс Host и
+    Cookie билета; своих User-Agent, Accept, Accept-Encoding, Connection
+    транспорт сверх переданных не добавляет. Одно неизбежное отличие у
+    urllib: его do_open всегда шлёт Connection: close вместо переданного
+    (план 1.8) — это свойство библиотеки, транспорт его не выбирает.
+    Модуль 21."""
+    kit.transport(FAKE_COOKIE, [Wire(body=b"x")]).get(URL, GIVEN_HEADERS)
+    expected = {name.lower(): value for name, value in GIVEN_HEADERS.items()}
+    expected |= {"host": "www.cian.ru", "cookie": FAKE_COOKIE}
+    if kit.name == "urllib":
+        expected["connection"] = "close"
+    assert kit.seen[0].headers == expected
+
+
+def test_21_80_get_by_url_as_is(kit):
+    """21.80 Запрос — GET по переданному адресу: адрес страницы поиска с
+    закодированными %5B, %5D, %2C (вид page_url, 21.16) доходит до провода
+    байт в байт. Модуль 21."""
+    kit.transport(None, [Wire(body=b"x")]).get(URL_P1, {})
+    assert (kit.seen[0].method, kit.seen[0].url) == ("GET", URL_P1)
 
 
 # Одна последовательность «провода» для обеих реализаций: ответ 200 с gzip,
-# 403, 301 с Location, повтор заголовка, все виды сбоя.
+# 403, 301 с Location, повтор заголовка, все виды сбоя (NETWORK_FAILURES).
 SAME_INPUT = [
     Wire(200, [("Content-Encoding", "gzip")], gzip.compress(b"page", mtime=0)),
     Wire(403, [("Server", "nginx"), ("Set-Cookie", "x=y")], b"no"),
     Wire(301, [("Location", URL.replace("p=2", "p=1"))]),
     Wire(200, [("X-Dup", "1"), ("X-Dup", "2")], b"dup"),
-    Wire(failure="connect"),
-    Wire(failure="timeout"),
-    Wire(failure="read_timeout"),
-    Wire(failure="other"),
+    *(Wire(failure=failure) for failure, _ in NETWORK_FAILURES.values()),
 ]
 
 
@@ -357,6 +425,6 @@ def replies_of(kit: Kit) -> list:
 
 def test_21_80_same_input_same_reply():
     """21.80 Одна последовательность (200 gzip, 403, 301, повтор заголовка,
-    сбои) даёт у urllib и httpx равные HttpReply и NetworkFailure.
-    Модуль 21."""
+    все виды сбоя из NETWORK_FAILURES, в том числе тайм-аут соединения)
+    даёт у urllib и httpx равные HttpReply и NetworkFailure. Модуль 21."""
     assert replies_of(Kit("urllib")) == replies_of(Kit("httpx"))

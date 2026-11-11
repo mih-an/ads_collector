@@ -16,8 +16,13 @@ UrllibTransport(cookie_header) с атрибутом opener (urllib OpenerDirect
 cc.time (time, sleep, monotonic — длительность запроса main передаёт в
 PageFetcher) и cc.datetime (now, astimezone, strftime, isoformat).
 
-Модули сборщика импортируются внутри функций: test_collector_status.py
-берёт отсюда только запрет сети и часы, пакет collector ему не нужен.
+Модули сборщика (collector.transport, collector.urllib_transport)
+импортируются внутри функций, а не наверху. Почему: этот файл импортирует и
+test_collector_status.py, а status.py — отдельный скрипт, который пакет не
+импортирует (CLAUDE.md §6); его тесты берут отсюда только запрет сети и
+часы и не должны падать оттого, что пакет collector сломан или не
+собирается. Подсказка типа HttpReply — только для проверки типов
+(TYPE_CHECKING), при запуске тестов не импортируется.
 """
 
 import http.client
@@ -31,8 +36,12 @@ import urllib.response
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collector.transport import HttpReply
 
 # Допуск сверки вершин ссылки с кольцом клетки. Почему 2e-5: jitter_ring
 # обрезает координату до 5-го знака и добавляет до 9,9e-6
@@ -247,7 +256,7 @@ class FakeTransport:
         self.made.append((name, cookie_header))
         return self
 
-    def get(self, url: str, headers: dict[str, str]):
+    def get(self, url: str, headers: dict[str, str]) -> "HttpReply":
         from collector.transport import HttpReply
 
         cell, page = cell_of_url(self.tiles_path, url), page_of_url(url)

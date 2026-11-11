@@ -1717,9 +1717,11 @@ def test_21_30_ms_by_monotonic(fetch_env):
 )
 def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
     """21.30 Один fetch — ровно два обращения к monotonic (до запроса и
-    после разбора тела), при ответе, сбое сети и битом сжатии: длительность
-    считается в одном месте, ms= в night.log эталонных ночей не сдвигается.
-    Модуль 21."""
+    после разбора тела), при ответе, сбое сети и битом сжатии. Это
+    страховка сверх поведения из кейса: само поведение (мс по monotonic)
+    держит test_21_30_ms_by_monotonic, а этот тест держит эталонное
+    ms=250 в night.log ночей 21.68–21.70 — лишний вызов monotonic сдвинул
+    бы его раньше, чем сравнение с эталоном укажет причину. Модуль 21."""
     fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert fetch_env.clock.monotonic_calls == 2
 
@@ -2874,26 +2876,40 @@ def test_21_52_empty_ticket_files(env):
 def test_21_52_ticket_reaches_request(env, monkeypatch):
     """21.52 Билет доходит до сети при полном запуске: фабрика транспорта
     получает строку Cookie из cookies.txt (её кладёт в запрос транспорт,
-    21.23), у первого запроса (проба) User-Agent — строка из ua.txt.
-    Значения отличны от умолчаний теста, чтобы было видно чтение файлов.
-    Модуль 21."""
+    21.23), у первого запроса (проба) User-Agent — строка из ua.txt и заход
+    «с главной» (Referer https://www.cian.ru/, Sec-Fetch-Site same-origin):
+    признак билета доходит до PageFetcher. Значения отличны от умолчаний
+    теста, чтобы было видно чтение файлов. Модуль 21."""
     (env.folder / "cookies.txt").write_text("sid=from-file\n", encoding="utf-8")
     (env.folder / "ua.txt").write_text("TestAgent/1.0 (ua.txt)\n", encoding="utf-8")
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
     headers = lower_keys(env.transport.sent[0].headers)
-    assert (env.transport.made, headers["user-agent"]) == (
+    assert (
+        env.transport.made,
+        headers["user-agent"],
+        headers.get("referer"),
+        headers["sec-fetch-site"],
+    ) == (
         [("urllib", "sid=from-file")],
         "TestAgent/1.0 (ua.txt)",
+        "https://www.cian.ru/",
+        "same-origin",
     )
 
 
 def test_21_52_no_cookie_without_ticket(env, monkeypatch):
     """21.52 Нет cookies.txt: фабрика транспорта получает строку Cookie
-    None — у запросов полного запуска заголовка Cookie нет (21.23).
-    Модуль 21."""
+    None — у запросов полного запуска заголовка Cookie нет (21.23); первый
+    запрос (проба) — заход из адресной строки: Sec-Fetch-Site none, без
+    Referer (признак «нет билета» доходит до PageFetcher). Модуль 21."""
     (env.folder / "cookies.txt").unlink()
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
-    assert env.transport.made == [("urllib", None)]
+    headers = lower_keys(env.transport.sent[0].headers)
+    assert (env.transport.made, headers["sec-fetch-site"], "referer" in headers) == (
+        [("urllib", None)],
+        "none",
+        False,
+    )
 
 
 def test_21_52_start_line_without_ticket(env, monkeypatch):
@@ -3351,8 +3367,24 @@ def test_21_81_make_transport_urllib():
     assert type(made) is urllib_transport.UrllibTransport
 
 
-def test_21_81_make_transport_httpx():
+# Переменные прокси окружения: httpx.Client читает их при создании; тест не
+# должен зависеть от того, что задано на машине.
+PROXY_ENV = (
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+def test_21_81_make_transport_httpx(monkeypatch):
     """21.81 make_transport("httpx", …) — HttpxTransport. Модуль 21."""
+    for name in PROXY_ENV:
+        monkeypatch.delenv(name, raising=False)
     made = cc.make_transport("httpx", FAKE_COOKIE)
     assert type(made) is httpx_transport.HttpxTransport
 
@@ -3641,6 +3673,15 @@ def network_or_clock_imports(source: str) -> list[str]:
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
         if is_network(module) or module in CLOCK_IMPORTS
+    ]
+
+
+def clock_imports(source: str) -> list[str]:
+    """Импорты time — в любой форме (import time, from time import x)."""
+    return [
+        f"строка {line}: {module}"
+        for line, module in imported_modules(source)
+        if module.split(".")[0] in CLOCK_IMPORTS
     ]
 
 
@@ -3939,6 +3980,14 @@ def test_21_78_no_network_or_clock_imports(name):
     assert network_or_clock_imports(collector_source(name)) == []
 
 
+@pytest.mark.parametrize("name", TRANSPORT_MODULES)
+def test_21_78_transports_no_clock_imports(name):
+    """21.78 Реализации транспорта (urllib_transport, httpx_transport) не
+    импортируют time: сеть им можно, а часы — нет; длительность запроса
+    меряет PageFetcher переданным monotonic. Модуль 21."""
+    assert clock_imports(collector_source(name)) == []
+
+
 @pytest.mark.parametrize("name", (*RULE_MODULES, *TRANSPORT_MODULES))
 def test_21_78_no_wall_clock_or_random_calls(name):
     """21.78 Модули правил, transport, page_fetch и реализации транспорта не
@@ -4062,6 +4111,8 @@ GUARD_SAMPLES = [
     (network_or_clock_imports, "import http"),
     (network_imports, "import urllib.error"),
     (network_imports, "from urllib import error"),
+    (clock_imports, "import time"),
+    (clock_imports, "from time import monotonic"),
     (wall_clock_or_random_uses, "stamp = datetime.now()"),
     (wall_clock_or_random_uses, "stamp = datetime.datetime.now()"),
     (wall_clock_or_random_uses, "stamp = datetime.today()"),
@@ -4252,6 +4303,7 @@ def make_transport(name, cookie_header):
         (wall_clock_or_random_uses, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (httpx_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (transport_layer_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (clock_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (eager_httpx_transport_imports, LAZY_CLEAN_SAMPLE),
         (httpx_imports, LAZY_CLEAN_SAMPLE),
     ],
@@ -4270,10 +4322,11 @@ def make_transport(name, cookie_header):
         "page_fetch: stdout",
         "page_fetch: transport и search_page",
         "urllib_transport: opener.open",
-        "urllib_transport: импорты сети",
+        "urllib_transport: импорты не диск",
         "urllib_transport: время стены и random",
         "urllib_transport: без httpx",
         "urllib_transport: только transport",
+        "urllib_transport: без time",
         "cian_collect: httpx_transport внутри функции",
         "cian_collect: без httpx",
     ],
