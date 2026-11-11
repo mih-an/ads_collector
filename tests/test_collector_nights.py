@@ -15,6 +15,7 @@ cc.time — один FakeTime.
 
 import gzip
 import hashlib
+import http.client
 import json
 import lzma
 import re
@@ -809,11 +810,32 @@ def test_21_79_run_folder_contract(name, tmp_path, monkeypatch):
     assert (run_folder_violations(run.run_dir), summary["stopped"]) == ([], stopped)
 
 
+def refuse_connect(*args: object, **kwargs: object) -> None:
+    raise AssertionError("сеть в тестах запрещена")
+
+
+@pytest.fixture(scope="module")
+def clean_night_dir(tmp_path_factory) -> Path:
+    """Папка прогона чистой ночи 10-07 (деление, дно, 301), проигранной один
+    раз на модуль (решение Андрея 11.11: ускорить тесты). Тесты её не
+    трогают — портят свою копию (clean_run). Автофикстура no_network — на
+    функцию и сюда не доходит, поэтому запрет сети ставится здесь же."""
+    work = tmp_path_factory.mktemp("clean_night")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(http.client.HTTPConnection, "connect", refuse_connect)
+        mp.setattr(http.client.HTTPSConnection, "connect", refuse_connect)
+        return replay_night(NIGHTS_DIR / "2026-10-07_0013", work, mp).run_dir
+
+
 @pytest.fixture
-def clean_run(tmp_path, monkeypatch) -> Path:
-    """Папка прогона чистой ночи 10-07 (деление, дно, 301) — основа пробы
-    контракта. Проигрывание короче секунды, поэтому своё у каждого теста."""
-    return replay_night(NIGHTS_DIR / "2026-10-07_0013", tmp_path, monkeypatch).run_dir
+def clean_run(clean_night_dir, tmp_path) -> Path:
+    """Своя копия папки чистой ночи в tmp_path теста — основа пробы
+    контракта. Имя папки прежнее (его проверяет контракт), содержимое байт в
+    байт (mtime снимка контракт читает из заголовка gzip); копия одна в
+    runs/ — порча «имя папки» находит её после переименования."""
+    copy = tmp_path / "runs" / clean_night_dir.name
+    shutil.copytree(clean_night_dir, copy)
+    return copy
 
 
 def write_text(path: Path, text: str) -> None:
