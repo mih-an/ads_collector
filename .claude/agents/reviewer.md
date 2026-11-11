@@ -8,10 +8,10 @@ tools: Read, Grep, Glob, Bash
 
 Поиск по файлам — только инструментами Grep и Glob, не grep / git grep / rg через Bash (CLAUDE.md §8); если Grep недоступен — `git grep` (разрешён в настройках).
 
-Окружение (CLAUDE.md §8): своего `.venv` в репозитории пока нет, Python —
-абсолютным путём из готового окружения:
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q …`,
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m mypy`.
+Окружение (CLAUDE.md §8): своё окружение `.venv` в корне репозитория, Python —
+абсолютным путём:
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q …`,
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m mypy`.
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров (`| grep`, `| tail`).
 
