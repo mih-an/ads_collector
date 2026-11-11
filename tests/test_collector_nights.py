@@ -1,12 +1,12 @@
-"""Модуль 21 «Сборщик ЦИАН»: эталонные ночи и контракт формата, кейсы 21.68–21.73.
+"""Модуль 21 «Сборщик ЦИАН»: эталонные ночи и фикстуры, кейсы 21.68–21.70, 21.73.
 
 Ночь проигрывается боевым main() сборщика (collector/cian_collect.py) на
 ответах ЦИАН настоящей ночи из tests/fixtures/collector/nights/<метка>/input
 (выборка клеток, scripts/collector_fixtures.py). Папка прогона сверяется
 файл за файлом с эталоном expected/ (записан один раз до рефакторинга
 разовым скриптом, решение Андрея 10.11) и с тем, что настоящая ночь
-записала про эти клетки. Папку прогона читает настоящий загрузчик
-land_monitor/slice_loader.py. Сети нет: ответы отдаёт CianPlayer.
+записала про эти клетки. Сети нет: ответы отдаёт CianPlayer через
+подменённый net.Fetcher; часы net.time и cc.time — один FakeTime.
 """
 
 import gzip
@@ -33,6 +33,7 @@ from collector_support import (  # noqa: F401 — no_network: автофикст
 )
 
 import collector.cian_collect as cc
+from collector import net
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "collector"
@@ -121,13 +122,7 @@ def night_replies(night: NightInput) -> dict[tuple[str, int], list[Reply]]:
 
 def night_argv(meta: dict, tiles: Path, runs: Path) -> list[str]:
     """Аргументы боевого запуска из meta.json: без --no-start-delay (паузы
-    подменены FakeTime). Ночь в режиме discovery проиграть нельзя: режим
-    удалён из сборщика — громкая ошибка, а не тихий прогон без режима."""
-    if meta.get("discovery"):
-        raise ValueError(
-            f"meta.json ночи {meta['night']}: discovery=true — режим discovery "
-            "удалён из сборщика, такую ночь проиграть нельзя"
-        )
+    подменены FakeTime)."""
     argv = ["cian_collect.py", "--budget", str(meta["budget"])]
     argv += ["--window-hours", str(meta["window_hours"]), "--seed", str(meta["seed"])]
     argv += ["--geojson", str(tiles), "--runs-dir", str(runs)]
@@ -151,8 +146,12 @@ def replay_night(
     replies = night_replies(night) | (replace_replies or {})
     player = CianPlayer(tiles, replies)
     monkeypatch.chdir(work_dir)
-    monkeypatch.setattr(cc, "Fetcher", player_fetcher(cc.Fetcher, player))
-    monkeypatch.setattr(cc, "time", FakeTime(start.timestamp()))
+    monkeypatch.setattr(net, "Fetcher", player_fetcher(net.Fetcher, player))
+    # одни часы на оба модуля: monotonic (ms= в night.log) зовёт net, time и
+    # sleep — cc
+    clock = FakeTime(start.timestamp())
+    monkeypatch.setattr(net, "time", clock)
+    monkeypatch.setattr(cc, "time", clock)
     monkeypatch.setattr(cc, "datetime", frozen_datetime(start))
     argv = night_argv(night.meta, tiles, work_dir / "runs")
     monkeypatch.setattr(sys, "argv", argv + list(extra_args))
@@ -260,29 +259,20 @@ def events_by_cell(log_path: Path) -> dict[str, list[dict[str, str]]]:
     return cells
 
 
-def skippable_cells(night: NightInput, expected_dir: Path) -> set[str]:
-    """Клетки, которые проигрывание вправе не запросить: из may_skip
-    meta.json — только те, которых нет и в эталонном night.log."""
-    in_expected = set(events_by_cell(expected_dir / "night.log"))
-    return set(night.meta["may_skip"]) - in_expected
-
-
-def compare_with_real(run: Replayed, skippable: set[str]) -> list[str]:
+def compare_with_real(run: Replayed) -> list[str]:
     """Расхождения проигрывания с настоящей ночью по клеткам выборки:
     ответы (http, вердикт, деталь, объявления, totalOffers), конец клетки,
-    деления, повторы и чем кончилась ночь; неизрасходованные ответы — только
-    у клеток skippable; [] — совпали."""
+    деления, повторы и чем кончилась ночь; все ответы израсходованы;
+    [] — совпали."""
     replay = events_by_cell(run.run_dir / "night.log")
     diffs = []
     for cell, records in run.night.real["cells"].items():
         got = replay.pop(cell, [])
-        if not got and cell in skippable:
-            continue  # бюджет кончился раньше этой клетки — так задумано
         if got != records:
             diffs.append(f"{cell}: проигрывание {got} ≠ ночь {records}")
     if replay:
         diffs.append(f"клетки не из выборки: {sorted(replay)}")
-    if run.unused_cells() - skippable:
+    if run.unused_cells():
         diffs.append(f"ответы не израсходованы: {sorted(run.unused_cells())}")
     summary = json.loads((run.run_dir / "summary.json").read_text(encoding="utf-8"))
     stopped = run.night.real["stopped"]
@@ -298,10 +288,7 @@ def night_differences(label: str, tmp_path: Path, monkeypatch) -> list[str]:
     if not expected_dir.is_dir():
         pytest.fail(f"эталона нет: {expected_dir}")
     run = replay_night(NIGHTS_DIR / label, tmp_path, monkeypatch)
-    skippable = skippable_cells(run.night, expected_dir)
-    return compare_with_expected(run, expected_dir, label) + compare_with_real(
-        run, skippable
-    )
+    return compare_with_expected(run, expected_dir, label) + compare_with_real(run)
 
 
 # ─────────────────────────────── ночи ───────────────────────────────
@@ -328,7 +315,7 @@ def test_21_70_night_2026_10_08_network_failure(tmp_path, monkeypatch):
     assert night_differences("2026-10-08_0032", tmp_path, monkeypatch) == []
 
 
-# ─────────────────────────── контракт формата ───────────────────────────
+# ─────────────────────────────── фикстуры ───────────────────────────────
 
 
 def test_21_73_fixtures_fit_size_limit():

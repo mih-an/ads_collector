@@ -6,10 +6,13 @@ tests/test_collector_status.py. Здесь только то, что нужно 
 временной папке и проигрыватель ответов ЦИАН (Reply, CianPlayer,
 player_fetcher). Кода сборщика не меняет: подмены ставит monkeypatch теста.
 
-Что сборщик обязан сохранить при рефакторинге, чтобы эти подмены работали:
-модульные имена cc.Fetcher (класс: Fetcher(user_agent, cookie_header) с
-атрибутом opener — urllib OpenerDirector), cc.time (time, monotonic, sleep),
-cc.datetime (now, astimezone, strftime, isoformat) и cc.main().
+Что сборщик обязан сохранить, чтобы эти подмены работали (cc —
+collector.cian_collect, net — collector.net): net.Fetcher (класс:
+Fetcher(user_agent, cookie_header) с атрибутом opener — urllib
+OpenerDirector; main создаёт его по имени модуля), net.time (monotonic —
+длительность запроса), cc.time (time, sleep), cc.datetime (now, astimezone,
+strftime, isoformat) и cc.main(). net.time и cc.time тест подменяет одним
+FakeTime.
 """
 
 import http.client
@@ -27,7 +30,7 @@ import pytest
 
 # Допуск сверки вершин ссылки с кольцом клетки. Почему 2e-5: jitter_ring
 # обрезает координату до 5-го знака и добавляет до 9,9e-6
-# (collector/cian_collect.py, jitter_ring) — сдвиг вершины < 1e-5; запас
+# (collector/geometry.py, jitter_ring) — сдвиг вершины < 1e-5; запас
 # вдвое — на округление колец до 7 знаков (update_tiles_file пишет детей
 # деления округлёнными). Соседние клетки расходятся на сотни метров (~1e-3).
 JITTER_TOLERANCE = 2e-5

@@ -3,33 +3,34 @@
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
 геометрия и ссылка на выдачу, сеть, сценарии прогона, main; в конце —
-страж 21.78 (модули правил без внешнего мира). Сети нет: настоящий Fetcher
-сборщика получает ответы от CianPlayer (tests/collector_support.py); часы и
-сон подменены, случайность — --seed, папки и билет — во временной папке
-теста.
+страж 21.78 (модули правил без внешнего мира). Сети нет: настоящий
+net.Fetcher сборщика получает ответы от CianPlayer
+(tests/collector_support.py); часы и сон подменены, случайность — --seed,
+папки и билет — во временной папке теста. Имена берутся из своих модулей:
+serp (разбор ответа), geometry (клетки), net (сеть), night (ночь); через
+cc — только запуск и края.
 
-Что рефакторинг обязан сохранить, чтобы страховка работала:
-- cc.main() — разбор sys.argv и весь прогон (сценарии и ночи идут через него);
-- cc.parse_settings(argv) → Settings (умолчания и обязательный --geojson, 21.59);
-- cc.decode_body(raw, content_encoding) — функция модуля, которую Fetcher
-  зовёт по имени модуля в момент вызова: её подменяет тест 21.27;
-- cc.Fetcher(user_agent, cookie_header) с атрибутом opener (urllib
+Точки подмены, которые код обязан сохранить:
+- cc.main() — разбор sys.argv и весь прогон; main создаёт net.Fetcher по
+  имени модуля в момент вызова, поэтому подмена net.Fetcher срабатывает;
+- net.Fetcher(user_agent, cookie_header) с атрибутом opener (urllib
   OpenerDirector): проигрыватель встаёт в него обработчиком;
-- модульные имена cc.time (time, monotonic, sleep) и cc.datetime (now,
-  astimezone, strftime, isoformat) — их подменяют часы теста;
-- cc.read_ticket (билет из папки запуска), cc.now_local (часы ночи в
-  make_night) и cc.Night.sleep_between (точка подмены пауз в 21.36);
-- чистые функции разбора и геометрии (classify_serp, extract_initial_state,
-  missing_fields, get_path, offer_ids, pages_for, load_sectors, jitter_ring,
-  build_serp_url, infer_tile_grid, tile_base_square, quarter_rect,
-  clip_ring_rect, ring_area_km2, densify_ring, make_children,
-  update_tiles_file, parse_cookie_header, seed_jar, lower_headers,
-  NoRedirect) — с теми же сигнатурами; файлы прогона — в том же формате.
+- net.decode_body(raw, content_encoding) — Fetcher зовёт её по имени модуля
+  в момент вызова: её подменяет 21.27;
+- net.time (monotonic — длительность запроса), cc.time (time, sleep) и
+  cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
+  теста, net.time и cc.time — одним FakeTime;
+- cc.parse_settings, cc.read_ticket, cc.now_local, cc.random (Random,
+  randrange) и night.Night.sleep_between (подглядывание в 21.36);
+- чистые функции serp и geometry, помощники net (parse_cookie_header,
+  seed_jar, lower_headers, NoRedirect) — с теми же сигнатурами; файлы
+  прогона — в том же формате.
 Тесты с пометкой «Внутреннее» держат поведение через внутренний интерфейс
 (функции правил night, run_folder, методы Night), а не через main.
 """
 
 import ast
+import functools
 import gzip
 import http.client
 import http.cookiejar
@@ -63,9 +64,9 @@ from collector_support import (  # noqa: F401 — no_network: автофикст
 )
 
 import collector.cian_collect as cc
+from collector import geometry, net, night, serp
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-COLLECTOR_PY = REPO_ROOT / "collector" / "cian_collect.py"
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "collector"
 SERVICEPIPE = FIXTURES / "servicepipe"
 
@@ -205,7 +206,9 @@ def env(tmp_path, monkeypatch) -> Env:
     tiles = tmp_path / "tiles.geojson"
     player = CianPlayer(tiles, {})
     clock = FakeTime(EPOCH)
-    monkeypatch.setattr(cc, "Fetcher", player_fetcher(cc.Fetcher, player))
+    monkeypatch.setattr(net, "Fetcher", player_fetcher(net.Fetcher, player))
+    # одни часы на оба модуля: monotonic зовёт net, time и sleep — cc
+    monkeypatch.setattr(net, "time", clock)
     monkeypatch.setattr(cc, "time", clock)
     monkeypatch.setattr(cc, "datetime", frozen_datetime(MOMENT))
     write_ticket(tmp_path, EPOCH, TICKET_AGE_H)
@@ -237,8 +240,6 @@ def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=F
 def settings_of(folder: Path, **changes):
     """Settings ночи сценария: файл клеток и runs/ в папке теста, бюджет 50,
     окно 1 ч, без пробы-only и паузы старта, seed 1; changes перекрывают."""
-    from collector import night
-
     settings = night.Settings(
         budget=50,
         window_hours=1.0,
@@ -253,8 +254,6 @@ def settings_of(folder: Path, **changes):
 
 def tile_state(**changes):
     """Состояние клетки B уровня 0 без страниц; changes перекрывают поля."""
-    from collector import night
-
     fields = {
         "name": f"Сбор {B}",
         "status": "collect",
@@ -270,21 +269,17 @@ def tile_state(**changes):
 
 def fake_ticket():
     """Билет сценария: кука, UA и возраст — как у билета в папке env."""
-    from collector import night
-
     return night.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
 
 
 def make_night(env, features, **changes):
     """Night нового интерфейса без main(): файл клеток features, билет как в
     env, сеть — проигрыватель env, часы и сон — env; changes — поля Settings."""
-    from collector import geometry, night
-
     write_features(env.tiles, features)
     tiles = geometry.load_sectors(str(env.tiles))
     ticket = fake_ticket()
     edges = night.Edges(
-        get_serp=cc.Fetcher(USER_AGENT, FAKE_COOKIE).get_serp,
+        get_serp=net.Fetcher(USER_AGENT, FAKE_COOKIE).get_serp,
         rnd=random.Random(1),
         now=cc.now_local,
         sleep=env.clock.sleep,
@@ -326,17 +321,17 @@ def test_21_1_page_gives_ok_total_offers():
     """21.1 Страница выдачи → OK, «-», totalOffers и объявления как в
     странице (classify_serp, _finish). Модуль 21."""
     offers = [offer(1), offer(2)]
-    assert cc.classify_serp(200, serp_html(offers, 60)) == (cc.OK, "-", 60, offers)
+    assert serp.classify_serp(200, serp_html(offers, 60)) == (serp.OK, "-", 60, offers)
 
 
-def full_page(night: str, name: str) -> str:
-    """Настоящая страница ночи целиком из фикстуры (xz)."""
-    path = FIXTURES / "nights" / night / "input" / "pages" / name
+def full_page(label: str, name: str) -> str:
+    """Настоящая страница ночи label целиком из фикстуры (xz)."""
+    path = FIXTURES / "nights" / label / "input" / "pages" / name
     return lzma.decompress(path.read_bytes()).decode("utf-8")
 
 
 @pytest.mark.parametrize(
-    ("night", "name", "expected"),
+    ("label", "name", "expected"),
     [
         ("2026-11-08_0007", "T0713cac_p1.html.xz", (7, 443, 5)),
         ("2026-10-07_0013", "T1112b_p1.html.xz", (5, 3, 3)),
@@ -344,14 +339,14 @@ def full_page(night: str, name: str) -> str:
     ],
     ids=["7-й из 7", "4-й из 5", "2-й из 3"],
 )
-def test_21_2_real_page_right_initial_state(night, name, expected):
+def test_21_2_real_page_right_initial_state(label, name, expected):
     """21.2 На настоящей странице целиком несколько вхождений initialState
     (7, 5 или 3); сборщик берёт то, где results.offers: totalOffers и
     число объявлений = записанным той ночью. Модуль 21."""
-    html = full_page(night, name)
-    verdict, _, total, offers = cc.classify_serp(200, html)
+    html = full_page(label, name)
+    verdict, _, total, offers = serp.classify_serp(200, html)
     found = (html.count("initialState"), total, len(offers))
-    assert (verdict, *found) == (cc.OK, *expected)
+    assert (verdict, *found) == (serp.OK, *expected)
 
 
 GOOD_STATE = '"initialState":{"results":{"totalOffers":1,"offers":[{"id":5}]}}'
@@ -375,7 +370,7 @@ GOOD_STATE = '"initialState":{"results":{"totalOffers":1,"offers":[{"id":5}]}}'
 def test_21_3_bad_entries_skipped(bad):
     """21.3 Негодное вхождение initialState пропускается, сборщик берёт
     следующее годное (extract_initial_state). Модуль 21."""
-    state = cc.extract_initial_state(bad + "," + GOOD_STATE)
+    state = serp.extract_initial_state(bad + "," + GOOD_STATE)
     assert state == {"results": {"totalOffers": 1, "offers": [{"id": 5}]}}
 
 
@@ -383,7 +378,7 @@ def offer_id_after_gap(gap: int) -> int:
     """id объявления блока, который выберет сборщик, когда между словом
     initialState и «{» первого блока gap знаков (у второго блока — 2)."""
     first = "initialState" + " " * gap + '{"results":{"offers":[{"id":7}]}}'
-    state = cc.extract_initial_state(first + "," + GOOD_STATE)
+    state = serp.extract_initial_state(first + "," + GOOD_STATE)
     return state["results"]["offers"][0]["id"]
 
 
@@ -416,7 +411,7 @@ def test_21_3_brace_41_skipped():
 )
 def test_21_3_nothing_found_gives_none(html):
     """21.3 Годного initialState нет — None. Модуль 21."""
-    assert cc.extract_initial_state(html) is None
+    assert serp.extract_initial_state(html) is None
 
 
 def test_21_4_braces_and_escapes_inside_strings():
@@ -424,54 +419,54 @@ def test_21_4_braces_and_escapes_inside_strings():
     объект кончается на своей закрывающей скобке (_balanced_object через
     extract_initial_state). Модуль 21."""
     html = 'initialState={"results":{"offers":[{"t":"}{\\""}]}}хвост}'
-    assert cc.extract_initial_state(html) == {"results": {"offers": [{"t": '}{"'}]}}
+    assert serp.extract_initial_state(html) == {"results": {"offers": [{"t": '}{"'}]}}
 
 
 def test_21_4_unclosed_object():
     """21.4 Незакрытый объект — блока нет, None. Модуль 21."""
-    assert cc.extract_initial_state('initialState={"results":{"offers":[]}') is None
+    assert serp.extract_initial_state('initialState={"results":{"offers":[]}') is None
 
 
 def test_21_5_captcha_without_state_is_block():
     """21.5 Капча без initialState → BLOCK captcha. Модуль 21."""
     body = "<html>Подтвердите, что вы не робот</html>"
-    assert cc.classify_serp(200, body) == (cc.BLOCK, "captcha", None, [])
+    assert serp.classify_serp(200, body) == (serp.BLOCK, "captcha", None, [])
 
 
 def test_21_5_captcha_marker_ends_at_limit():
     """21.5 Маркер капчи кончается ровно на 200 000-м знаке — ещё BLOCK
     (_has_captcha смотрит первые 200 000 знаков). Модуль 21."""
     body = "x" * (200_000 - len("recaptcha")) + "recaptcha"
-    assert cc.classify_serp(200, body)[:2] == (cc.BLOCK, "captcha")
+    assert serp.classify_serp(200, body)[:2] == (serp.BLOCK, "captcha")
 
 
 def test_21_5_captcha_marker_beyond_limit():
     """21.5 Маркер капчи выходит за 200 000 знаков → API_CHANGED
     no_initial_state. Модуль 21."""
     body = "x" * (200_001 - len("recaptcha")) + "recaptcha"
-    assert cc.classify_serp(200, body)[:2] == (cc.API_CHANGED, "no_initial_state")
+    assert serp.classify_serp(200, body)[:2] == (serp.API_CHANGED, "no_initial_state")
 
 
 def test_21_5_captcha_word_with_offers_is_ok():
     """21.5 Слово капчи рядом с объявлениями — OK: капча проверяется только
     без initialState. Модуль 21."""
     body = serp_html([offer(1)], 1) + "<div>recaptcha</div>"
-    assert cc.classify_serp(200, body)[0] == cc.OK
+    assert serp.classify_serp(200, body)[0] == serp.OK
 
 
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
-        (403, (cc.BLOCK, "http_403")),
-        (429, (cc.BLOCK, "http_429")),
-        (404, (cc.API_CHANGED, "http_404")),
-        (410, (cc.API_CHANGED, "http_410")),
-        (499, (cc.API_CHANGED, "http_499")),
-        (500, (cc.NET_ERROR, "http_500")),
-        (553, (cc.NET_ERROR, "http_553")),
-        (204, (cc.API_CHANGED, "http_204")),
-        (400, (cc.API_CHANGED, "http_400")),
-        (200, (cc.API_CHANGED, "no_initial_state")),
+        (403, (serp.BLOCK, "http_403")),
+        (429, (serp.BLOCK, "http_429")),
+        (404, (serp.API_CHANGED, "http_404")),
+        (410, (serp.API_CHANGED, "http_410")),
+        (499, (serp.API_CHANGED, "http_499")),
+        (500, (serp.NET_ERROR, "http_500")),
+        (553, (serp.NET_ERROR, "http_553")),
+        (204, (serp.API_CHANGED, "http_204")),
+        (400, (serp.API_CHANGED, "http_400")),
+        (200, (serp.API_CHANGED, "no_initial_state")),
     ],
 )
 def test_21_6_classify_http(code, expected):
@@ -479,7 +474,7 @@ def test_21_6_classify_http(code, expected):
     404/410 → API_CHANGED, ≥500 → NET_ERROR, прочий не-200 → API_CHANGED
     http_N; 200 идёт дальше в разбор тела (пустое тело — no_initial_state).
     Модуль 21."""
-    assert cc.classify_serp(code, "") == (*expected, None, [])
+    assert serp.classify_serp(code, "") == (*expected, None, [])
 
 
 CAT = "https://www.cian.ru/cat.php?deal_type=sale"
@@ -488,17 +483,17 @@ CAT = "https://www.cian.ru/cat.php?deal_type=sale"
 @pytest.mark.parametrize(
     ("code", "page_no", "location", "waf", "expected"),
     [
-        (302, 1, "/cian-captcha/?x=1", None, (cc.BLOCK, "captcha_redirect")),
-        (302, 5, "", "challenge", (cc.BLOCK, "captcha_redirect")),
-        (301, 5, CAT, None, (cc.PAGE_END, "redirect_to_p1_301")),
-        (301, 5, CAT + "&p=1", None, (cc.PAGE_END, "redirect_to_p1_301")),
-        (302, 2, CAT + "&p=1", None, (cc.PAGE_END, "redirect_to_p1_302")),
-        (301, 5, CAT + "&p=3", None, (cc.BLOCK, "redirect_301")),
-        (301, 5, "https://www.cian.ru/other/", None, (cc.BLOCK, "redirect_301")),
-        (301, 5, None, None, (cc.BLOCK, "redirect_301")),
-        (301, 1, CAT + "&p=1", None, (cc.BLOCK, "redirect_301")),
-        (300, 5, "https://www.cian.ru/other/", None, (cc.BLOCK, "redirect_300")),
-        (399, 5, "https://www.cian.ru/other/", None, (cc.BLOCK, "redirect_399")),
+        (302, 1, "/cian-captcha/?x=1", None, (serp.BLOCK, "captcha_redirect")),
+        (302, 5, "", "challenge", (serp.BLOCK, "captcha_redirect")),
+        (301, 5, CAT, None, (serp.PAGE_END, "redirect_to_p1_301")),
+        (301, 5, CAT + "&p=1", None, (serp.PAGE_END, "redirect_to_p1_301")),
+        (302, 2, CAT + "&p=1", None, (serp.PAGE_END, "redirect_to_p1_302")),
+        (301, 5, CAT + "&p=3", None, (serp.BLOCK, "redirect_301")),
+        (301, 5, "https://www.cian.ru/other/", None, (serp.BLOCK, "redirect_301")),
+        (301, 5, None, None, (serp.BLOCK, "redirect_301")),
+        (301, 1, CAT + "&p=1", None, (serp.BLOCK, "redirect_301")),
+        (300, 5, "https://www.cian.ru/other/", None, (serp.BLOCK, "redirect_300")),
+        (399, 5, "https://www.cian.ru/other/", None, (serp.BLOCK, "redirect_399")),
     ],
     ids=[
         "капча",
@@ -518,24 +513,24 @@ def test_21_7_classify_redirect(code, page_no, location, waf, expected):
     """21.7 Редирект (classify_serp, _classify_redirect): отвод на капчу →
     BLOCK; p>1 на cat.php без p или с p=1 → PAGE_END redirect_to_p1_N;
     прочее → BLOCK redirect_N; total и объявлений нет. Модуль 21."""
-    result = cc.classify_serp(code, "", page=page_no, location=location, waf=waf)
+    result = serp.classify_serp(code, "", page=page_no, location=location, waf=waf)
     assert result == (*expected, None, [])
 
 
 def test_21_8_network_failure():
     """21.8 Сетевой сбой → NET_ERROR с текстом сбоя. Модуль 21."""
-    result = cc.classify_serp(0, "", neterr="urlerror:timed out")
-    assert result == (cc.NET_ERROR, "urlerror:timed out", None, [])
+    result = serp.classify_serp(0, "", neterr="urlerror:timed out")
+    assert result == (serp.NET_ERROR, "urlerror:timed out", None, [])
 
 
 @pytest.mark.parametrize(
     ("state", "page_no", "expected"),
     [
-        ({"totalOffers": 60, "offers": []}, 1, (cc.API_CHANGED, "empty_offers", 60)),
-        ({"totalOffers": 1, "offers": []}, 1, (cc.API_CHANGED, "empty_offers", 1)),
-        ({"totalOffers": 60, "offers": []}, 2, (cc.PAGE_END, "empty_page", 60)),
-        ({"totalOffers": 0, "offers": []}, 1, (cc.OK, "-", 0)),
-        ({"offers": []}, 1, (cc.OK, "-", None)),
+        ({"totalOffers": 60, "offers": []}, 1, (serp.API_CHANGED, "empty_offers", 60)),
+        ({"totalOffers": 1, "offers": []}, 1, (serp.API_CHANGED, "empty_offers", 1)),
+        ({"totalOffers": 60, "offers": []}, 2, (serp.PAGE_END, "empty_page", 60)),
+        ({"totalOffers": 0, "offers": []}, 1, (serp.OK, "-", 0)),
+        ({"offers": []}, 1, (serp.OK, "-", None)),
     ],
     ids=["total>0 на p1", "total 1 на p1", "total>0 на p2", "total 0", "нет total"],
 )
@@ -543,7 +538,7 @@ def test_21_9_empty_result(state, page_no, expected):
     """21.9 Пустая выдача: total>0 на p1 → API_CHANGED empty_offers, на p>1
     → PAGE_END empty_page; total 0 или нет total → OK. Модуль 21."""
     html = "<script>initialState=" + json.dumps({"results": state}) + "</script>"
-    verdict, detail, total, offers = cc.classify_serp(200, html, page=page_no)
+    verdict, detail, total, offers = serp.classify_serp(200, html, page=page_no)
     assert (verdict, detail, total, offers) == (*expected, [])
 
 
@@ -596,28 +591,28 @@ def broken(**changes) -> dict:
 def test_21_10_missing_fields(offers, lost):
     """21.10 missing_fields: поле потеряно, только если его нет (или оно
     непригодно) во всех первых 5 объявлениях. Модуль 21."""
-    assert cc.missing_fields(offers) == lost
+    assert serp.missing_fields(offers) == lost
 
 
 def test_21_10_fifth_offer_still_checked():
     """21.10 Годное объявление пятым — поля не потеряны (выборка — первые 5).
     Модуль 21."""
-    assert cc.missing_fields([{}] * 4 + [offer(1)]) == []
+    assert serp.missing_fields([{}] * 4 + [offer(1)]) == []
 
 
 def test_21_10_sixth_offer_not_checked():
     """21.10 Годное объявление шестым не спасает: все поля потеряны.
     Модуль 21."""
     lost = ["id", "bargainTerms.price", "geo.coordinates", "land.area"]
-    assert cc.missing_fields([{}] * 5 + [offer(1)]) == lost
+    assert serp.missing_fields([{}] * 5 + [offer(1)]) == lost
 
 
 def test_21_10_fields_missing_verdict():
     """21.10 Потерянное поле на странице → API_CHANGED fields_missing:<поля>.
     Модуль 21."""
     html = serp_html([broken(bargainTerms__price=None)], 1)
-    verdict, detail, _, _ = cc.classify_serp(200, html)
-    assert (verdict, detail) == (cc.API_CHANGED, "fields_missing:bargainTerms.price")
+    verdict, detail, _, _ = serp.classify_serp(200, html)
+    assert (verdict, detail) == (serp.API_CHANGED, "fields_missing:bargainTerms.price")
 
 
 @pytest.mark.parametrize(
@@ -633,7 +628,7 @@ def test_21_10_fields_missing_verdict():
 def test_21_10_get_path(obj, path, expected):
     """21.10 get_path: значение по пути через точку; нет ключа или не
     словарь на пути — None. Модуль 21."""
-    assert cc.get_path(obj, path) == expected
+    assert serp.get_path(obj, path) == expected
 
 
 def test_21_11_offer_ids():
@@ -647,44 +642,44 @@ def test_21_11_offer_ids():
         "s",
         {"id": "9"},
     ]
-    assert cc.offer_ids(offers) == [5, 7, 8, 9]
+    assert serp.offer_ids(offers) == [5, 7, 8, 9]
 
 
 @pytest.mark.parametrize("total", [None, 0, -5])
 def test_21_12_pages_for_no_total(total):
     """21.12 pages_for: нет totalOffers, 0 или отрицательное → 1 страница.
     Модуль 21."""
-    assert cc.pages_for(total) == 1
+    assert serp.pages_for(total) == 1
 
 
 def test_21_12_pages_for_27():
     """21.12 pages_for(27) → 1: неполная страница. Модуль 21."""
-    assert cc.pages_for(27) == 1
+    assert serp.pages_for(27) == 1
 
 
 def test_21_12_pages_for_28():
     """21.12 pages_for(28) → 1: ровно одна полная страница. Модуль 21."""
-    assert cc.pages_for(28) == 1
+    assert serp.pages_for(28) == 1
 
 
 def test_21_12_pages_for_29():
     """21.12 pages_for(29) → 2. Модуль 21."""
-    assert cc.pages_for(29) == 2
+    assert serp.pages_for(29) == 2
 
 
 def test_21_12_pages_for_below_cap():
     """21.12 pages_for(1484) → 53: ниже потолка 54 страниц. Модуль 21."""
-    assert cc.pages_for(1484) == 53
+    assert serp.pages_for(1484) == 53
 
 
 def test_21_12_pages_for_at_cap():
     """21.12 pages_for(1512) → 54: ровно потолок MAX_PAGES. Модуль 21."""
-    assert cc.pages_for(1512) == 54
+    assert serp.pages_for(1512) == 54
 
 
 def test_21_12_pages_for_above_cap():
     """21.12 pages_for(10⁶) → 54: больше потолка не бывает. Модуль 21."""
-    assert cc.pages_for(10**6) == 54
+    assert serp.pages_for(10**6) == 54
 
 
 SERVICEPIPE_STAMPS = ["013140", "091718"]
@@ -713,14 +708,14 @@ def test_21_13_servicepipe_page_is_block(stamp):
     servicepipe (З155; решение Андрея 10.11: деталь — servicepipe).
     Модуль 21."""
     html = servicepipe_body(stamp).decode("utf-8")
-    assert cc.classify_serp(200, html) == (cc.BLOCK, "servicepipe", None, [])
+    assert serp.classify_serp(200, html) == (serp.BLOCK, "servicepipe", None, [])
 
 
 def test_21_13_servicepipe_marker_is_block():
     """21.13 Синтетическая страница без initialState с признаком
     «servicepipe.tech» → BLOCK servicepipe (З155). Модуль 21."""
     body = '<html><script src="https://servicepipe.tech/loaders/x.js"></script></html>'
-    assert cc.classify_serp(200, body) == (cc.BLOCK, "servicepipe", None, [])
+    assert serp.classify_serp(200, body) == (serp.BLOCK, "servicepipe", None, [])
 
 
 def test_21_13_page_without_marker_is_api_changed():
@@ -729,8 +724,8 @@ def test_21_13_page_without_marker_is_api_changed():
     Модуль 21."""
     html = servicepipe_body("013140").decode("utf-8")
     plain = html.replace(SERVICEPIPE_MARKER, "loader.example.org")
-    assert cc.classify_serp(200, plain) == (
-        cc.API_CHANGED,
+    assert serp.classify_serp(200, plain) == (
+        serp.API_CHANGED,
         "no_initial_state",
         None,
         [],
@@ -743,8 +738,8 @@ def test_21_13_real_serp_without_state_not_servicepipe():
     BLOCK (З155). Модуль 21."""
     html = full_page("2026-10-08_0032", "T0803_p1.html.xz")
     spoiled = html.replace("initialState", "initialStore")
-    assert cc.classify_serp(200, spoiled) == (
-        cc.API_CHANGED,
+    assert serp.classify_serp(200, spoiled) == (
+        serp.API_CHANGED,
         "no_initial_state",
         None,
         [],
@@ -760,7 +755,7 @@ def test_21_13_servicepipe_checked_before_captcha():
         "<html>Check your browser"
         '<script src="https://servicepipe.tech/loaders/x.js"></script></html>'
     )
-    assert cc.classify_serp(200, body) == (cc.BLOCK, "servicepipe", None, [])
+    assert serp.classify_serp(200, body) == (serp.BLOCK, "servicepipe", None, [])
 
 
 def test_21_13_servicepipe_word_with_offers_is_ok():
@@ -769,7 +764,7 @@ def test_21_13_servicepipe_word_with_offers_is_ok():
     (З155). Модуль 21."""
     script = '<script src="https://servicepipe.tech/loaders/x.js"></script>'
     body = serp_html([offer(1)], 1) + script
-    assert cc.classify_serp(200, body)[0] == cc.OK
+    assert serp.classify_serp(200, body)[0] == serp.OK
 
 
 def test_21_13_servicepipe_marker_beyond_200000_is_block():
@@ -777,7 +772,7 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
     initialState → BLOCK servicepipe: признак ищется во всём HTML, а не в
     первых 200 000 знаках, как маркер капчи (З155). Модуль 21."""
     body = "x" * 200_001 + SERVICEPIPE_MARKER
-    assert cc.classify_serp(200, body) == (cc.BLOCK, "servicepipe", None, [])
+    assert serp.classify_serp(200, body) == (serp.BLOCK, "servicepipe", None, [])
 
 
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
@@ -796,7 +791,7 @@ def test_21_14_load_sectors_fields(tmp_path):
     }
     write_features(path, [cell, bare])
     ring = [tuple(p) for p in rect_ring(A)]
-    assert cc.load_sectors(str(path)) == [
+    assert geometry.load_sectors(str(path)) == [
         {
             "sector": A,
             "name": f"Сбор {A}",
@@ -827,7 +822,7 @@ def test_21_14_load_sectors_skips_collect_false(tmp_path):
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
     write_features(path, [tile(A, collect=False), tile(B)])
-    assert [s["sector"] for s in cc.load_sectors(str(path))] == [B]
+    assert [s["sector"] for s in geometry.load_sectors(str(path))] == [B]
 
 
 def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
@@ -837,7 +832,7 @@ def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
     feature["geometry"]["type"] = "MultiPolygon"
     write_features(path, [feature])
     with pytest.raises(ValueError, match=f"сектор {A}: MultiPolygon, нужен Polygon"):
-        cc.load_sectors(str(path))
+        geometry.load_sectors(str(path))
 
 
 def test_21_15_jitter_ring_values():
@@ -849,7 +844,7 @@ def test_21_15_jitter_ring_values():
         (-37.1234567, -55.7654321),
         (37.1234567, 55.7654321),
     ]
-    assert cc.jitter_ring(ring, random.Random(1)) == [
+    assert geometry.jitter_ring(ring, random.Random(1)) == [
         (37.1234514, 55.7654358),
         (-37.1234587, -55.7654382),
         (37.1234514, 55.7654358),
@@ -859,7 +854,7 @@ def test_21_15_jitter_ring_values():
 def test_21_15_jitter_open_ring_stays_open():
     """21.15 Незамкнутое кольцо джиттер не замыкает. Модуль 21."""
     ring = [(37.1, 55.1), (37.2, 55.2)]
-    assert cc.jitter_ring(ring, random.Random(1)) == [
+    assert geometry.jitter_ring(ring, random.Random(1)) == [
         (37.1000014, 55.1000058),
         (37.2000087, 55.2000082),
     ]
@@ -877,13 +872,13 @@ URL_P1 = (
 def test_21_16_serp_url_page_1():
     """21.16 build_serp_url страницы 1: GET cat.php, параметры по алфавиту,
     7 знаков координат, без p. Модуль 21."""
-    assert cc.build_serp_url(RING3) == URL_P1
+    assert serp.build_serp_url(RING3) == URL_P1
 
 
 def test_21_16_serp_url_page_3():
     """21.16 build_serp_url страницы 3: p=3 перед polygon_name. Модуль 21."""
     expected = URL_P1.replace("&polygon_name", "&p=3&polygon_name")
-    assert cc.build_serp_url(RING3, 3) == expected
+    assert serp.build_serp_url(RING3, 3) == expected
 
 
 @pytest.mark.parametrize(
@@ -893,8 +888,6 @@ def test_21_17_median(values, expected):
     """21.17 geometry._median: пусто → None, иначе элемент len//2
     отсортированного (у чётного числа — верхний из двух средних).
     Внутреннее. Модуль 21."""
-    from collector import geometry
-
     assert geometry._median(values) == expected
 
 
@@ -919,7 +912,7 @@ def grid_cell(key: str, level=0, clipped=False, ring_key=None) -> dict:
 
 
 def rounded_grid(cells: list[dict]) -> dict:
-    return {k: round(v, 9) for k, v in cc.infer_tile_grid(cells).items()}
+    return {k: round(v, 9) for k, v in geometry.infer_tile_grid(cells).items()}
 
 
 def test_21_17_infer_tile_grid_roundtrip():
@@ -944,7 +937,7 @@ def test_21_17_off_grid_whole_cell_changes_grid():
     решётки — значит, в тестах пропуска ниже она бы заметила подсчёт.
     Модуль 21."""
     cells = [grid_cell(A), grid_cell(B), off_grid(grid_cell("T0303"))]
-    assert round(cc.infer_tile_grid(cells)["sx"], 9) == 0.15
+    assert round(geometry.infer_tile_grid(cells)["sx"], 9) == 0.15
 
 
 @pytest.mark.parametrize(
@@ -984,7 +977,7 @@ def test_21_17_infer_tile_grid_negative_pad_is_zero():
             (x0 + 0.01, y1 - 0.01),
         ]
         cells.append({"sector": key, "level": 0, "clipped": False, "ring": shrunk})
-    found = cc.infer_tile_grid(cells)
+    found = geometry.infer_tile_grid(cells)
     assert (found["padx"], found["pady"]) == (0.0, 0.0)
 
 
@@ -992,14 +985,14 @@ def test_21_17_infer_tile_grid_too_few_cells():
     """21.17 Меньше двух целых клеток уровня 0 — ValueError. Модуль 21."""
     cells = [grid_cell(A), grid_cell("T0508a"), grid_cell(B, clipped=True)]
     with pytest.raises(ValueError, match="меньше двух целых клеток уровня 0"):
-        cc.infer_tile_grid(cells)
+        geometry.infer_tile_grid(cells)
 
 
 def test_21_17_infer_tile_grid_one_row():
     """21.17 Все целые клетки в одном ряду — ValueError. Модуль 21."""
     cells = [grid_cell(A), grid_cell("T0508")]
     with pytest.raises(ValueError, match="все целые клетки в одном ряду/колонке"):
-        cc.infer_tile_grid(cells)
+        geometry.infer_tile_grid(cells)
 
 
 def rounded(values) -> tuple:
@@ -1009,7 +1002,7 @@ def rounded(values) -> tuple:
 def test_21_18_base_square_level_0():
     """21.18 tile_base_square клетки уровня 0: квадрат решётки, ряды идут на
     юг. Модуль 21."""
-    assert rounded(cc.tile_base_square(A, GRID)) == (38.12, 55.46, 38.28, 55.55)
+    assert rounded(geometry.tile_base_square(A, GRID)) == (38.12, 55.46, 38.28, 55.55)
 
 
 @pytest.mark.parametrize(
@@ -1025,13 +1018,13 @@ def test_21_18_base_square_level_0():
 def test_21_18_base_square_children(key, expected):
     """21.18 tile_base_square детей: a=ЮЗ, b=ЮВ, c=СЗ, d=СВ, глубже — по
     буквам суффикса. Модуль 21."""
-    assert rounded(cc.tile_base_square(key, GRID)) == expected
+    assert rounded(geometry.tile_base_square(key, GRID)) == expected
 
 
 def test_21_18_base_square_bad_key():
     """21.18 Не ключ клетки — ValueError с ключом. Модуль 21."""
     with pytest.raises(ValueError, match="не ключ клетки: 41"):
-        cc.tile_base_square("41", GRID)
+        geometry.tile_base_square("41", GRID)
 
 
 @pytest.mark.parametrize(
@@ -1040,7 +1033,7 @@ def test_21_18_base_square_bad_key():
 )
 def test_21_18_quarter_rect(quarter, expected):
     """21.18 quarter_rect: 0=ЮЗ, 1=ЮВ, 2=СЗ, 3=СВ. Модуль 21."""
-    assert cc.quarter_rect((0, 0, 4, 2), quarter) == expected
+    assert geometry.quarter_rect((0, 0, 4, 2), quarter) == expected
 
 
 SQUARE = [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]
@@ -1079,12 +1072,12 @@ def test_21_19_clip_ring_rect(ring, rect, expected):
     """21.19 clip_ring_rect: пересечение кольца с прямоугольником —
     замкнутое кольцо без повторов вершин; пусто или вырожденное — [].
     Модуль 21."""
-    assert cc.clip_ring_rect(ring, rect) == expected
+    assert geometry.clip_ring_rect(ring, rect) == expected
 
 
 def test_21_20_ring_area_too_short():
     """21.20 ring_area_km2: меньше 4 точек — 0.0. Модуль 21."""
-    assert cc.ring_area_km2([(0, 0), (1, 0), (0, 0)]) == 0.0
+    assert geometry.ring_area_km2([(0, 0), (1, 0), (0, 0)]) == 0.0
 
 
 @pytest.mark.parametrize(
@@ -1095,13 +1088,13 @@ def test_21_20_ring_area_too_short():
 def test_21_20_ring_area_square_degree(ring):
     """21.20 ring_area_km2: шнуровка × 111,32·cos(средней широты) × 111,32.
     Модуль 21."""
-    assert cc.ring_area_km2(ring) == pytest.approx(12391.670545189054)
+    assert geometry.ring_area_km2(ring) == pytest.approx(12391.670545189054)
 
 
 def test_21_20_densify_ring():
     """21.20 densify_ring: длинные рёбра делятся пополам, пока вершин < 12;
     кольцо замкнуто. Модуль 21."""
-    assert cc.densify_ring([(0, 0), (3, 0), (3, 1), (0, 1), (0, 0)]) == [
+    assert geometry.densify_ring([(0, 0), (3, 0), (3, 1), (0, 1), (0, 0)]) == [
         (0, 0),
         (0.75, 0),
         (1.5, 0),
@@ -1121,7 +1114,7 @@ def test_21_20_densify_ring():
 def test_21_20_densify_open_ring():
     """21.20 densify_ring незамкнутого кольца замыкает его. Модуль 21."""
     ring = [(0, 0), (3, 0), (3, 1), (0, 1)]
-    assert cc.densify_ring(ring, min_unique=5) == [
+    assert geometry.densify_ring(ring, min_unique=5) == [
         (0, 0),
         (1.5, 0),
         (3, 0),
@@ -1149,7 +1142,7 @@ def child_summary(child: dict) -> tuple:
 def test_21_21_make_children_whole_cell():
     """21.21 make_children целой клетки: 4 ребёнка a–d уровня +1, база —
     четверти, кольцо 12 вершин + замыкание, не обрезаны. Модуль 21."""
-    children = cc.make_children(A, rect_ring(A), 0, GRID)
+    children = geometry.make_children(A, rect_ring(A), 0, GRID)
     bases = {
         "a": (38.12, 55.46, 38.2, 55.505),
         "b": (38.2, 55.46, 38.28, 55.505),
@@ -1187,7 +1180,7 @@ def quarter_area(base: tuple) -> float:
 def test_21_21_make_children_clipped_parent():
     """21.21 Родитель — западная половина клетки: восточных детей нет,
     западные обрезаны. Модуль 21."""
-    xmin, ymin, xmax, ymax = cc.tile_base_square(A, GRID)
+    xmin, ymin, xmax, ymax = geometry.tile_base_square(A, GRID)
     west = [
         (xmin - 1, ymin - 1),
         (38.18, ymin - 1),
@@ -1195,7 +1188,7 @@ def test_21_21_make_children_clipped_parent():
         (xmin - 1, ymax + 1),
         (xmin - 1, ymin - 1),
     ]
-    children = cc.make_children(A, west, 0, GRID)
+    children = geometry.make_children(A, west, 0, GRID)
     assert [(c["sector"], c["clipped"]) for c in children] == [
         (f"{A}a", True),
         (f"{A}c", True),
@@ -1220,14 +1213,14 @@ def test_21_21_make_children_skips_tiny_quarter():
         (x0, y0 + 0.03),
         (x0, y0),
     ]
-    assert [c["sector"] for c in cc.make_children(A, ring, 0, GRID)] == [f"{A}a"]
+    assert [c["sector"] for c in geometry.make_children(A, ring, 0, GRID)] == [f"{A}a"]
 
 
 def test_21_21_make_children_given_base():
     """21.21 База передана явно — четверти берутся от неё, а не от ключа.
     Модуль 21."""
-    base = cc.tile_base_square(A, GRID)
-    children = cc.make_children("T0000", rect_ring(A), 0, GRID, base=base)
+    base = geometry.tile_base_square(A, GRID)
+    children = geometry.make_children("T0000", rect_ring(A), 0, GRID, base=base)
     assert rounded(children[0]["base"]) == (38.12, 55.46, 38.2, 55.505)
 
 
@@ -1242,8 +1235,8 @@ def test_21_22_update_tiles_file_parent_and_children(tmp_path):
     split_at, children; дети — фичами с полями клетки; сосед не тронут.
     Модуль 21."""
     path = tiles_file(tmp_path)
-    children = cc.make_children(A, rect_ring(A), 0, GRID)
-    cc.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
+    children = geometry.make_children(A, rect_ring(A), 0, GRID)
+    geometry.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
     props = [f["properties"] for f in read_json(path)["features"]]
     assert (props[0], props[1]["collect"], props[2]) == (
         {
@@ -1282,8 +1275,8 @@ def test_21_22_update_tiles_file_format(tmp_path):
     """21.22 Файл клеток пишется с отступом 1 и русскими буквами как есть,
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
-    children = cc.make_children(A, rect_ring(A), 0, GRID)
-    cc.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
+    children = geometry.make_children(A, rect_ring(A), 0, GRID)
+    geometry.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
     text = path.read_text(encoding="utf-8")
     head = '{\n "type": "FeatureCollection",\n "features": [\n  {\n   "type"'
     names = sorted(p.name for p in tmp_path.iterdir())
@@ -1303,7 +1296,7 @@ def test_21_22_update_tiles_file_key_collision(tmp_path):
     with pytest.raises(
         ValueError, match=f"ключ T0508 уже есть в {re.escape(str(path))}"
     ):
-        cc.update_tiles_file(str(path), A, children, "x")
+        geometry.update_tiles_file(str(path), A, children, "x")
     assert path.read_bytes() == before
 
 
@@ -1315,7 +1308,7 @@ def test_21_22_update_tiles_file_parent_missing(tmp_path):
     with pytest.raises(
         ValueError, match=f"родитель T0999 не найден в {re.escape(str(path))}"
     ):
-        cc.update_tiles_file(str(path), "T0999", [], "x")
+        geometry.update_tiles_file(str(path), "T0999", [], "x")
     assert (path.read_bytes(), sorted(p.name for p in tmp_path.iterdir())) == (
         before,
         ["tiles.geojson"],
@@ -1330,7 +1323,7 @@ def test_21_23_parse_cookie_header():
     остаётся, части без «=» и пустые отброшены; часть «=v» даёт куку с
     пустым именем — так сейчас (фотография, не правило). Модуль 21."""
     header = "_CIAN_GK=abc-123; _yasc=xx+yy/zz=; mdd=0; broken; a=b=c; ; =v"
-    assert cc.parse_cookie_header(header) == [
+    assert net.parse_cookie_header(header) == [
         ("_CIAN_GK", "abc-123"),
         ("_yasc", "xx+yy/zz="),
         ("mdd", "0"),
@@ -1342,7 +1335,7 @@ def test_21_23_parse_cookie_header():
 def test_21_23_seed_jar_cookie_fields():
     """21.23 seed_jar: куки на домен .cian.ru, путь /, secure. Модуль 21."""
     jar = http.cookiejar.CookieJar()
-    cc.seed_jar(jar, "a=1; b=2")
+    net.seed_jar(jar, "a=1; b=2")
     assert sorted(
         (c.name, c.value, c.domain, c.domain_initial_dot, c.path, c.secure) for c in jar
     ) == [
@@ -1355,7 +1348,7 @@ def test_21_23_seed_jar_other_domain():
     """21.23 seed_jar на домен без точки: domain_initial_dot = False.
     Модуль 21."""
     jar = http.cookiejar.CookieJar()
-    cc.seed_jar(jar, "a=1", domain="www.cian.ru")
+    net.seed_jar(jar, "a=1", domain="www.cian.ru")
     assert [(c.domain, c.domain_initial_dot) for c in jar] == [("www.cian.ru", False)]
 
 
@@ -1363,7 +1356,7 @@ def test_21_23_seed_jar_cian_only():
     """21.23 Куки билета уходят на www.cian.ru и не уходят чужому домену.
     Модуль 21."""
     jar = http.cookiejar.CookieJar()
-    cc.seed_jar(jar, "a=1")
+    net.seed_jar(jar, "a=1")
     cian = urllib.request.Request("https://www.cian.ru/cat.php")
     other = urllib.request.Request("https://example.com/")
     jar.add_cookie_header(cian)
@@ -1373,19 +1366,20 @@ def test_21_23_seed_jar_cian_only():
 
 @pytest.fixture
 def fetch_env(tmp_path, monkeypatch):
-    """Файл клеток с одной клеткой A и проигрыватель; часы подменены."""
+    """Файл клеток с одной клеткой A и проигрыватель; часы модуля сети
+    подменены (monotonic зовёт только net)."""
     tiles = tmp_path / "tiles.geojson"
     write_features(tiles, [tile(A)])
     player = CianPlayer(tiles, {})
-    monkeypatch.setattr(cc, "time", FakeTime(EPOCH))
-    return SimpleNamespace(player=player, url=cc.build_serp_url(rect_ring(A)))
+    monkeypatch.setattr(net, "time", FakeTime(EPOCH))
+    return SimpleNamespace(player=player, url=serp.build_serp_url(rect_ring(A)))
 
 
 def fetcher(fetch_env, cookie="a=b", replies=()):
     """Настоящий Fetcher сборщика с проигрывателем; replies — ответы на
     запросы страницы 1 клетки A по порядку; cookie None — без билета."""
     fetch_env.player.replies[A, 1] = list(replies)
-    return player_fetcher(cc.Fetcher, fetch_env.player)(USER_AGENT, cookie)
+    return player_fetcher(net.Fetcher, fetch_env.player)(USER_AGENT, cookie)
 
 
 BROWSER_HEADERS = {
@@ -1544,7 +1538,7 @@ def test_21_27_http_error_unexpected_decode_error_raises(fetch_env, monkeypatch)
     def broken_decode(raw: bytes, content_encoding: str | None) -> str:
         raise ValueError("неожиданная ошибка разбора тела")
 
-    monkeypatch.setattr(cc, "decode_body", broken_decode)
+    monkeypatch.setattr(net, "decode_body", broken_decode)
     session = fetcher(fetch_env, replies=[Reply(500, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
         session.get_serp(fetch_env.url)
@@ -1563,7 +1557,7 @@ def test_21_28_no_redirect(fetch_env):
 
 def test_21_28_no_redirect_request_is_none():
     """21.28 NoRedirect.redirect_request всегда None. Модуль 21."""
-    assert cc.NoRedirect().redirect_request(None, None, 301, "", {}, "x") is None
+    assert net.NoRedirect().redirect_request(None, None, 301, "", {}, "x") is None
 
 
 @pytest.mark.parametrize(
@@ -1601,7 +1595,7 @@ def test_21_31_lower_headers_dict():
     """21.31 lower_headers словаря: ключи — в нижний регистр (HTTP/2 шлёт
     'location'). Модуль 21."""
     headers = {"Location": "/x", "WAF-Verdict": "challenge"}
-    assert cc.lower_headers(headers) == {"location": "/x", "waf-verdict": "challenge"}
+    assert net.lower_headers(headers) == {"location": "/x", "waf-verdict": "challenge"}
 
 
 def test_21_31_lower_headers_http_message():
@@ -1609,7 +1603,7 @@ def test_21_31_lower_headers_http_message():
     headers = http.client.HTTPMessage()
     headers["Location"] = "/x"
     headers["WAF-Verdict"] = "challenge"
-    assert cc.lower_headers(headers) == {"location": "/x", "waf-verdict": "challenge"}
+    assert net.lower_headers(headers) == {"location": "/x", "waf-verdict": "challenge"}
 
 
 # ═══════════════════════════ Г. Сценарии прогона ═══════════════════════════
@@ -1819,13 +1813,13 @@ def use_random(monkeypatch, random_class) -> None:
 def pause_factors(env, monkeypatch, random_class) -> list[float]:
     """Множители пауз прогона CELLS + B_60 при случайности random_class."""
     factors = []
-    original = cc.Night.sleep_between
+    original = night.Night.sleep_between
 
     def spy(self, factor=1.0):
         factors.append(factor)
         original(self, factor)
 
-    monkeypatch.setattr(cc.Night, "sleep_between", spy)
+    monkeypatch.setattr(night.Night, "sleep_between", spy)
     use_random(monkeypatch, random_class)
     run_main(env, monkeypatch, CELLS, short_a() | B_60)
     return factors
@@ -1849,16 +1843,12 @@ def test_21_36_pause_factors_high(env, monkeypatch):
 def test_21_36_pause_lower_bound():
     """21.36 Нижняя граница паузы — 0,6 × средний интервал × множитель
     (pause_bounds(72, 2, 0,40); 72 с = 3600 / 50). Внутреннее. Модуль 21."""
-    from collector import night
-
     assert night.pause_bounds(72.0, 2.0, 0.40)[0] == pytest.approx(0.6 * 72 * 2)
 
 
 def test_21_36_pause_upper_bound():
     """21.36 Верхняя граница паузы — 1,4 × средний интервал × множитель
     (pause_bounds(72, 2, 0,40)). Внутреннее. Модуль 21."""
-    from collector import night
-
     assert night.pause_bounds(72.0, 2.0, 0.40)[1] == pytest.approx(1.4 * 72 * 2)
 
 
@@ -1982,10 +1972,10 @@ def test_21_38_empty_page_end(env, monkeypatch):
 def test_21_38_sector_end_logged_once(env):
     """21.38 Конец клетки пишется в night.log один раз: Night.mark_end
     дважды — одна строка sector_end. Внутреннее. Модуль 21."""
-    night = make_night(env, CELLS)
-    night.mark_end(B, "short_page")
-    night.mark_end(B, "page_end")
-    assert [r for r in log_records(Path(night.paths.folder)) if r.get("event")] == [
+    run = make_night(env, CELLS)
+    run.mark_end(B, "short_page")
+    run.mark_end(B, "page_end")
+    assert [r for r in log_records(Path(run.paths.folder)) if r.get("event")] == [
         {"event": "sector_end", "sector": B, "why": "short_page"}
     ]
 
@@ -2192,8 +2182,6 @@ def test_21_44_no_split(changes, tile_mode, threshold):
     нет totalOffers (режим сетки, порог 400, дно 3); порог 0 — режима
     сетки нет, деления нет — split_decision даёт «no». Внутреннее.
     Модуль 21."""
-    from collector import night
-
     decision = night.split_decision(tile_state(**changes), tile_mode, threshold, 3)
     assert decision == "no"
 
@@ -2208,8 +2196,6 @@ def test_21_44_threshold_zero_summary_without_tile_mode(tmp_path):
     """21.44 Порог деления 0 (Settings.split_threshold) — в итоге ночи
     (summary_report) режима сетки нет: tile_mode ложь, split_threshold
     None [E-42]. Внутреннее. Модуль 21."""
-    from collector import night
-
     tiles = {B: tile_state()}
     night.absorb_page(tiles[B], 1, 100, [100, 101, 102])
     settings = settings_of(tmp_path, split_threshold=0)
@@ -2692,7 +2678,7 @@ def ticket_state(env) -> tuple:
     файлов доходит до запроса через main, держат сценарии
     test_21_52_ticket_reaches_request и test_21_52_no_cookie_without_ticket."""
     ticket = cc.read_ticket(settings_of(env.folder), EPOCH, random.Random(1))
-    session = cc.Fetcher(ticket.ua, ticket.cookie_header)
+    session = net.Fetcher(ticket.ua, ticket.cookie_header)
     return ticket.has_ticket, ticket.age_h, ticket.ua, session.has_ticket
 
 
@@ -2775,8 +2761,6 @@ def test_21_53_duplicate_ids(env, monkeypatch):
 def test_21_53_same_page_absorbed_once():
     """21.53 Повторный учёт той же страницы (absorb_page дважды): номер
     страницы один раз, все id второго раза — дубли. Внутреннее. Модуль 21."""
-    from collector import night
-
     tile_b = tile_state()
     night.absorb_page(tile_b, 1, 100, [1, 2])
     night.absorb_page(tile_b, 1, 100, [1, 2])
@@ -2863,8 +2847,6 @@ def test_21_54_ladder(stopped, stop_class, expected):
     """21.54 Ступень лестницы (ladder): бюджет или очередь — passed, блок —
     blocked, проба — smoke_only, прочее — не засчитана. Внутреннее.
     Модуль 21."""
-    from collector import night
-
     assert night.ladder(stopped, stop_class) == expected
 
 
@@ -2873,8 +2855,6 @@ def test_21_54_nothing_complete(tmp_path):
     страница из четырёх, A без страниц): stateless и медиана — None,
     served_vs_total клетки — None, клетки без страниц в сводку не идут.
     Внутреннее. Модуль 21."""
-    from collector import night
-
     tiles = {
         A: tile_state(
             name=f"Сбор {A}",
@@ -3196,13 +3176,17 @@ def test_21_60_tiles_file_without_tiles(env, monkeypatch):
     )
 
 
-def test_21_61_run_as_script(tmp_path, monkeypatch):
-    """21.61 Запуск файлом (__main__) зовёт main(): без файла клеток —
-    выход с сообщением. Модуль 21."""
+def test_21_61_run_as_module(tmp_path, monkeypatch):
+    """21.61 Запуск модулем (runpy.run_module collector.cian_collect,
+    __main__) зовёт main(): без файла клеток — выход с сообщением (З159).
+    Модуль 21."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["cian_collect.py", "--geojson", "нет.geojson"])
+    # уже импортированный модуль run_module исполнил бы повторно с
+    # RuntimeWarning; monkeypatch вернёт его в sys.modules после теста
+    monkeypatch.delitem(sys.modules, "collector.cian_collect")
     with pytest.raises(SystemExit) as stop:
-        runpy.run_path(str(COLLECTOR_PY), run_name="__main__")
+        runpy.run_module("collector.cian_collect", run_name="__main__")
     assert stop.value.code == "не найден нет.geojson"
 
 
@@ -3216,17 +3200,19 @@ RULE_MODULES = ("night.py", "serp.py", "geometry.py", "run_folder.py")
 NO_DISK_MODULES = ("night.py", "serp.py")
 # Листья пакета: не импортируют никого из collector (2.1 документа).
 LEAF_MODULES = ("serp.py", "geometry.py", "run_folder.py")
-PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, "status.py")
+# Все модули пакета, кроме файла запуска cian_collect.py.
+PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, "net.py", "status.py")
 
-NETWORK_OR_CLOCK_IMPORTS = {"time", "socket", "urllib.request"}
+# Сеть — только в net (и её запуск — в cian_collect); часы — только по краям.
+NETWORK_IMPORTS = {"socket", "urllib.request", "urllib.error"}
+CLOCK_IMPORTS = {"time"}
 DISK_IMPORTS = {"gzip", "io", "pathlib", "shutil"}
 # Из модуля os можно только имя файла из пути; os и os.path — ступени к нему.
 ALLOWED_OS = {"os", "os.path", "os.path.basename"}
-CIAN_COLLECT = {"cian_collect", "collector.cian_collect"}
 # Модули пакета по голому имени: так их видно в «from . import serp» и
 # «from .serp import x» (imported_modules отбрасывает точки).
 PACKAGE_NAMES = {"collector", "night", "serp", "geometry", "run_folder"}
-PACKAGE_NAMES |= {"cian_collect", "status"}
+PACKAGE_NAMES |= {"cian_collect", "net", "status"}
 CLOCK_CLASSES = {"datetime", "date"}
 WALL_CLOCK_ATTRS = {"now", "today", "utcnow"}
 
@@ -3263,16 +3249,25 @@ def dotted_name(node: ast.expr) -> str | None:
     return ".".join(reversed(parts))
 
 
-def is_network_or_clock(module: str) -> bool:
-    return module in NETWORK_OR_CLOCK_IMPORTS or module.split(".")[0] == "http"
+def is_network(module: str) -> bool:
+    return module in NETWORK_IMPORTS or module.split(".")[0] == "http"
 
 
-def network_or_clock_imports(source: str) -> list[str]:
-    """Импорты time, socket, urllib.request и http*."""
+def network_imports(source: str) -> list[str]:
+    """Импорты socket, urllib.request, urllib.error и http*."""
     return [
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
-        if is_network_or_clock(module)
+        if is_network(module)
+    ]
+
+
+def network_or_clock_imports(source: str) -> list[str]:
+    """Импорты сети (network_imports) и time."""
+    return [
+        f"строка {line}: {module}"
+        for line, module in imported_modules(source)
+        if is_network(module) or module in CLOCK_IMPORTS
     ]
 
 
@@ -3391,22 +3386,32 @@ def is_os_use(node: ast.Attribute, bindings: dict[str, str]) -> bool:
     return name is not None and name.split(".")[0] == "os" and name not in ALLOWED_OS
 
 
-def disk_use(source: str) -> list[str]:
-    """Вызовы open (и .open), обращения к os.* кроме os.path.basename,
-    импорты gzip, io, pathlib, shutil и имён из os."""
-    found = [
+def disk_imports(source: str) -> list[str]:
+    """Импорты gzip, io, pathlib, shutil и имён из os."""
+    return [
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
         if is_disk_import(module)
     ]
+
+
+def disk_calls(source: str) -> list[str]:
+    """Вызовы open (и .open), обращения к os.* кроме os.path.basename.
+    Отдельно от импортов: модулю сети gzip нужен для тела ответа в памяти."""
     tree = ast.parse(source)
     os_names = module_bindings(tree, "os")
+    found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and is_open_call(node.func):
             found.append(f"строка {node.lineno}: {ast.unparse(node.func)}()")
         elif isinstance(node, ast.Attribute) and is_os_use(node, os_names):
             found.append(f"строка {node.lineno}: {ast.unparse(node)}")
     return found
+
+
+def disk_use(source: str) -> list[str]:
+    """Всё о диске: импорты (disk_imports) и вызовы (disk_calls)."""
+    return disk_imports(source) + disk_calls(source)
 
 
 def is_stdout_use(node: ast.expr, sys_names: dict[str, str]) -> bool:
@@ -3432,13 +3437,21 @@ def stdout_use(source: str) -> list[str]:
     return found
 
 
-def cian_collect_imports(source: str) -> list[str]:
-    """Импорты collector.cian_collect в любой форме."""
+def module_imports(source: str, name: str) -> list[str]:
+    """Импорты модуля пакета collector.<name> в любой форме: абсолютные,
+    относительные (from . import name, from .name import x) и по голому
+    имени."""
+    full = f"collector.{name}"
     return [
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
-        if module in CIAN_COLLECT or module.startswith("collector.cian_collect.")
+        if module in (name, full) or module.startswith(full + ".")
     ]
+
+
+# Проверки «кто импортирует cian_collect / net» — для образцов стража.
+cian_collect_imports = functools.partial(module_imports, name="cian_collect")
+net_imports = functools.partial(module_imports, name="net")
 
 
 def package_imports(source: str) -> list[str]:
@@ -3455,17 +3468,17 @@ def package_imports(source: str) -> list[str]:
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (night, serp, geometry, run_folder) не
-    импортируют time, socket, urllib.request, http: сеть и часы — только в
-    cian_collect. Модуль 21."""
+    импортируют time, socket, urllib.request, urllib.error, http: сеть — в
+    net, часы — в net и cian_collect. Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
 
 
-@pytest.mark.parametrize("name", RULE_MODULES)
+@pytest.mark.parametrize("name", (*RULE_MODULES, "net.py"))
 def test_21_78_no_wall_clock_or_random_calls(name):
-    """21.78 Модули правил не обращаются к часам стены (datetime.now,
-    .today, .utcnow) и к модулю random — ни вызовом, ни ссылкой: время и
-    случайность приходят через Edges и аргумент rnd; подсказка типа
-    random.Random можно. Модуль 21."""
+    """21.78 Модули правил и модуль сети не обращаются к часам стены
+    (datetime.now, .today, .utcnow) и к модулю random — ни вызовом, ни
+    ссылкой: время и случайность приходят через Edges и аргумент rnd;
+    подсказка типа random.Random можно. Модуль 21."""
     assert wall_clock_or_random_uses(collector_source(name)) == []
 
 
@@ -3485,11 +3498,31 @@ def test_21_78_no_stdout_in_night_and_serp(name):
     assert stdout_use(collector_source(name)) == []
 
 
+def test_21_78_net_no_disk_no_stdout():
+    """21.78 Модуль сети не зовёт open и os.*, не печатает в stdout;
+    gzip и zlib — только раскодирование тела. Модуль 21."""
+    source = collector_source("net.py")
+    assert disk_calls(source) + stdout_use(source) == []
+
+
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
 def test_21_78_cian_collect_not_imported(name):
     """21.78 cian_collect никем в пакете не импортируется (__init__, night,
-    serp, geometry, run_folder, status). Модуль 21."""
-    assert cian_collect_imports(collector_source(name)) == []
+    serp, geometry, run_folder, net, status). Модуль 21."""
+    assert module_imports(collector_source(name), "cian_collect") == []
+
+
+@pytest.mark.parametrize("name", PACKAGE_MODULES)
+def test_21_78_net_imported_only_by_cian_collect(name):
+    """21.78 Модуль сети никто в пакете, кроме cian_collect, не
+    импортирует. Модуль 21."""
+    assert module_imports(collector_source(name), "net") == []
+
+
+def test_21_78_cian_collect_no_network():
+    """21.78 cian_collect не импортирует socket, urllib.request,
+    urllib.error, http: вся сеть — в net. Модуль 21."""
+    assert network_imports(collector_source("cian_collect.py")) == []
 
 
 @pytest.mark.parametrize("name", LEAF_MODULES)
@@ -3508,6 +3541,8 @@ GUARD_SAMPLES = [
     (network_or_clock_imports, "import http.client"),
     (network_or_clock_imports, "from http import cookiejar"),
     (network_or_clock_imports, "import http"),
+    (network_imports, "import urllib.error"),
+    (network_imports, "from urllib import error"),
     (wall_clock_or_random_uses, "stamp = datetime.now()"),
     (wall_clock_or_random_uses, "stamp = datetime.datetime.now()"),
     (wall_clock_or_random_uses, "stamp = datetime.today()"),
@@ -3520,22 +3555,22 @@ GUARD_SAMPLES = [
     (wall_clock_or_random_uses, "ids = sorted(ids, key=random.random)"),
     (wall_clock_or_random_uses, "import random as r\nkey = r.choice(keys)"),
     (wall_clock_or_random_uses, "from random import choice"),
-    (disk_use, "text = open('x').read()"),
-    (disk_use, "raw = gzip.open(p).read()"),
-    (disk_use, "text = path.open().read()"),
-    (disk_use, "import gzip"),
-    (disk_use, "import io"),
-    (disk_use, "from io import BytesIO"),
-    (disk_use, "import pathlib"),
-    (disk_use, "from pathlib import Path"),
-    (disk_use, "import shutil"),
-    (disk_use, "from os import makedirs"),
-    (disk_use, "os.makedirs(folder, exist_ok=True)"),
-    (disk_use, "found = os.path.exists(p)"),
-    (disk_use, "age = os.path.getmtime(p)"),
-    (disk_use, "os.replace(tmp, p)"),
-    (disk_use, "import os as o\no.makedirs(folder, exist_ok=True)"),
-    (disk_use, "from os import path\nfound = path.exists(p)"),
+    (disk_calls, "text = open('x').read()"),
+    (disk_calls, "raw = gzip.open(p).read()"),
+    (disk_calls, "text = path.open().read()"),
+    (disk_imports, "import gzip"),
+    (disk_imports, "import io"),
+    (disk_imports, "from io import BytesIO"),
+    (disk_imports, "import pathlib"),
+    (disk_imports, "from pathlib import Path"),
+    (disk_imports, "import shutil"),
+    (disk_imports, "from os import makedirs"),
+    (disk_calls, "os.makedirs(folder, exist_ok=True)"),
+    (disk_calls, "found = os.path.exists(p)"),
+    (disk_calls, "age = os.path.getmtime(p)"),
+    (disk_calls, "os.replace(tmp, p)"),
+    (disk_calls, "import os as o\no.makedirs(folder, exist_ok=True)"),
+    (disk_calls, "from os import path\nfound = path.exists(p)"),
     (stdout_use, "print('x')"),
     (stdout_use, "echo = print"),
     (stdout_use, "sys.stdout.write('x')"),
@@ -3547,6 +3582,8 @@ GUARD_SAMPLES = [
     (cian_collect_imports, "from . import cian_collect"),
     (cian_collect_imports, "from .cian_collect import main"),
     (cian_collect_imports, "import cian_collect"),
+    (net_imports, "from collector import net"),
+    (net_imports, "from .net import Fetcher"),
     (package_imports, "from collector import night"),
     (package_imports, "import collector.serp"),
     (package_imports, "from . import geometry"),
@@ -3595,6 +3632,23 @@ import math
 from dataclasses import dataclass
 """
 
+# Образец разрешённого модулю сети: часы — только time.monotonic, сжатие —
+# в памяти (gzip.decompress, zlib), из пакета — serp.
+EDGE_CLEAN_SAMPLE = """
+import gzip
+import time
+import urllib.parse
+import zlib
+
+from collector import serp
+
+
+def body(raw: bytes) -> str:
+    t0 = time.monotonic()
+    text = gzip.decompress(raw) + zlib.decompress(raw, -zlib.MAX_WBITS)
+    return text.decode() + str(time.monotonic() - t0) + serp.SERP_HOST
+"""
+
 
 @pytest.mark.parametrize(
     ("check", "sample"),
@@ -3605,6 +3659,11 @@ from dataclasses import dataclass
         (stdout_use, CLEAN_SAMPLE),
         (cian_collect_imports, CLEAN_SAMPLE),
         (package_imports, LEAF_CLEAN_SAMPLE),
+        (network_imports, EDGE_CLEAN_SAMPLE),
+        (wall_clock_or_random_uses, EDGE_CLEAN_SAMPLE),
+        (disk_calls, EDGE_CLEAN_SAMPLE),
+        (stdout_use, EDGE_CLEAN_SAMPLE),
+        (net_imports, EDGE_CLEAN_SAMPLE),
     ],
     ids=[
         "сеть и часы",
@@ -3613,6 +3672,11 @@ from dataclasses import dataclass
         "stdout",
         "cian_collect",
         "лист",
+        "сеть: urllib.parse и time",
+        "сеть: time.monotonic",
+        "сеть: gzip в памяти",
+        "сеть: stdout",
+        "сеть: импорт serp",
     ],
 )
 def test_21_78_guard_allows_clean_sample(check, sample):
@@ -3620,5 +3684,6 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     rnd, время через переданную now и методы переданного времени
     (fromisoformat, astimezone), urllib.parse, os.path.basename, импорт
     соседних модулей, без печати в stdout; у листа — импорты стандартной
-    библиотеки. Модуль 21."""
+    библиотеки; у модуля сети — time.monotonic, gzip и zlib в памяти,
+    импорт serp. Модуль 21."""
     assert check(sample) == []
