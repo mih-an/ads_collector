@@ -1,10 +1,17 @@
-## Модуль 21. «Сборщик ЦИАН» (block/collector-tests)
+# Тест-план сборщика ЦИАН
 
-Решения Андрея 10.11 (задание block/collector-tests, DECISIONS 2026-11-10 ·
-block/collector-tests): тесты → рефакторинг → свой репозиторий для сборщика с
-тестом-контрактом формата. Проверяем боевой сборщик в репозитории,
-пакет `collector/` (запуск и края — `cian_collect.py`, правила и дирижёр ночи —
-`night.py`, затем `serp.py`, `geometry.py`, `run_folder.py`, `status.py`).
+Проверяемые случаи сборщика: одна строка — один кейс, номер кейса стоит в
+имени теста (`test_21_36_…`) и в его docstring. Документ нормативный: код
+следует тест-плану, а не наоборот (CLAUDE.md §3). Нумерация «модуль 21»
+сохранена с тех пор, как сборщик жил в репозитории land-monitor.
+
+## Модуль 21. «Сборщик ЦИАН»
+
+Решения Андрея 10.11 (в репозитории land-monitor, блок block/collector-tests):
+тесты → рефакторинг → свой репозиторий для сборщика с тестом-контрактом
+формата. Проверяем боевой сборщик, пакет `collector/` (запуск и края —
+`cian_collect.py`, вся сеть — `net.py`, правила и дирижёр ночи — `night.py`,
+затем `serp.py`, `geometry.py`, `run_folder.py`, `status.py`).
 Тесты написаны до рефакторинга без изменения кода сборщика; рефакторинг (PR #121)
 изменил код, поведение и файлы прогона остались прежними, режимы `--dry-run`,
 `--discovery`, `--status`, `--fast`, `--selftest` и файл 45 секторов убраны.
@@ -14,22 +21,25 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 «известная странность» не осталось; формат файлов прогона —
 `docs/CIAN_DATA_FORMAT.md`. Тесты — `tests/test_collector.py` (кейсы
 21.1–21.61 и 21.78; кейсы 21.62–21.66 удалены вместе с режимами),
-`tests/test_collector_nights.py` (21.67–21.73),
+`tests/test_collector_nights.py` (21.68–21.70, 21.73 и контракт формата
+21.79; 21.71–21.72 не переносятся — тесты загрузчика land-monitor),
 `tests/test_collector_status.py` (21.74–21.77), общие помощники —
 `tests/collector_support.py`. Все кейсы — pytest, сети нет; кейсы в
 плане — по одной строке, у кейса может быть несколько тестов (подслучаев) с
 тем же номером в имени и docstring. Покрытие `collector/` — 100 % с
 ветвлениями (раздел `[tool.coverage.run]` в `pyproject.toml`; исключений в
 `[tool.coverage.report]` нет, строку `if __name__ == "__main__"` покрывает тест
-21.61 — запуск через `runpy`); ruff и mypy проверяют `collector/` (исключений
-`noqa: C901` нет: `clip_ring_rect` разложена на плоские функции); `collector/` правится только в блоках по сборщику, по отдельной
-команде Андрея.
+21.61 — запуск модулем через `runpy.run_module`); ruff и mypy проверяют
+`collector/` (исключений `noqa: C901` нет: `clip_ring_rect` разложена на
+плоские функции).
 
-Подмены в тестах: сеть — `CianPlayer` (проигрыватель ответов встаёт в
-`Fetcher.opener` обработчиком, настоящая сеть закрыта автофикстурой
-`no_network`); `time.sleep` и `time.time`/`time.monotonic` сборщика — `FakeTime`
-(сон записывается, часы стоят); время МСК — `frozen_datetime` (подмена
-`cc.datetime`); случайность — `--seed`; возраст `cookies.txt` — mtime файла в
+Подмены в тестах: сеть — `CianPlayer` (подменённый `net.Fetcher`: проигрыватель
+ответов встаёт в `opener` обработчиком, настоящая сеть закрыта автофикстурой
+`no_network`); часы — один `FakeTime` в `net.time` (`monotonic` — длительность
+запроса) и `cc.time` (`time`, `sleep` — возраст кук и сон; сон записывается,
+часы стоят); время МСК — `frozen_datetime` (подмена `cc.datetime`); здесь и
+дальше `cc` — `collector.cian_collect`, `net` — `collector.net`; случайность —
+`--seed`; возраст `cookies.txt` — mtime файла в
 папке теста; `pgrep` и `chdir` в `status.py` — подставные вызовы; папка запуска,
 билет (`cookies.txt`, `ua.txt`), файл клеток, `runs/` — во временной папке
 теста. `data/runs` тесты не читают, только скрипт фикстур.
@@ -64,26 +74,29 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 - **сервер** — «расхождение с сервером»: копия в репозитории отличается от
   боевой (21.74: `pgrep` ищет `cian_collect.py`, на сервере — `cian_calib.py`).
 
-Точки опоры тестов (шапка `tests/test_collector.py`; переезд сборщика в свой
-репозиторий и этап починки их сохраняют или правят тесты вместе с кодом):
+Точки опоры тестов (шапка `tests/test_collector.py`; правятся только вместе с
+тестами). Тесты импортируют каждое имя из его модуля, переэкспорта нет:
 
 - `cc.main()` — разбор `sys.argv` и весь прогон (сценарии и ночи идут через
-  него);
-- `cc.Fetcher(user_agent, cookie_header)` с атрибутом `opener` (urllib
+  него); `main` создаёт `net.Fetcher` по имени модуля в момент вызова, поэтому
+  подмена `net.Fetcher` срабатывает;
+- `net.Fetcher(user_agent, cookie_header)` с атрибутом `opener` (urllib
   `OpenerDirector`): проигрыватель встаёт в него обработчиком;
-- модульные имена `cc.time` (`time`, `monotonic`, `sleep`) и `cc.datetime`
-  (`now`, `astimezone`, `strftime`, `isoformat`) — их подменяют часы теста;
-- `cc.read_ticket` (билет из папки запуска), `cc.now_local` (часы ночи) и
-  `cc.Night.sleep_between` (точка подмены пауз в 21.36);
-- чистые функции разбора и геометрии (`classify_serp`, `extract_initial_state`,
-  `missing_fields`, `get_path`, `offer_ids`, `pages_for`, `load_sectors`,
-  `jitter_ring`, `build_serp_url`, `infer_tile_grid`, `tile_base_square`,
-  `quarter_rect`, `clip_ring_rect`, `ring_area_km2`, `densify_ring`,
-  `make_children`, `update_tiles_file`, `parse_cookie_header`, `seed_jar`,
-  `lower_headers`, `NoRedirect`) — с теми же сигнатурами; файлы прогона — в
-  том же формате (`CIAN_DATA_FORMAT.md`). Тесты берут их как `cc.<имя>` через
-  переэкспорт `__all__` в `cian_collect.py` (при переезде — на импорт из
-  своих модулей, задел в `docs/STAGE1_HANDOFF.md`).
+  `net.decode_body` — `Fetcher` зовёт её по имени модуля (подмена в 21.27 и
+  21.29);
+- модульные имена `net.time` (`monotonic`), `cc.time` (`time`, `sleep`) и
+  `cc.datetime` (`now`, `astimezone`, `strftime`, `isoformat`) — их подменяют
+  часы теста;
+- `cc.read_ticket` (билет из папки запуска), `cc.now_local` (часы ночи),
+  `cc.USER_AGENTS` и `night.Night.sleep_between` (точка подмены пауз в 21.36);
+- чистые функции разбора (`serp.classify_serp`, `extract_initial_state`,
+  `missing_fields`, `get_path`, `offer_ids`, `pages_for`, `build_serp_url`),
+  геометрии (`geometry.load_sectors`, `jitter_ring`, `infer_tile_grid`,
+  `tile_base_square`, `quarter_rect`, `clip_ring_rect`, `ring_area_km2`,
+  `densify_ring`, `make_children`, `update_tiles_file`) и сети
+  (`net.parse_cookie_header`, `seed_jar`, `lower_headers`, `NoRedirect`) — с
+  теми же сигнатурами; файлы прогона — в том же формате
+  (`CIAN_DATA_FORMAT.md`, держит тест-контракт 21.79).
 
 «Внутренние» тесты обращаются к функциям правил (`night.split_decision`,
 `night.absorb_page`, `night.summary_report`, `night.ladder`,
@@ -124,17 +137,19 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 
 ### Часть В. Сеть
 
+Вся сеть — модуль `collector/net.py`.
+
 | Кейс | Что проверяем | Функция / правило | Пометка |
 |---|---|---|---|
-| 21.23 | Разбор заголовка кук (пары `имя=значение`, «=» внутри значения остаётся, части без «=» и пустые отброшены); кук в банке — на домен `.cian.ru`, путь `/`, secure; домен без точки — `domain_initial_dot = False`; куки уходят на `www.cian.ru`, чужому домену — нет | `parse_cookie_header`, `seed_jar` | |
-| 21.24 | Заголовки браузера: с билетом — заход «с главной» (Referer `https://www.cian.ru/`, same-origin, куки); без билета — из адресной строки (`Sec-Fetch-Site none`, без Referer и Cookie); с Referer — он и уходит; Referer страницы N — ссылка страницы N−1 той же клетки с тем же джиттером | `Fetcher.get_serp`, `Night.request` | внутр. (только `Night.request`) |
-| 21.25 | `Set-Cookie` ответа меняет куку следующего запроса | `Fetcher` (cookie jar) | |
-| 21.26 | Тело ответа: gzip/deflate по `Content-Encoding` (регистр не важен), без сжатия — как есть, битый UTF-8 — знаком замены | `decode_body` (через `Fetcher.get_serp`) | |
-| 21.27 | Ответ-ошибка (403): код, тело, размер, мс, без сбоя сети, заголовки в нижнем регистре; 500 с gzip-телом — распаковано; битый gzip (`OSError`), обрезанный gzip (`EOFError`), битый deflate (`zlib.error`) — сырые байты как текст; иная ошибка разбора тела (например, `ValueError`) летит из `get_serp`, не глотается (except сужен, З164) | `Fetcher.get_serp`, `decode_body` | |
-| 21.28 | Редирект не выполняется: один запрос, код 301 и `Location` в заголовках; `redirect_request` всегда `None` | `NoRedirect` | |
-| 21.29 | Сбои сети: `URLError` → `urlerror:<причина>`, тайм-аут (и при чтении тела) → `timeout`, прочий `OSError` → `oserror:<текст>`; код 0, тело пусто | `Fetcher.get_serp` | |
-| 21.30 | Тайм-аут запроса 45 с (`HTTP_TIMEOUT_S`); длительность — по `time.monotonic`, в мс | `Fetcher.get_serp` | |
-| 21.31 | Ключи заголовков — в нижний регистр (HTTP/2 шлёт `location`), для словаря и для `HTTPMessage` | `lower_headers` | |
+| 21.23 | Разбор заголовка кук (пары `имя=значение`, «=» внутри значения остаётся, части без «=» и пустые отброшены); кук в банке — на домен `.cian.ru`, путь `/`, secure; домен без точки — `domain_initial_dot = False`; куки уходят на `www.cian.ru`, чужому домену — нет | `net.parse_cookie_header`, `net.seed_jar` | |
+| 21.24 | Заголовки браузера: с билетом — заход «с главной» (Referer `https://www.cian.ru/`, same-origin, куки); без билета — из адресной строки (`Sec-Fetch-Site none`, без Referer и Cookie); с Referer — он и уходит; Referer страницы N — ссылка страницы N−1 той же клетки с тем же джиттером | `net.Fetcher.get_serp`, `Night.request` | внутр. (только `Night.request`) |
+| 21.25 | `Set-Cookie` ответа меняет куку следующего запроса | `net.Fetcher` (cookie jar) | |
+| 21.26 | Тело ответа: gzip/deflate по `Content-Encoding` (регистр не важен), без сжатия — как есть, битый UTF-8 — знаком замены | `net.decode_body` (через `net.Fetcher.get_serp`) | |
+| 21.27 | Ответ-ошибка (403): код, тело, размер, мс, без сбоя сети, заголовки в нижнем регистре; 500 с gzip-телом — распаковано; битый gzip (`OSError`), обрезанный gzip (`EOFError`), битый deflate (`zlib.error`) — сырые байты как текст (битое сжатие в ответе 200 — 21.29); иная ошибка разбора тела (например, `ValueError`) летит из `get_serp`, не глотается (except сужен, З164) | `net.Fetcher.get_serp`, `net.decode_body` | |
+| 21.28 | Редирект не выполняется: один запрос, код 301 и `Location` в заголовках; `redirect_request` всегда `None` | `net.NoRedirect` | |
+| 21.29 | Сбои сети: `URLError` → `urlerror:<причина>`, тайм-аут (и при чтении тела) → `timeout`, прочий `OSError` → `oserror:<текст>`; код 0, тело пусто, заголовков нет. Ответ 200 с битым сжатием (битый gzip — `BadGzipFile`, обрезанный gzip — `EOFError`, битый deflate — `zlib.error`) — тоже сбой сети: код 0, тело пусто, размер 0, деталь `decode:<текст исключения>`, заголовков нет; иная ошибка разбора тела ответа 200 (например, `ValueError`) летит из `get_serp`, не глотается (З167, решение Андрея 11.11) | `net.Fetcher.get_serp` | |
+| 21.30 | Тайм-аут запроса 45 с (`net.HTTP_TIMEOUT_S`); длительность — по `time.monotonic`, в мс | `net.Fetcher.get_serp` | |
+| 21.31 | Ключи заголовков — в нижний регистр (HTTP/2 шлёт `location`), для словаря и для `HTTPMessage` | `net.lower_headers` | |
 
 ### Часть Г. Сценарии прогона
 
@@ -154,7 +169,7 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 | 21.43 | Деление не дало ни одной непустой четверти (база далеко от кольца): `split_skip`, клетка листается | `Night.split`, E-42 | |
 | 21.44 | Не делится: у клетки нет `level`, клетка уже разрезана, нет `totalOffers`; порог деления 0 — режим сетки выключен (`split_decision` даёт «no»; в итоге ночи `tile_mode` ложь, `split_threshold` `None`); подслучай «нет сетки» (файл секторов) удалён при рефакторинге (PR #121) | `night.split_decision`, `Settings.tile_mode`, `night.summary_report`, E-42 | внутр. |
 | 21.45 | Бюджет: кончился посреди клетки — `budget_exhausted`, следующая страница не запрошена; кончился на пробе — обход не начат, обе клетки в очереди; бюджет исчерпан — паузы нет | `Night.crawl_tile`, `Night.sleep_between` | |
-| 21.46 | `NET_ERROR`: три повтора, паузы не короче 60, 150, 300 с и не длиннее 120, 240, 420 с; пауза повтора уходит в `time.sleep`; успех после повтора — клетка дочитана; четвёртый сбой подряд — `STOP net_error`; подслучай `--fast` (ни пауз повтора, ни пауз листания) удалён при рефакторинге (PR #121) | `Night.crawl_tile`, `Night._retry_pause`, `night.task_state` | |
+| 21.46 | `NET_ERROR`: три повтора, паузы не короче 60, 150, 300 с и не длиннее 120, 240, 420 с; пауза повтора уходит в `time.sleep`; успех после повтора — клетка дочитана; четвёртый сбой подряд — `STOP net_error`; битое сжатие в ответе 200 (21.29) повторяется так же: один сбой — строка `retry`, клетка дочитана, ночь идёт дальше; четыре подряд — `STOP net_error` (класс `NET_ERROR`, деталь `decode:<текст>`), `summary.json` записан; на пробе — `smoke_failed`, класс `NET_ERROR`, без повторов, один запрос (З167); подслучай `--fast` (ни пауз повтора, ни пауз листания) удалён при рефакторинге (PR #121) | `Night.crawl_tile`, `Night._retry_pause`, `night.task_state` | |
 | 21.47 | `BLOCK` посреди обхода — `STOP`, `stopped block`; файл `raw/_block_<клетка>_p<N>_<код>_<ЧЧММСС>.txt` — вердикт, ключевые заголовки (`Location` целиком), тело (первые 100 000 знаков); блок редиректом — строка `location` | `Night.crawl_tile`, `run_folder.write_block` | |
 | 21.48 | Билет сгорел: `BLOCK` 403 или капча при билете → деталь `…\|cookie_expired_or_burned`; 429 или без билета — без пометки; пометка ставится и на пробе | `night.burned_mark`, `Night.crawl_tile`, `Night.smoke` | |
 | 21.49 | `API_CHANGED` посреди обхода: ответ целиком в `raw/_broken_<клетка>_p<N>_ssr_<код>_<ЧЧММСС>.html.gz`, рядом `.note.txt` (вердикт, код, вид запроса, клетка, UA); `STOP api_changed`, в детали имя файла; пустое тело (404) — файла `_broken_` нет | `Night.crawl_tile`, `run_folder.write_broken` | |
@@ -169,7 +184,7 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 | 21.58 | Боевой запуск ждёт перед стартом `uniform(0, 40 мин)` и печатает это (для `seed` 1); без паузы старта: `--no-start-delay`, `--smoke-only`; подслучай `--dry-run` удалён при рефакторинге (PR #121) | `cian_collect.wait_start`, `main` | |
 | 21.59 | `--seed` идёт в `plan.json`; без `--seed` — `random.randrange(2**31)`, значение в `plan.json`; умолчания: `--budget` 50, `--runs-dir` `runs`, `--window-hours` 8.0, пауза старта включена, `--smoke-only` выключен; без `--geojson` — выход argparse с кодом 2 и названным флагом (З158) | `cian_collect.parse_settings`, `main` | |
 | 21.60 | Нет файла клеток — выход с сообщением, где назван путь; файл без целых клеток уровня 0 — выход «файл клеток <путь>: <причина>», а не `ValueError` трассировкой (З160) | `main` | |
-| 21.61 | Запуск файлом (`__main__`) зовёт `main()`: без файла клеток — выход с сообщением | `collector/cian_collect.py` | |
+| 21.61 | Запуск модулем (`runpy.run_module("collector.cian_collect", run_name="__main__")`) зовёт `main()`: без файла клеток — выход с сообщением (З159) | `collector/cian_collect.py` | |
 
 ### Часть Д. Режимы, убранные при рефакторинге (PR #121)
 
@@ -191,15 +206,26 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 с настоящей ночью не сравниваются) и с тем, что настоящая ночь записала про эти
 клетки.
 
+Контракт формата (21.79) — функция `run_folder_violations(run_dir)` в
+`tests/test_collector_nights.py`: пустой список, если папка прогона
+соответствует формату `docs/CIAN_DATA_FORMAT.md`, иначе нарушения с названным
+файлом или ключом. Объём — ровно перечень раздела 7
+`docs/reference/collector_architecture.md`; загрузчик land-monitor не нужен.
+Контракт проверяет папки шести проигрываний: три эталонные ночи, `--smoke-only`,
+блок и смена API (ночь 2026-10-08_0032, ответ на T0707 p4). Проба контракта
+портит копию чистой папки по одному месту — каждая порча должна дать
+нарушение.
+
 | Кейс | Что проверяем | Функция / правило | Пометка |
 |---|---|---|---|
 | 21.67 | Ночь 2026-09-18_2306 (первая ночь сетки, `--discovery`, деление T0805, кончился бюджет): папка прогона и файл клеток = эталону, события выборки = настоящей ночи | `main`, E-42 | удалён при рефакторинге (PR #121; исчерпание бюджета остаётся в 21.45) |
 | 21.68 | Ночь 2026-10-07_0013 (деление T1112 с детьми, дно деления T0713cac, короткие страницы, 301 на p=1): папка и файл клеток = эталону, события = настоящей ночи | `main`, E-42 | |
 | 21.69 | Ночь 2026-11-08_0007 (последняя успешная на Mac, страница с 7 блоками `initialState`, дно деления, 301 на p=1): папка и файл клеток = эталону, события = настоящей ночи | `main` | |
 | 21.70 | Сбой сети 2026-10-08_0032: http 500 → повтор → страница; 553, тайм-аут, 500, тайм-аут → `STOP net_error`: папка = эталону, события = настоящей ночи | `main` | |
-| 21.71 | Папку каждой из трёх эталонных ночей (21.68–21.70) читает настоящий загрузчик: страниц и объявлений столько, сколько записал сборщик; статус среза, дочитанные полигоны и ключи полигонов — как заданы для ночи | `slice_loader.load_run_path`, `CIAN_DATA_FORMAT.md` §2–§5 | |
-| 21.72 | Загрузчик отвергает прогон `--smoke-only` (папка `-smoke`), сообщение называет вид прогона; подслучай `--dry-run` (`-dry`) удалён при рефакторинге (PR #121); прогон, оборванный блоком (`_block_*.txt`) или сменой API (`_broken_*.html.gz` + `.note.txt`), читает: служебные файлы пропускает, страницы до обрыва — в срезе | `slice_loader.load_run_path`, `CIAN_DATA_FORMAT.md` §5 п. 4 | |
+| 21.71 | Папку каждой из трёх эталонных ночей (21.68–21.70) читает настоящий загрузчик: страниц и объявлений столько, сколько записал сборщик; статус среза, дочитанные полигоны и ключи полигонов — как заданы для ночи | загрузчик в репозитории land-monitor, `CIAN_DATA_FORMAT.md` §2–§5 | не переносится: тест загрузчика land-monitor |
+| 21.72 | Загрузчик отвергает прогон `--smoke-only` (папка `-smoke`), сообщение называет вид прогона; подслучай `--dry-run` (`-dry`) удалён при рефакторинге (PR #121); прогон, оборванный блоком (`_block_*.txt`) или сменой API (`_broken_*.html.gz` + `.note.txt`), читает: служебные файлы пропускает, страницы до обрыва — в срезе | загрузчик в репозитории land-monitor, `CIAN_DATA_FORMAT.md` §5 п. 4 | не переносится: тест загрузчика land-monitor |
 | 21.73 | Все фикстуры сборщика (`tests/fixtures/collector`) — не больше 3 000 000 байт (решение Андрея 10.11) | размер файлов | |
+| 21.79 | Папка прогона проигрывания соответствует контракту формата: состав и маски имён; ключи `summary.json` и `plan.json` — набор, порядок, типы; грамматика `night.log`; инварианты (снимок = `sectors`, unique + dup = объявлениям, `done` + проба = `spent`, `OK` ↔ файл страницы, дети деления, `dry_run` false, mtime снимка 0, нет `.tmp`); `stopped` — тот, ради которого взято проигрывание. Проба контракта: каждая порча копии чистой папки даёт нарушение с названным файлом или ключом (иначе контракт мог бы быть зелёным впустую); нетронутая папка — нарушений нет | `run_folder_violations` (`tests/test_collector_nights.py`), `CIAN_DATA_FORMAT.md`, `collector_architecture.md` раздел 7 | |
 
 ### Часть Ж. status.py
 
@@ -217,7 +243,7 @@ block/collector-tests): тесты → рефакторинг → свой ре�
 
 | Кейс | Что проверяем | Функция / правило | Пометка |
 |---|---|---|---|
-| 21.78 | Страж краёв: `night.py`, `serp.py`, `geometry.py`, `run_folder.py` не импортируют `time`, `socket`, `urllib.request`, `http` (сеть и часы — только в `cian_collect`); не обращаются к `datetime.now`, `.today`, `.utcnow` и функциям модуля `random` (допустим тип `random.Random` и вызовы методов переданного `rnd`; время и случайность приходят через `Edges`); `night.py` и `serp.py` не зовут `open`, не обращаются к `os.*` (кроме `os.path.basename`), не импортируют `gzip`, `io`, `pathlib`, `shutil` и не печатают в stdout (`print`, `sys.stdout`); `cian_collect` никем в пакете не импортируется (`__init__`, `night`, `serp`, `geometry`, `run_folder`, `status`); `serp`, `geometry`, `run_folder` не импортируют никого из пакета `collector`. Проба стража на образцах: каждое нарушение (в том числе через псевдоним `import os as o`, `from os import path`, `from sys import stdout`) находится, образец разрешённого (тип `random.Random`, переданные `now` и `rnd`, `urllib.parse`, `os.path.basename`, импорт соседних модулей) — нет | `tests/test_collector.py`: `test_21_78_*` по `ast` исходников `collector/` | |
+| 21.78 | Страж краёв: `night.py`, `serp.py`, `geometry.py`, `run_folder.py` не импортируют `time`, `socket`, `urllib.request`, `urllib.error`, `http` (сеть — только в `net`, часы — в `net` и `cian_collect`); модули правил и `net.py` не обращаются к `datetime.now`, `.today`, `.utcnow` и функциям модуля `random` (допустим тип `random.Random` и вызовы методов переданного `rnd`; время и случайность приходят через `Edges`; модуль сети из часов берёт только `time.monotonic`); `night.py` и `serp.py` не зовут `open`, не обращаются к `os.*` (кроме `os.path.basename`), не импортируют `gzip`, `io`, `pathlib`, `shutil` и не печатают в stdout (`print`, `sys.stdout`); `net.py` не зовёт `open` (встроенный, `gzip.open`, `Path.open`; HTTP-запрос `<…>.opener.open` — не диск) и `os.*`, не импортирует `io`, `pathlib`, `shutil` и имён из `os`, не печатает в stdout — `gzip` и `zlib` только для раскодирования тела в памяти; `cian_collect` никем в пакете не импортируется (`__init__`, `night`, `serp`, `geometry`, `run_folder`, `net`, `status`); `net` никто в пакете, кроме `cian_collect`, не импортирует; `cian_collect` не импортирует `socket`, `urllib.request`, `urllib.error`, `http` — вся сеть в `net`; `serp`, `geometry`, `run_folder` не импортируют никого из пакета `collector`. Проба стража на образцах: каждое нарушение (в том числе через псевдоним `import os as o`, `from os import path`, `from sys import stdout`, импорт `net` в любой форме) находится, образец разрешённого (тип `random.Random`, переданные `now` и `rnd`, `urllib.parse`, `os.path.basename`, импорт соседних модулей; у модуля сети — `time.monotonic`, `self.opener.open`, `gzip` и `zlib` в памяти, импорт `serp`) — нет | `tests/test_collector.py`: `test_21_78_*` по `ast` исходников `collector/` | |
 
 ---
 
