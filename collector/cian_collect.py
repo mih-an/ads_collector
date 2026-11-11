@@ -171,7 +171,7 @@ def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         if path is None:
             continue
         if not os.path.isfile(path):
-            ap.error(f"{flag}: нет файла {path}")
+            ap.error(f"{flag}: нет файла (или это папка) {path}")
         # явно названный пустой файл — ошибка запуска; без флагов пустой
         # cookies.txt и ua.txt — по-прежнему без билета (21.52, 21.82)
         if not _file_text(path):

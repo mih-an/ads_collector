@@ -33,7 +33,8 @@ land-monitor): тот же
 
 Числа правил ночи (порог деления, дно, паузы, повторы, пул пробы) —
 умолчания `Settings` (`collector/crawl.py`, решение Андрея 10.11); тайм-аут
-сети (`HTTP_TIMEOUT_S`) — в `transport.py`; умолчания аргументов запуска
+сети (`HTTP_TIMEOUT_S`) и домен кук билета (`COOKIE_DOMAIN`) — в
+`transport.py`; умолчания аргументов запуска
 (`RUNS_DIR`, `BUDGET`, `WINDOW_HOURS`, `TRANSPORT`, `COOKIES_FILE`,
 `UA_FILE`) — в `cian_collect.py`; потолок страниц (`MAX_PAGES`) и размер
 страницы выдачи (`OFFERS_PER_PAGE`) — в `search_page.py`.

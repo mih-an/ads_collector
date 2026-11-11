@@ -82,8 +82,10 @@ class UrllibTransport:
         """→ HttpReply; сбой сети — NetworkFailure. Слова детали — как в
         night.log прежних ночей: тайм-аут соединения urllib заворачивает в
         URLError — urlerror:timed out (DECISIONS, block/transport).
-        Оговорка к «заголовки ровно как переданы»: urllib в do_open
-        подменяет любой Connection на close — свойство библиотеки (21.80)."""
+        Две оговорки к «заголовки ровно как переданы» — свойства библиотеки
+        (21.80): urllib в do_open подменяет любой Connection на close; без
+        Accept-Encoding в наборе http.client сам шлёт Accept-Encoding: identity.
+        В боевом пути PageFetcher всегда передаёт Accept-Encoding."""
         request = urllib.request.Request(url, headers=headers)
         try:
             with self._open(request) as response:
@@ -93,8 +95,12 @@ class UrllibTransport:
             raise NetworkFailure(f"urlerror:{error.reason}") from error
         except TimeoutError as error:
             raise NetworkFailure("timeout") from error
-        # обрыв протокола (BadStatusLine, IncompleteRead) — не OSError, но
-        # такой же сбой сети с повторами (21.29)
+        # базовый HTTPException взят намеренно: обрыв протокола от сервера
+        # (BadStatusLine, IncompleteRead, LineTooLong…) — не OSError, но такой
+        # же сбой сети с повторами (21.29). Ошибки программы того же класса
+        # (InvalidURL и т. п.) тоже станут сбоем сети — как у httpx
+        # LocalProtocolError
+
         except (OSError, http.client.HTTPException) as error:
             raise NetworkFailure(f"oserror:{error}") from error
 
