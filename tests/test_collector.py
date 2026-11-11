@@ -3497,18 +3497,42 @@ def disk_imports(source: str, allowed: frozenset[str] = frozenset()) -> list[str
 net_disk_imports = functools.partial(disk_imports, allowed=frozenset({"gzip"}))
 
 
-def disk_calls(source: str) -> list[str]:
-    """Вызовы open (и .open), обращения к os.* кроме os.path.basename.
-    Отдельно от импортов: модулю сети gzip нужен для тела ответа в памяти."""
+def is_http_open(func: ast.expr) -> bool:
+    """Вызываемое — <что-то>.opener.open: HTTP-запрос через urllib
+    OpenerDirector (Fetcher.opener), а не файл."""
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "open"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "opener"
+    )
+
+
+def disk_calls(source: str, http_allowed: bool = False) -> list[str]:
+    """Вызовы open (и .open), обращения к os.* кроме os.path.basename;
+    http_allowed — не считать диском <что-то>.opener.open. Отдельно от
+    импортов: модулю сети gzip нужен для тела ответа в памяти."""
     tree = ast.parse(source)
     os_names = module_bindings(tree, "os")
     found = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and is_open_call(node.func):
+        if (
+            isinstance(node, ast.Call)
+            and is_open_call(node.func)
+            and not (http_allowed and is_http_open(node.func))
+        ):
             found.append(f"строка {node.lineno}: {ast.unparse(node.func)}()")
         elif isinstance(node, ast.Attribute) and is_os_use(node, os_names):
             found.append(f"строка {node.lineno}: {ast.unparse(node)}")
     return found
+
+
+# Почему исключение только для модуля сети и только по имени opener:
+# self.opener.open(req) — сам HTTP-запрос, главное дело net; проще всего
+# узнать его по атрибуту opener у владельца .open. У модулей правил
+# проверка прежняя (disk_calls без исключения), а в net встроенный open,
+# gzip.open, Path(...).open по-прежнему диск.
+net_disk_calls = functools.partial(disk_calls, http_allowed=True)
 
 
 def disk_use(source: str) -> list[str]:
@@ -3605,7 +3629,7 @@ def test_21_78_net_no_disk_no_stdout():
     shutil и имён из os, не печатает в stdout; gzip и zlib — только
     раскодирование тела. Модуль 21."""
     source = collector_source("net.py")
-    found = net_disk_imports(source) + disk_calls(source) + stdout_use(source)
+    found = net_disk_imports(source) + net_disk_calls(source) + stdout_use(source)
     assert found == []
 
 
@@ -3669,6 +3693,10 @@ GUARD_SAMPLES = [
     (disk_imports, "from pathlib import Path"),
     (disk_imports, "import shutil"),
     (disk_imports, "from os import makedirs"),
+    (disk_calls, "resp = self.opener.open(req)"),
+    (net_disk_calls, "raw = gzip.open(p).read()"),
+    (net_disk_calls, "text = Path(p).open().read()"),
+    (net_disk_calls, "text = open('x').read()"),
     (net_disk_imports, "import pathlib"),
     (net_disk_imports, "from os import makedirs"),
     (disk_calls, "os.makedirs(folder, exist_ok=True)"),
@@ -3738,8 +3766,9 @@ import math
 from dataclasses import dataclass
 """
 
-# Образец разрешённого модулю сети: часы — только time.monotonic, сжатие —
-# в памяти (gzip.decompress, zlib), из пакета — serp.
+# Образец разрешённого модулю сети: HTTP-запрос self.opener.open, часы —
+# только time.monotonic, сжатие — в памяти (gzip.decompress, zlib), из
+# пакета — serp.
 EDGE_CLEAN_SAMPLE = """
 import gzip
 import time
@@ -3749,8 +3778,10 @@ import zlib
 from collector import serp
 
 
-def body(raw: bytes) -> str:
+def body(self, req) -> str:
     t0 = time.monotonic()
+    with self.opener.open(req) as resp:
+        raw = resp.read()
     text = gzip.decompress(raw) + zlib.decompress(raw, -zlib.MAX_WBITS)
     return text.decode() + str(time.monotonic() - t0) + serp.SERP_HOST
 """
@@ -3767,7 +3798,7 @@ def body(raw: bytes) -> str:
         (package_imports, LEAF_CLEAN_SAMPLE),
         (network_imports, EDGE_CLEAN_SAMPLE),
         (wall_clock_or_random_uses, EDGE_CLEAN_SAMPLE),
-        (disk_calls, EDGE_CLEAN_SAMPLE),
+        (net_disk_calls, EDGE_CLEAN_SAMPLE),
         (net_disk_imports, EDGE_CLEAN_SAMPLE),
         (stdout_use, EDGE_CLEAN_SAMPLE),
         (net_imports, EDGE_CLEAN_SAMPLE),
@@ -3781,7 +3812,7 @@ def body(raw: bytes) -> str:
         "лист",
         "сеть: urllib.parse и time",
         "сеть: time.monotonic",
-        "сеть: gzip в памяти",
+        "сеть: opener.open и gzip в памяти",
         "сеть: импорт gzip",
         "сеть: stdout",
         "сеть: импорт serp",
