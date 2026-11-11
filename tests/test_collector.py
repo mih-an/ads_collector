@@ -1,29 +1,33 @@
-"""Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61, 21.78.
+"""Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61,
+21.78, 21.81, 21.82.
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
-геометрия и ссылка на выдачу, сеть, сценарии прогона, main; в конце —
-страж 21.78 (модули правил без внешнего мира). Сети нет: настоящий
-net.Fetcher сборщика получает ответы от CianPlayer
-(tests/collector_support.py); часы и сон подменены, случайность — --seed,
-папки и билет — во временной папке теста. Имена берутся из своих модулей:
-search_page (разбор ответа), geometry (клетки), net (сеть), crawl (обход); через
-cc — только запуск и края.
+геометрия и ссылка на выдачу, логика запроса страницы над транспортом
+(PageFetcher), сценарии прогона, main; в конце — страж 21.78 (кто что
+импортирует, модули правил без внешнего мира). Сети нет: main получает
+фабрику фальшивого транспорта FakeTransport (tests/collector_support.py),
+обход — тот же транспорт через PageFetcher; urllib и подмены сети здесь не
+нужны (сами транспорты — tests/test_collector_transport.py). Часы и сон
+подменены, случайность — --seed, папки и билет — во временной папке теста.
+Имена берутся из своих модулей: search_page (разбор ответа), geometry
+(клетки), page_fetch (запрос страницы), crawl (обход); через cc — только
+запуск и края.
 
 Точки подмены, которые код обязан сохранить:
-- cc.main() — разбор sys.argv и весь прогон; main создаёт net.Fetcher по
-  имени модуля в момент вызова, поэтому подмена net.Fetcher срабатывает;
-- net.Fetcher(user_agent, cookie_header) с атрибутом opener (urllib
-  OpenerDirector): проигрыватель встаёт в него обработчиком;
-- net.decode_body(raw, content_encoding) — Fetcher зовёт её по имени модуля
-  в момент вызова: её подменяет 21.27;
-- net.time (monotonic — длительность запроса), cc.time (time, sleep) и
+- cc.main(transport_factory=...) — разбор sys.argv и весь прогон; фабрика
+  зовётся как factory(имя транспорта, строка Cookie или None);
+- page_fetch.PageFetcher(transport, user_agent, has_ticket, monotonic) и
+  page_fetch.decode_body(raw, content_encoding) — PageFetcher зовёт её по
+  имени модуля в момент вызова: её подменяют 21.27 и 21.29;
+- cc.time (time, sleep, monotonic — main передаёт его в PageFetcher) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
-  теста, net.time и cc.time — одним FakeTime;
-- cc.parse_settings, cc.read_ticket, cc.now_local, cc.random (Random,
+  теста одним FakeTime;
+- crawl.Crawl(CrawlInput, fetcher, Clock(now, sleep), rnd) — так обход
+  собирается без main (make_crawl);
+- cc.parse_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
-- чистые функции search_page и geometry, помощники net (parse_cookie_header,
-  seed_jar, lower_headers, NoRedirect) — с теми же сигнатурами; файлы
+- чистые функции search_page и geometry — с теми же сигнатурами; файлы
   прогона — в том же формате.
 Тесты с пометкой «Внутреннее» держат поведение через внутренний интерфейс
 (функции правил crawl, run_folder, методы Crawl), а не через main.
@@ -32,8 +36,7 @@ cc — только запуск и края.
 import ast
 import functools
 import gzip
-import http.client
-import http.cookiejar
+import importlib
 import json
 import lzma
 import math
@@ -42,8 +45,6 @@ import re
 import runpy
 import shutil
 import sys
-import urllib.error
-import urllib.request
 import zlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -54,17 +55,25 @@ import pytest
 from collector_support import (  # noqa: F401 — no_network: автофикстура
     FAKE_COOKIE,
     USER_AGENT,
-    CianPlayer,
     FakeTime,
+    FakeTransport,
     Reply,
     frozen_datetime,
     no_network,
-    player_fetcher,
     write_ticket,
 )
 
+import collector
 import collector.cian_collect as cc
-from collector import crawl, geometry, net, search_page
+from collector import (
+    crawl,
+    geometry,
+    httpx_transport,
+    page_fetch,
+    search_page,
+    transport,
+    urllib_transport,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "collector"
@@ -195,51 +204,57 @@ B_60 = {
 class Env:
     folder: Path
     tiles: Path
-    player: CianPlayer
+    transport: FakeTransport
     clock: FakeTime
 
 
 @pytest.fixture
 def env(tmp_path, monkeypatch) -> Env:
-    """Папка запуска с билетом, проигрыватель вместо сети, часы стоят на MOMENT."""
+    """Папка запуска с билетом, фальшивый транспорт вместо сети, часы стоят
+    на MOMENT."""
     monkeypatch.chdir(tmp_path)
     tiles = tmp_path / "tiles.geojson"
-    player = CianPlayer(tiles, {})
-    clock = FakeTime(EPOCH)
-    monkeypatch.setattr(net, "Fetcher", player_fetcher(net.Fetcher, player))
-    # одни часы на оба модуля: monotonic зовёт net, time и sleep — cc
-    monkeypatch.setattr(net, "time", clock)
+    fake = FakeTransport(tiles, {})
+    # одни часы на всё: time, sleep и monotonic (его main передаёт в
+    # PageFetcher) — у cc; now — для обхода без main (make_crawl)
+    clock = FakeTime(EPOCH, zone=MSK)
     monkeypatch.setattr(cc, "time", clock)
     monkeypatch.setattr(cc, "datetime", frozen_datetime(MOMENT))
     write_ticket(tmp_path, EPOCH, TICKET_AGE_H)
-    return Env(tmp_path, tiles, player, clock)
+    return Env(tmp_path, tiles, fake, clock)
 
 
 def give(env, replies: dict) -> None:
-    """Ответы проигрывателю — копиями очередей: проигрыватель снимает ответы
-    с очереди, а общие наборы ответов модуля нужны и другим тестам."""
-    env.player.replies.update({key: list(queue) for key, queue in replies.items()})
+    """Ответы транспорту — копиями очередей: транспорт снимает ответы с
+    очереди, а общие наборы ответов модуля нужны и другим тестам."""
+    env.transport.replies.update({key: list(queue) for key, queue in replies.items()})
 
 
-def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=False):
-    """Прогон через main(); аргументы args идут последними и перекрывают
-    умолчания (argparse берёт последнее значение). → папка прогона."""
+def set_argv(env, monkeypatch, features, *args, seed="1", start_delay=False):
+    """Файл клеток features и sys.argv запуска; аргументы args идут
+    последними и перекрывают умолчания (argparse берёт последнее значение)."""
     write_features(env.tiles, features)
-    give(env, replies)
     argv = ["cian_collect.py", "--geojson", str(env.tiles)]
     argv += ["--runs-dir", str(env.folder / "runs"), "--budget", "50"]
     argv += ["--window-hours", "1"]
     argv += [] if seed is None else ["--seed", seed]
     argv += [] if start_delay else ["--no-start-delay"]
     monkeypatch.setattr(sys, "argv", argv + list(args))
-    cc.main()
+
+
+def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=False):
+    """Прогон через main() на фальшивом транспорте env. → папка прогона."""
+    set_argv(env, monkeypatch, features, *args, seed=seed, start_delay=start_delay)
+    give(env, replies)
+    cc.main(transport_factory=env.transport.factory)
     (run_dir,) = (env.folder / "runs").iterdir()
     return run_dir
 
 
 def settings_of(folder: Path, **changes):
     """Settings ночи сценария: файл клеток и runs/ в папке теста, бюджет 50,
-    окно 1 ч, без пробы-only и паузы старта, seed 1; changes перекрывают."""
+    окно 1 ч, без пробы-only и паузы старта, seed 1, транспорт urllib,
+    билет — cookies.txt и ua.txt; changes перекрывают."""
     settings = crawl.Settings(
         budget=50,
         window_hours=1.0,
@@ -248,6 +263,9 @@ def settings_of(folder: Path, **changes):
         smoke_only=False,
         start_delay=False,
         seed=1,
+        transport="urllib",
+        cookies_file="cookies.txt",
+        ua_file="ua.txt",
     )
     return replace(settings, **changes)
 
@@ -273,20 +291,22 @@ def fake_ticket():
 
 
 def make_crawl(env, features, **changes):
-    """Crawl нового интерфейса без main(): файл клеток features, билет как в
-    env, сеть — проигрыватель env, часы и сон — env; changes — поля Settings."""
+    """Crawl без main(): файл клеток features, билет как в env, сеть —
+    фальшивый транспорт env через PageFetcher, часы и сон — FakeTime env,
+    случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles = geometry.load_sectors(str(env.tiles))
-    ticket = fake_ticket()
-    edges = crawl.Edges(
-        get_serp=net.Fetcher(USER_AGENT, FAKE_COOKIE).get_serp,
-        rnd=random.Random(1),
-        now=cc.now_local,
-        sleep=env.clock.sleep,
+    crawl_input = crawl.CrawlInput(
+        settings=settings_of(env.folder, **changes),
+        ticket=fake_ticket(),
+        raw_tiles=tiles,
+        grid=geometry.infer_tile_grid(tiles),
     )
-    settings = settings_of(env.folder, **changes)
-    grid = geometry.infer_tile_grid(tiles)
-    return crawl.Crawl(settings, tiles, grid, ticket, edges)
+    fetcher = page_fetch.PageFetcher(
+        env.transport, USER_AGENT, True, env.clock.monotonic
+    )
+    clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
+    return crawl.Crawl(crawl_input, fetcher, clock, random.Random(1))
 
 
 def read_json(path: Path):
@@ -311,7 +331,12 @@ def events(run_dir: Path, name: str) -> list[dict[str, str]]:
 
 def pages_asked(env, cell: str) -> list[int]:
     """Страницы клетки в порядке запросов."""
-    return [s.page for s in env.player.sent if s.cell == cell]
+    return [s.page for s in env.transport.sent if s.cell == cell]
+
+
+def lower_keys(headers: dict[str, str]) -> dict[str, str]:
+    """Заголовки с именами в нижнем регистре: регистр имени в HTTP не важен."""
+    return {name.lower(): value for name, value in headers.items()}
 
 
 # ═════════════════════════ А. Разбор ответа ЦИАН ═════════════════════════
@@ -1388,119 +1413,89 @@ def test_21_22_update_tiles_file_parent_missing(tmp_path):
     )
 
 
-# ═══════════════════════════════ В. Сеть ═══════════════════════════════
-
-
-def test_21_23_parse_cookie_header():
-    """21.23 parse_cookie_header: пары имя=значение, «=» внутри значения
-    остаётся, части без «=» и пустые отброшены; часть «=v» даёт куку с
-    пустым именем — так сейчас (фотография, не правило). Модуль 21."""
-    header = "_CIAN_GK=abc-123; _yasc=xx+yy/zz=; mdd=0; broken; a=b=c; ; =v"
-    assert net.parse_cookie_header(header) == [
-        ("_CIAN_GK", "abc-123"),
-        ("_yasc", "xx+yy/zz="),
-        ("mdd", "0"),
-        ("a", "b=c"),
-        ("", "v"),
-    ]
-
-
-def test_21_23_seed_jar_cookie_fields():
-    """21.23 seed_jar: куки на домен .cian.ru, путь /, secure. Модуль 21."""
-    jar = http.cookiejar.CookieJar()
-    net.seed_jar(jar, "a=1; b=2")
-    assert sorted(
-        (c.name, c.value, c.domain, c.domain_initial_dot, c.path, c.secure) for c in jar
-    ) == [
-        ("a", "1", ".cian.ru", True, "/", True),
-        ("b", "2", ".cian.ru", True, "/", True),
-    ]
-
-
-def test_21_23_seed_jar_other_domain():
-    """21.23 seed_jar на домен без точки: domain_initial_dot = False.
-    Модуль 21."""
-    jar = http.cookiejar.CookieJar()
-    net.seed_jar(jar, "a=1", domain="www.cian.ru")
-    assert [(c.domain, c.domain_initial_dot) for c in jar] == [("www.cian.ru", False)]
-
-
-def test_21_23_seed_jar_cian_only():
-    """21.23 Куки билета уходят на www.cian.ru и не уходят чужому домену.
-    Модуль 21."""
-    jar = http.cookiejar.CookieJar()
-    net.seed_jar(jar, "a=1")
-    cian = urllib.request.Request("https://www.cian.ru/cat.php")
-    other = urllib.request.Request("https://example.com/")
-    jar.add_cookie_header(cian)
-    jar.add_cookie_header(other)
-    assert (cian.get_header("Cookie"), other.get_header("Cookie")) == ("a=1", None)
+# ═══════════════ В. Запрос страницы над транспортом (PageFetcher) ═══════════════
+# Сами транспорты (куки, редирект, сбои, тайм-аут) —
+# tests/test_collector_transport.py.
 
 
 @pytest.fixture
-def fetch_env(tmp_path, monkeypatch):
-    """Файл клеток с одной клеткой A и проигрыватель; часы модуля сети
-    подменены (monotonic зовёт только net)."""
+def fetch_env(tmp_path):
+    """Файл клеток с одной клеткой A, фальшивый транспорт и часы (monotonic
+    идёт на 0,25 с за вызов)."""
     tiles = tmp_path / "tiles.geojson"
     write_features(tiles, [tile(A)])
-    player = CianPlayer(tiles, {})
-    monkeypatch.setattr(net, "time", FakeTime(EPOCH))
-    return SimpleNamespace(player=player, url=search_page.page_url(rect_ring(A)))
+    return SimpleNamespace(
+        transport=FakeTransport(tiles, {}),
+        clock=FakeTime(EPOCH),
+        url=search_page.page_url(rect_ring(A)),
+    )
 
 
-def fetcher(fetch_env, cookie="a=b", replies=()):
-    """Настоящий Fetcher сборщика с проигрывателем; replies — ответы на
-    запросы страницы 1 клетки A по порядку; cookie None — без билета."""
-    fetch_env.player.replies[A, 1] = list(replies)
-    return player_fetcher(net.Fetcher, fetch_env.player)(USER_AGENT, cookie)
+def fetcher(fetch_env, has_ticket=True, replies=()):
+    """PageFetcher сборщика над фальшивым транспортом; replies — ответы на
+    запросы страницы 1 клетки A по порядку."""
+    fetch_env.transport.replies[A, 1] = list(replies)
+    return page_fetch.PageFetcher(
+        fetch_env.transport, USER_AGENT, has_ticket, fetch_env.clock.monotonic
+    )
 
 
+# Заголовки браузера, имена в нижнем регистре (lower_keys).
 BROWSER_HEADERS = {
-    "User-agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+    "user-agent": USER_AGENT,
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
     "image/avif,image/webp,*/*;q=0.8",
-    "Accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-encoding": "gzip, deflate",
-    "Upgrade-insecure-requests": "1",
-    "Sec-fetch-dest": "document",
-    "Sec-fetch-mode": "navigate",
-    "Sec-fetch-user": "?1",
-    "Connection": "keep-alive",
-    "Host": "www.cian.ru",
+    "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "accept-encoding": "gzip, deflate",
+    "upgrade-insecure-requests": "1",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-user": "?1",
+    "connection": "keep-alive",
 }
 
 
+def sent_headers(fetch_env, index: int = 0) -> dict[str, str]:
+    """Заголовки запроса номер index, переданные транспорту, — имена в
+    нижнем регистре."""
+    return lower_keys(fetch_env.transport.sent[index].headers)
+
+
 def test_21_24_headers_with_ticket(fetch_env):
-    """21.24 get_serp страницы 1 с билетом: заголовки браузера, заход «с
-    главной» (Referer https://www.cian.ru/, same-origin), куки билета.
-    Модуль 21."""
-    fetcher(fetch_env, replies=[page(1, 1, 1)]).get_serp(fetch_env.url)
+    """21.24 fetch страницы 1 с билетом: заголовки браузера, заход «с
+    главной» (Referer https://www.cian.ru/, same-origin); Cookie кладёт
+    транспорт, PageFetcher его не передаёт. Модуль 21."""
+    fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     expected = BROWSER_HEADERS | {
-        "Sec-fetch-site": "same-origin",
-        "Referer": "https://www.cian.ru/",
-        "Cookie": "a=b",
+        "sec-fetch-site": "same-origin",
+        "referer": "https://www.cian.ru/",
     }
-    assert fetch_env.player.sent[0].headers == expected
+    assert sent_headers(fetch_env) == expected
 
 
 def test_21_24_headers_without_ticket(fetch_env):
-    """21.24 get_serp без билета: заход из адресной строки (Sec-Fetch-Site
-    none), без Referer и Cookie. Модуль 21."""
-    fetcher(fetch_env, cookie=None, replies=[page(1, 1, 1)]).get_serp(fetch_env.url)
-    assert fetch_env.player.sent[0].headers == BROWSER_HEADERS | {
-        "Sec-fetch-site": "none"
-    }
+    """21.24 fetch без билета: заход из адресной строки (Sec-Fetch-Site
+    none), без Referer. Модуль 21."""
+    session = fetcher(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    session.fetch(fetch_env.url)
+    assert sent_headers(fetch_env) == BROWSER_HEADERS | {"sec-fetch-site": "none"}
 
 
 def test_21_24_headers_with_referer(fetch_env):
-    """21.24 get_serp с Referer: он и уходит, same-origin. Модуль 21."""
-    session = fetcher(fetch_env, cookie=None, replies=[page(1, 1, 1)])
-    session.get_serp(fetch_env.url, referer="https://www.cian.ru/prev")
-    headers = fetch_env.player.sent[0].headers
-    assert (headers["Referer"], headers["Sec-fetch-site"]) == (
+    """21.24 fetch с Referer: он и уходит, same-origin. Модуль 21."""
+    session = fetcher(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    session.fetch(fetch_env.url, referer="https://www.cian.ru/prev")
+    headers = sent_headers(fetch_env)
+    assert (headers["referer"], headers["sec-fetch-site"]) == (
         "https://www.cian.ru/prev",
         "same-origin",
     )
+
+
+def test_21_24_request_goes_to_url(fetch_env):
+    """21.24 fetch отдаёт транспорту ссылку как есть. Модуль 21."""
+    fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    assert fetch_env.transport.sent[0].url == fetch_env.url
 
 
 def test_21_24_referer_of_page_is_previous_page(env, monkeypatch):
@@ -1508,24 +1503,9 @@ def test_21_24_referer_of_page_is_previous_page(env, monkeypatch):
     предыдущего запроса этой клетки (тот же джиттер; у страницы 2 — ссылка
     страницы 1 без p). Модуль 21."""
     run_main(env, monkeypatch, CELLS, short_a() | B_60)
-    sent_b = [s for s in env.player.sent if s.cell == B]
-    referers = [s.headers["Referer"] for s in sent_b[1:]]
+    sent_b = [s for s in env.transport.sent if s.cell == B]
+    referers = [lower_keys(s.headers)["referer"] for s in sent_b[1:]]
     assert referers == [sent_b[0].url, sent_b[1].url]
-
-
-def test_21_25_set_cookie_changes_next_request(fetch_env):
-    """21.25 Куки билета уходят; Set-Cookie ответа меняет куку следующего
-    запроса (cookie jar Fetcher). Модуль 21."""
-    rotated = Reply(
-        200, b"<html></html>", {"Set-Cookie": "_yasc=new; Domain=.cian.ru; Path=/"}
-    )
-    session = fetcher(
-        fetch_env, cookie="a=b; _yasc=old", replies=[rotated, page(1, 1, 1)]
-    )
-    session.get_serp(fetch_env.url)
-    session.get_serp(fetch_env.url)
-    cookies = [s.headers["Cookie"] for s in fetch_env.player.sent]
-    assert cookies == ["a=b; _yasc=old", "a=b; _yasc=new"]
 
 
 def deflate(data: bytes) -> bytes:
@@ -1545,26 +1525,37 @@ def deflate(data: bytes) -> bytes:
     ids=["gzip", "GZIP", "deflate", "без сжатия", "битый UTF-8"],
 )
 def test_21_26_decode(fetch_env, encoding, raw, expected):
-    """21.26 Тело ответа (get_serp, decode_body): gzip/deflate по
+    """21.26 Тело ответа (fetch, decode_body): gzip/deflate по
     Content-Encoding (регистр не важен), без сжатия — как есть, битый UTF-8
     — знаком замены. Модуль 21."""
     headers = {} if encoding is None else {"Content-Encoding": encoding}
     session = fetcher(fetch_env, replies=[Reply(200, raw, headers)])
-    assert session.get_serp(fetch_env.url)[1] == expected
+    assert session.fetch(fetch_env.url).body == expected
+
+
+def test_21_26_fetched_page_ok(fetch_env):
+    """21.26 Ответ 200: FetchedPage — код, распакованное тело, размер тела с
+    провода (сжатого), ms, без сбоя сети, заголовки ответа. Модуль 21."""
+    raw = gzip.compress("страница".encode(), mtime=0)
+    reply = Reply(200, raw, {"Content-Encoding": "gzip"})
+    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    assert result == page_fetch.FetchedPage(
+        200, "страница", len(raw), 250.0, None, {"content-encoding": "gzip"}
+    )
 
 
 def test_21_27_http_error_403(fetch_env):
     """21.27 Ответ-ошибка 403: код, тело, размер, ms, без сбоя сети,
     заголовки в нижнем регистре. Модуль 21."""
     reply = Reply(403, "запрет".encode(), {"Server": "nginx"})
-    result = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (403, "запрет", 12, 250.0, None, {"server": "nginx"})
 
 
 def test_21_27_http_error_gzip_body(fetch_env):
     """21.27 Ответ-ошибка 500 с gzip-телом: тело распаковано. Модуль 21."""
     reply = Reply(500, gzip.compress(b"oops", mtime=0), {"Content-Encoding": "gzip"})
-    code, body, *_ = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    code, body, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body) == (500, "oops")
 
 
@@ -1572,7 +1563,7 @@ def test_21_27_http_error_broken_gzip(fetch_env):
     """21.27 Ответ-ошибка с битым gzip: тело — сырые байты как текст.
     Модуль 21."""
     reply = Reply(500, b"not gzip", {"Content-Encoding": "gzip"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not gzip", 8)
 
 
@@ -1587,7 +1578,7 @@ def test_21_27_http_error_truncated_gzip(fetch_env):
     with pytest.raises(EOFError):
         gzip.decompress(TRUNCATED_GZIP)
     reply = Reply(500, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     expected = TRUNCATED_GZIP.decode("utf-8", errors="replace")
     assert (code, body, size) == (500, expected, len(TRUNCATED_GZIP))
 
@@ -1598,58 +1589,41 @@ def test_21_27_http_error_broken_deflate(fetch_env):
     with pytest.raises(zlib.error):
         zlib.decompress(b"not deflate", -zlib.MAX_WBITS)
     reply = Reply(500, b"not deflate", {"Content-Encoding": "deflate"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not deflate", 11)
 
 
 def broken_decode(raw: bytes, content_encoding: str | None) -> str:
-    """Подмена net.decode_body: ошибка разбора тела, но не распаковки."""
+    """Подмена page_fetch.decode_body: ошибка разбора тела, но не распаковки."""
     raise ValueError("неожиданная ошибка разбора тела")
 
 
 def test_21_27_http_error_unexpected_decode_error_raises(fetch_env, monkeypatch):
     """21.27 Ответ-ошибка, при разборе тела которого случилась не ошибка
-    распаковки (ValueError из decode_body), — исключение летит из get_serp,
+    распаковки (ValueError из decode_body), — исключение летит из fetch,
     а не глотается: except сужен до OSError, EOFError, zlib.error (З164;
     «ошибки громко»). Модуль 21."""
-    monkeypatch.setattr(net, "decode_body", broken_decode)
+    monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
     session = fetcher(fetch_env, replies=[Reply(500, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
-        session.get_serp(fetch_env.url)
+        session.fetch(fetch_env.url)
 
 
-def test_21_28_no_redirect(fetch_env):
-    """21.28 NoRedirect: 301 не выполняется — один запрос, код 301 и Location
-    в заголовках. Модуль 21."""
-    reply = Reply(301, b"", {"Location": CAT + "&p=1"})
-    result = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
-    assert (result, len(fetch_env.player.sent)) == (
-        (301, "", 0, 250.0, None, {"location": CAT + "&p=1"}),
-        1,
-    )
-
-
-def test_21_28_no_redirect_request_is_none():
-    """21.28 NoRedirect.redirect_request всегда None. Модуль 21."""
-    assert net.NoRedirect().redirect_request(None, None, 301, "", {}, "x") is None
-
-
-@pytest.mark.parametrize(
-    ("reply", "detail"),
-    [
-        (Reply(error=urllib.error.URLError("dns")), "urlerror:dns"),
-        (Reply(error=TimeoutError("timed out")), "timeout"),
-        (Reply(read_error=TimeoutError("timed out")), "timeout"),
-        (Reply(error=ConnectionResetError("reset")), "oserror:reset"),
-    ],
-    ids=["URLError", "TimeoutError", "тайм-аут чтения", "OSError"],
-)
-def test_21_29_network_errors(fetch_env, reply, detail):
-    """21.29 Сбои сети: URLError → urlerror:<причина>, тайм-аут (и при
-    чтении тела) → timeout, прочий OSError → oserror:<текст>; код 0, тело
-    пусто, заголовков нет. Модуль 21."""
-    result = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+@pytest.mark.parametrize("detail", ["urlerror:dns", "timeout", "oserror:reset"])
+def test_21_29_network_failure_code_0(fetch_env, detail):
+    """21.29 NetworkFailure транспорта → (0, "", 0, 250.0, деталь, {}): код 0,
+    тело пусто, деталь — текст сбоя, заголовков нет. Модуль 21."""
+    reply = Reply(error=transport.NetworkFailure(detail))
+    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (0, "", 0, 250.0, detail, {})
+
+
+def test_21_29_failure_asks_transport_once(fetch_env):
+    """21.29 После NetworkFailure fetch транспорт второй раз не зовёт:
+    повторы — дело обхода (Crawl). Модуль 21."""
+    reply = Reply(error=transport.NetworkFailure("timeout"))
+    fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    assert len(fetch_env.transport.sent) == 1
 
 
 # Битое сжатие тела (З167): тело и Content-Encoding. Распаковка падает:
@@ -1684,47 +1658,70 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
     сбой сети: код 0, тело пусто, размер 0, деталь decode:<текст
     исключения>, заголовков нет (З167). Модуль 21."""
     reply = Reply(200, raw, {"Content-Encoding": encoding})
-    result = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     detail = "decode:" + decompress_error(raw, encoding)
     assert result == (0, "", 0, 250.0, detail, {})
 
 
+def broken_gzip_result(fetch_env, status: int):
+    """FetchedPage ответа status с битым gzip («not gzip»)."""
+    reply = Reply(status, b"not gzip", {"Content-Encoding": "gzip"})
+    return fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+
+
+def test_21_29_broken_compression_in_204(fetch_env):
+    """21.29 Битое сжатие в ответе 204 (внутри 2xx) — сбой сети, код 0
+    (З167; решение уровня 1: сбой при 200 ≤ код < 300). Модуль 21."""
+    assert broken_gzip_result(fetch_env, 204).code == 0
+
+
+def test_21_29_broken_compression_in_299(fetch_env):
+    """21.29 Битое сжатие в ответе 299 (верхний край 2xx) — сбой сети,
+    код 0. Модуль 21."""
+    assert broken_gzip_result(fetch_env, 299).code == 0
+
+
+def test_21_29_broken_compression_in_300(fetch_env):
+    """21.29 Битое сжатие в ответе 300 (за краем 2xx) — не сбой сети: код
+    300, тело — сырые байты как текст (как у ответа-ошибки, 21.27).
+    Модуль 21."""
+    result = broken_gzip_result(fetch_env, 300)
+    assert (result.code, result.body, result.neterr) == (300, "not gzip", None)
+
+
 def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
     """21.29 Ответ 200, при разборе тела которого случилась не ошибка
-    распаковки (ValueError из decode_body), — исключение летит из get_serp,
+    распаковки (ValueError из decode_body), — исключение летит из fetch,
     не глотается (З167, «ошибки громко»). Модуль 21."""
-    monkeypatch.setattr(net, "decode_body", broken_decode)
+    monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
     session = fetcher(fetch_env, replies=[Reply(200, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
-        session.get_serp(fetch_env.url)
-
-
-def test_21_30_timeout_45_seconds(fetch_env):
-    """21.30 Запрос уходит с тайм-аутом 45 с (HTTP_TIMEOUT_S). Модуль 21."""
-    fetcher(fetch_env, replies=[page(1, 1, 1)]).get_serp(fetch_env.url)
-    assert fetch_env.player.sent[0].timeout == 45
+        session.fetch(fetch_env.url)
 
 
 def test_21_30_ms_by_monotonic(fetch_env):
-    """21.30 Длительность запроса — по time.monotonic, в мс (подставные
-    часы идут на 0,25 с за вызов). Модуль 21."""
-    result = fetcher(fetch_env, replies=[page(1, 1, 1)]).get_serp(fetch_env.url)
-    assert result[3] == 250.0
+    """21.30 Длительность запроса — по переданным часам monotonic, в мс
+    (подставные часы идут на 0,25 с за вызов). Модуль 21."""
+    result = fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    assert result.ms == 250.0
 
 
-def test_21_31_lower_headers_dict():
-    """21.31 lower_headers словаря: ключи — в нижний регистр (HTTP/2 шлёт
-    'location'). Модуль 21."""
-    headers = {"Location": "/x", "WAF-Verdict": "challenge"}
-    assert net.lower_headers(headers) == {"location": "/x", "waf-verdict": "challenge"}
-
-
-def test_21_31_lower_headers_http_message():
-    """21.31 lower_headers заголовков ответа urllib (HTTPMessage). Модуль 21."""
-    headers = http.client.HTTPMessage()
-    headers["Location"] = "/x"
-    headers["WAF-Verdict"] = "challenge"
-    assert net.lower_headers(headers) == {"location": "/x", "waf-verdict": "challenge"}
+@pytest.mark.parametrize(
+    "reply",
+    [
+        page(1, 1, 1),
+        Reply(error=transport.NetworkFailure("timeout")),
+        Reply(200, b"not gzip", {"Content-Encoding": "gzip"}),
+    ],
+    ids=["ответ", "сбой сети", "битое сжатие"],
+)
+def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
+    """21.30 Один fetch — ровно два обращения к monotonic (до запроса и
+    после разбора тела), при ответе, сбое сети и битом сжатии: длительность
+    считается в одном месте, ms= в night.log эталонных ночей не сдвигается.
+    Модуль 21."""
+    fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    assert fetch_env.clock.monotonic_calls == 2
 
 
 # ═══════════════════════════ Г. Сценарии прогона ═══════════════════════════
@@ -1766,7 +1763,7 @@ def test_21_32_smoke_failed(env, monkeypatch):
         summary["stop_class"],
         summary["stop_detail"],
         summary["smoke"],
-        len(env.player.sent),
+        len(env.transport.sent),
     ) == (
         "smoke_failed",
         "BLOCK",
@@ -1899,7 +1896,7 @@ def test_21_35_single_empty_cell_no_second_try(env, monkeypatch):
     попытки нет — ровно один запрос, клетка вне пула (B) не запрашивается
     (З156). Модуль 21."""
     run_main(env, monkeypatch, CELLS, {(A, 1): [page(1, 0, 0)]})
-    assert [sent.cell for sent in env.player.sent] == [A]
+    assert [sent.cell for sent in env.transport.sent] == [A]
 
 
 def test_21_36_pages_in_a_row(env, monkeypatch):
@@ -2185,7 +2182,7 @@ def test_21_40_children_crawled_same_run(env, monkeypatch):
     """21.40 Дети деления запрашиваются в том же прогоне, родитель дальше
     страницы 1 не листается [E-42]. Модуль 21."""
     split_run(env, monkeypatch, 401)
-    asked = sorted((s.cell, s.page) for s in env.player.sent)
+    asked = sorted((s.cell, s.page) for s in env.transport.sent)
     assert asked == [
         (A, 1),
         (B, 1),
@@ -2403,7 +2400,7 @@ def test_21_46_retry_pauses_high(env, monkeypatch):
 
 
 def test_21_46_retry_pause_slept(env, monkeypatch):
-    """21.46 Пауза повтора уходит в time.sleep (не в sleep_between).
+    """21.46 Пауза повтора уходит в сон часов (не в sleep_between).
     Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 3)
     after = [int(r["after_s"]) for r in events(run_dir, "retry")]
@@ -2472,7 +2469,7 @@ def test_21_46_broken_compression_on_smoke(env, monkeypatch):
     повторов: один запрос (З167). Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [TRUNCATED_OK]})
     summary = summary_of(run_dir)
-    assert (summary["stopped"], summary["stop_class"], len(env.player.sent)) == (
+    assert (summary["stopped"], summary["stop_class"], len(env.transport.sent)) == (
         "smoke_failed",
         "NET_ERROR",
         1,
@@ -2843,19 +2840,17 @@ def test_21_51_ctrl_c_in_pause_after_smoke(env, monkeypatch):
 
 def ticket_state(env) -> tuple:
     """Билет из папки запуска env (cc.read_ticket, часы EPOCH, Random(1)):
-    (есть ли билет, возраст кук, UA, есть ли билет у Fetcher). Четвёртый
-    элемент — свойство самого Fetcher при прямом вызове; что билет из
-    файлов доходит до запроса через main, держат сценарии
+    (есть ли билет, возраст кук, UA). Что билет из файлов доходит до
+    транспорта и запроса через main, держат сценарии
     test_21_52_ticket_reaches_request и test_21_52_no_cookie_without_ticket."""
     ticket = cc.read_ticket(settings_of(env.folder), EPOCH, random.Random(1))
-    session = net.Fetcher(ticket.ua, ticket.cookie_header)
-    return ticket.has_ticket, ticket.age_h, ticket.ua, session.has_ticket
+    return ticket.has_ticket, ticket.age_h, ticket.ua
 
 
 def test_21_52_ticket_files(env):
     """21.52 Билет: cookies.txt и ua.txt в папке запуска; возраст кук — по
     mtime и часам (read_ticket). Внутреннее. Модуль 21."""
-    assert ticket_state(env) == (True, TICKET_AGE_H, USER_AGENT, True)
+    assert ticket_state(env) == (True, TICKET_AGE_H, USER_AGENT)
 
 
 def test_21_52_no_ticket_files(env):
@@ -2864,7 +2859,7 @@ def test_21_52_no_ticket_files(env):
     (env.folder / "cookies.txt").unlink()
     (env.folder / "ua.txt").unlink()
     expected_ua = random.Random(1).choice(cc.USER_AGENTS)
-    assert ticket_state(env) == (False, None, expected_ua, False)
+    assert ticket_state(env) == (False, None, expected_ua)
 
 
 def test_21_52_empty_ticket_files(env):
@@ -2873,31 +2868,32 @@ def test_21_52_empty_ticket_files(env):
     (env.folder / "cookies.txt").write_text("  \n")
     (env.folder / "ua.txt").write_text("\n")
     expected_ua = random.Random(1).choice(cc.USER_AGENTS)
-    assert ticket_state(env) == (False, None, expected_ua, False)
+    assert ticket_state(env) == (False, None, expected_ua)
 
 
 def test_21_52_ticket_reaches_request(env, monkeypatch):
-    """21.52 Билет доходит до сети при полном запуске: у первого запроса
-    (проба) Cookie — кука из cookies.txt, User-Agent — строка из ua.txt.
+    """21.52 Билет доходит до сети при полном запуске: фабрика транспорта
+    получает строку Cookie из cookies.txt (её кладёт в запрос транспорт,
+    21.23), у первого запроса (проба) User-Agent — строка из ua.txt.
     Значения отличны от умолчаний теста, чтобы было видно чтение файлов.
     Модуль 21."""
     (env.folder / "cookies.txt").write_text("sid=from-file\n", encoding="utf-8")
     (env.folder / "ua.txt").write_text("TestAgent/1.0 (ua.txt)\n", encoding="utf-8")
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
-    # urllib хранит имена заголовков через capitalize(): «User-agent»
-    headers = env.player.sent[0].headers
-    assert (headers["Cookie"], headers["User-agent"]) == (
-        "sid=from-file",
+    headers = lower_keys(env.transport.sent[0].headers)
+    assert (env.transport.made, headers["user-agent"]) == (
+        [("urllib", "sid=from-file")],
         "TestAgent/1.0 (ua.txt)",
     )
 
 
 def test_21_52_no_cookie_without_ticket(env, monkeypatch):
-    """21.52 Нет cookies.txt: у первого запроса полного запуска заголовка
-    Cookie нет. Модуль 21."""
+    """21.52 Нет cookies.txt: фабрика транспорта получает строку Cookie
+    None — у запросов полного запуска заголовка Cookie нет (21.23).
+    Модуль 21."""
     (env.folder / "cookies.txt").unlink()
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
-    assert "Cookie" not in env.player.sent[0].headers
+    assert env.transport.made == [("urllib", None)]
 
 
 def test_21_52_start_line_without_ticket(env, monkeypatch):
@@ -3238,7 +3234,7 @@ def test_21_57_smoke_only(env, monkeypatch):
     Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
     summary = summary_of(run_dir)
-    assert (len(env.player.sent), summary["stopped"], summary["ladder_result"]) == (
+    assert (len(env.transport.sent), summary["stopped"], summary["ladder_result"]) == (
         1,
         "smoke_only",
         "smoke_only",
@@ -3300,8 +3296,9 @@ def test_21_59_seed_random(env, monkeypatch):
 
 def test_21_59_parse_settings_defaults():
     """21.59 Умолчания parse_settings: --budget 50, --runs-dir runs,
-    --window-hours 8.0, без --smoke-only, с паузой старта (З158).
-    Модуль 21."""
+    --window-hours 8.0, без --smoke-only, с паузой старта (З158);
+    --transport urllib, --cookies cookies.txt и --ua ua.txt — в папке
+    запуска. Модуль 21."""
     settings = cc.parse_settings(["--geojson", "клетки.geojson", "--seed", "1"])
     assert (
         settings.budget,
@@ -3310,7 +3307,20 @@ def test_21_59_parse_settings_defaults():
         settings.smoke_only,
         settings.start_delay,
         settings.tiles_path,
-    ) == (50, "runs", 8.0, False, True, "клетки.geojson")
+        settings.transport,
+        settings.cookies_file,
+        settings.ua_file,
+    ) == (
+        50,
+        "runs",
+        8.0,
+        False,
+        True,
+        "клетки.geojson",
+        "urllib",
+        "cookies.txt",
+        "ua.txt",
+    )
 
 
 def test_21_59_parse_settings_requires_geojson(capsys):
@@ -3319,6 +3329,146 @@ def test_21_59_parse_settings_requires_geojson(capsys):
     with pytest.raises(SystemExit) as stop:
         cc.parse_settings(["--seed", "1"])
     assert (stop.value.code, "--geojson" in capsys.readouterr().err) == (2, True)
+
+
+def test_21_81_default_transport_is_urllib(env, monkeypatch):
+    """21.81 Без --transport main просит у фабрики транспорт urllib.
+    Модуль 21."""
+    run_main(env, monkeypatch, CELLS, FAILED_SMOKE)
+    assert [name for name, _ in env.transport.made] == ["urllib"]
+
+
+def test_21_81_transport_flag_reaches_factory(env, monkeypatch):
+    """21.81 --transport httpx доходит до фабрики транспорта: main просит
+    транспорт httpx со строкой Cookie билета. Модуль 21."""
+    run_main(env, monkeypatch, CELLS, FAILED_SMOKE, "--transport", "httpx")
+    assert env.transport.made == [("httpx", FAKE_COOKIE)]
+
+
+def test_21_81_make_transport_urllib():
+    """21.81 make_transport("urllib", …) — UrllibTransport. Модуль 21."""
+    made = cc.make_transport("urllib", FAKE_COOKIE)
+    assert type(made) is urllib_transport.UrllibTransport
+
+
+def test_21_81_make_transport_httpx():
+    """21.81 make_transport("httpx", …) — HttpxTransport. Модуль 21."""
+    made = cc.make_transport("httpx", FAKE_COOKIE)
+    assert type(made) is httpx_transport.HttpxTransport
+
+
+def test_21_81_unknown_transport_exits(capsys):
+    """21.81 --transport не из {urllib, httpx} — выход argparse с кодом 2,
+    в сообщении назван флаг --transport. Модуль 21."""
+    with pytest.raises(SystemExit) as stop:
+        cc.parse_settings(["--geojson", "x.geojson", "--transport", "curl"])
+    err = capsys.readouterr().err
+    # флаг знаком argparse: ошибка — о значении, а не о незнакомом флаге
+    assert (stop.value.code, "--transport" in err, "unrecognized" in err) == (
+        2,
+        True,
+        False,
+    )
+
+
+def main_exit(env, monkeypatch, *args) -> SystemExit:
+    """Запуск main с паузой старта, который обязан выйти (SystemExit).
+    → пойманный выход."""
+    set_argv(env, monkeypatch, CELLS, *args, start_delay=True)
+    with pytest.raises(SystemExit) as stop:
+        cc.main(transport_factory=env.transport.factory)
+    return stop.value
+
+
+def test_21_81_httpx_missing_exits(env, monkeypatch, capsys):
+    """21.81 --transport httpx, а библиотеки httpx нет — выход с кодом 2;
+    в сообщении — флаг --transport, библиотека httpx и команда установки
+    pip install -r requirements.txt. Модуль 21."""
+    monkeypatch.setitem(sys.modules, "httpx", None)  # import httpx — ImportError
+    stop = main_exit(env, monkeypatch, "--transport", "httpx")
+    err = capsys.readouterr().err
+    words = ("--transport", "httpx", "pip install -r requirements.txt")
+    assert (stop.code, [word for word in words if word not in err]) == (2, [])
+
+
+def test_21_81_httpx_missing_exits_before_start_pause(env, monkeypatch):
+    """21.81 Нет httpx при --transport httpx — выход до паузы старта (её
+    нет даже без --no-start-delay) и до транспорта: фабрику не зовут.
+    Модуль 21."""
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    main_exit(env, monkeypatch, "--transport", "httpx")
+    assert (env.clock.pauses, env.transport.made) == ([], [])
+
+
+def test_21_81_urllib_without_httpx(monkeypatch):
+    """21.81 Без библиотеки httpx (sys.modules['httpx'] = None) сборщик с
+    транспортом по умолчанию работает: cian_collect импортируется заново,
+    make_transport даёт UrllibTransport, httpx_transport не загружен.
+    Модуль 21."""
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    monkeypatch.delitem(sys.modules, "collector.httpx_transport")
+    monkeypatch.delattr(collector, "httpx_transport")
+    # свежий импорт: верхний уровень cian_collect не тянет httpx;
+    # monkeypatch вернёт прежний модуль в sys.modules после теста
+    monkeypatch.delitem(sys.modules, "collector.cian_collect")
+    monkeypatch.setattr(collector, "cian_collect", cc)  # вернёт и имя в пакете
+    fresh = importlib.import_module("collector.cian_collect")
+    settings = fresh.parse_settings(["--geojson", "x.geojson", "--seed", "1"])
+    made = fresh.make_transport(settings.transport, FAKE_COOKIE)
+    assert (type(made), "collector.httpx_transport" in sys.modules) == (
+        urllib_transport.UrllibTransport,
+        False,
+    )
+
+
+def test_21_82_ticket_flags_paths(env, monkeypatch):
+    """21.82 --cookies и --ua — пути к файлам билета вне папки запуска: куки
+    доходят до фабрики транспорта, UA — до запроса, возраст кук — по mtime
+    файла --cookies. Модуль 21."""
+    elsewhere = env.folder / "билет"
+    elsewhere.mkdir()
+    write_ticket(elsewhere, EPOCH, 2.5, cookie="sid=elsewhere")
+    (elsewhere / "ua.txt").write_text("Agent/2.0 (--ua)\n", encoding="utf-8")
+    (env.folder / "cookies.txt").unlink()
+    (env.folder / "ua.txt").unlink()
+    flags = ["--cookies", str(elsewhere / "cookies.txt")]
+    flags += ["--ua", str(elsewhere / "ua.txt")]
+    run_dir = run_main(env, monkeypatch, CELLS, FAILED_SMOKE, *flags)
+    headers = lower_keys(env.transport.sent[0].headers)
+    assert (
+        env.transport.made,
+        headers["user-agent"],
+        read_json(run_dir / "plan.json")["cookie_age_h"],
+    ) == ([("urllib", "sid=elsewhere")], "Agent/2.0 (--ua)", 2.5)
+
+
+@pytest.mark.parametrize("flag", ["--cookies", "--ua"])
+def test_21_82_ticket_flag_missing_file_exits(tmp_path, capsys, flag):
+    """21.82 Явно названный, но отсутствующий файл --cookies или --ua —
+    выход с кодом 2; в сообщении названы флаг и путь. Модуль 21."""
+    missing = tmp_path / "нет-файла.txt"
+    argv = ["--geojson", "x.geojson", "--seed", "1", flag, str(missing)]
+    with pytest.raises(SystemExit) as stop:
+        cc.parse_settings(argv)
+    err = capsys.readouterr().err
+    # флаг знаком argparse: ошибка — о файле, а не о незнакомом флаге
+    assert (
+        stop.value.code,
+        flag in err,
+        str(missing) in err,
+        "unrecognized" in err,
+    ) == (2, True, True, False)
+
+
+def test_21_82_ticket_flags_parsed(tmp_path):
+    """21.82 --cookies и --ua с путями к существующим файлам — пути в
+    Settings (cookies_file, ua_file) как есть. Модуль 21."""
+    cookies, ua = tmp_path / "c.txt", tmp_path / "u.txt"
+    cookies.write_text(FAKE_COOKIE, encoding="utf-8")
+    ua.write_text(USER_AGENT, encoding="utf-8")
+    argv = ["--geojson", "x.geojson", "--cookies", str(cookies), "--ua", str(ua)]
+    settings = cc.parse_settings(argv)
+    assert (settings.cookies_file, settings.ua_file) == (str(cookies), str(ua))
 
 
 def test_21_60_no_tiles_file(env, monkeypatch):
@@ -3360,20 +3510,39 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
     assert stop.value.code == "не найден нет.geojson"
 
 
-# ═══════════════ Е. Страж: модули правил без внешнего мира ═══════════════
+# ═══════════ Е. Страж: кто что импортирует, правила без внешнего мира ═══════════
 # Кейс 21.78 (docs/reference/collector_architecture.md, 2.4): разбор
 # исходников модулем ast. Файлы перечислены явно, без glob: пока модулей
 # нет, тест красный, а не «зелёный по пустому списку».
 
 COLLECTOR_DIR = REPO_ROOT / "collector"
-RULE_MODULES = ("crawl.py", "search_page.py", "geometry.py", "run_folder.py")
-NO_DISK_MODULES = ("crawl.py", "search_page.py")
+# Без часов и сети: правила, интерфейс транспорта и логика запроса страницы
+# (monotonic приходит в PageFetcher аргументом).
+RULE_MODULES = (
+    "crawl.py",
+    "search_page.py",
+    "geometry.py",
+    "run_folder.py",
+    "transport.py",
+    "page_fetch.py",
+)
+# Реализации транспорта: сеть живёт только в них.
+TRANSPORT_MODULES = ("urllib_transport.py", "httpx_transport.py")
+NO_DISK_MODULES = ("crawl.py", "search_page.py", "transport.py")
 # Листья пакета: не импортируют никого из collector (2.1 документа).
-LEAF_MODULES = ("search_page.py", "geometry.py", "run_folder.py")
+LEAF_MODULES = ("search_page.py", "geometry.py", "run_folder.py", "transport.py")
 # Все модули пакета, кроме файла запуска cian_collect.py.
-PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, "net.py", "status.py")
+PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, *TRANSPORT_MODULES, "status.py")
+# Порядок слоёв (crawl → page_fetch → transport, search_page; циклов нет):
+# что модуль может взять из пакета.
+LAYER_IMPORTS = {
+    "page_fetch.py": frozenset({"transport", "search_page"}),
+    "urllib_transport.py": frozenset({"transport"}),
+    "httpx_transport.py": frozenset({"transport"}),
+}
 
-# Сеть — только в net (и её запуск — в cian_collect); часы — только по краям.
+# Сеть stdlib — только в urllib_transport, httpx — только в httpx_transport;
+# часы — только по краям.
 NETWORK_IMPORTS = {"socket", "urllib.request", "urllib.error"}
 CLOCK_IMPORTS = {"time"}
 DISK_IMPORTS = {"gzip", "io", "pathlib", "shutil"}
@@ -3382,7 +3551,8 @@ ALLOWED_OS = {"os", "os.path", "os.path.basename"}
 # Модули пакета по голому имени: так их видно в «from . import search_page» и
 # «from .search_page import x» (imported_modules отбрасывает точки).
 PACKAGE_NAMES = {"collector", "crawl", "search_page", "geometry", "run_folder"}
-PACKAGE_NAMES |= {"cian_collect", "net", "status"}
+PACKAGE_NAMES |= {"transport", "page_fetch", "urllib_transport", "httpx_transport"}
+PACKAGE_NAMES |= {"cian_collect", "status"}
 CLOCK_CLASSES = {"datetime", "date"}
 WALL_CLOCK_ATTRS = {"now", "today", "utcnow"}
 
@@ -3392,18 +3562,42 @@ def collector_source(name: str) -> str:
     return (COLLECTOR_DIR / name).read_text(encoding="utf-8")
 
 
-def imported_modules(source: str) -> list[tuple[int, str]]:
-    """(строка, модуль) каждого импорта; у «from X import y» — и X, и X.y
+def node_imports(node: ast.Import | ast.ImportFrom) -> list[tuple[int, str]]:
+    """(строка, модуль) одного импорта; у «from X import y» — и X, и X.y
     (так «from urllib import request» видно как urllib.request)."""
+    if isinstance(node, ast.Import):
+        return [(node.lineno, alias.name) for alias in node.names]
+    module = node.module or ""
+    found = [(node.lineno, module)]
+    for alias in node.names:
+        found.append((node.lineno, f"{module}.{alias.name}".lstrip(".")))
+    return found
+
+
+def imported_modules(source: str) -> list[tuple[int, str]]:
+    """(строка, модуль) каждого импорта модуля, где бы он ни стоял."""
     found = []
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            found += [(node.lineno, alias.name) for alias in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            found.append((node.lineno, module))
-            for alias in node.names:
-                found.append((node.lineno, f"{module}.{alias.name}".lstrip(".")))
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            found += node_imports(node)
+    return found
+
+
+def module_level_imported_modules(source: str) -> list[tuple[int, str]]:
+    """(строка, модуль) импортов вне функций: исполняются при импорте модуля."""
+    tree = ast.parse(source)
+    in_functions = {
+        id(node)
+        for func in ast.walk(tree)
+        if isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef)
+        for node in ast.walk(func)
+    }
+    found = []
+    for node in ast.walk(tree):
+        if id(node) in in_functions:
+            continue
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            found += node_imports(node)
     return found
 
 
@@ -3429,6 +3623,15 @@ def network_imports(source: str) -> list[str]:
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
         if is_network(module)
+    ]
+
+
+def httpx_imports(source: str) -> list[str]:
+    """Импорты внешней библиотеки httpx в любой форме."""
+    return [
+        f"строка {line}: {module}"
+        for line, module in imported_modules(source)
+        if module.split(".")[0] == "httpx"
     ]
 
 
@@ -3565,14 +3768,14 @@ def disk_imports(source: str, allowed: frozenset[str] = frozenset()) -> list[str
     ]
 
 
-# Модулю сети из «дисковых» модулей можно только gzip: раскодирование тела
-# ответа в памяти.
-net_disk_imports = functools.partial(disk_imports, allowed=frozenset({"gzip"}))
+# page_fetch из «дисковых» модулей можно только gzip: распаковка тела ответа
+# в памяти.
+memory_disk_imports = functools.partial(disk_imports, allowed=frozenset({"gzip"}))
 
 
 def is_http_open(func: ast.expr) -> bool:
     """Вызываемое — <что-то>.opener.open: HTTP-запрос через urllib
-    OpenerDirector (Fetcher.opener), а не файл."""
+    OpenerDirector (UrllibTransport.opener), а не файл."""
     return (
         isinstance(func, ast.Attribute)
         and func.attr == "open"
@@ -3584,7 +3787,7 @@ def is_http_open(func: ast.expr) -> bool:
 def disk_calls(source: str, http_allowed: bool = False) -> list[str]:
     """Вызовы open (и .open), обращения к os.* кроме os.path.basename;
     http_allowed — не считать диском <что-то>.opener.open. Отдельно от
-    импортов: модулю сети gzip нужен для тела ответа в памяти."""
+    импортов: page_fetch gzip нужен для тела ответа в памяти."""
     tree = ast.parse(source)
     os_names = module_bindings(tree, "os")
     found = []
@@ -3600,12 +3803,12 @@ def disk_calls(source: str, http_allowed: bool = False) -> list[str]:
     return found
 
 
-# Почему исключение только для модуля сети и только по имени opener:
-# self.opener.open(req) — сам HTTP-запрос, главное дело net; проще всего
-# узнать его по атрибуту opener у владельца .open. У модулей правил
-# проверка прежняя (disk_calls без исключения), а в net встроенный open,
-# gzip.open, Path(...).open по-прежнему диск.
-net_disk_calls = functools.partial(disk_calls, http_allowed=True)
+# Почему исключение только для реализаций транспорта и только по имени
+# opener: self.opener.open(req) — сам HTTP-запрос, главное дело
+# urllib_transport; проще всего узнать его по атрибуту opener у владельца
+# .open. У прочих модулей проверка прежняя (disk_calls без исключения), а в
+# транспортах встроенный open, gzip.open, Path(...).open по-прежнему диск.
+transport_disk_calls = functools.partial(disk_calls, http_allowed=True)
 
 
 def disk_use(source: str) -> list[str]:
@@ -3636,21 +3839,40 @@ def stdout_use(source: str) -> list[str]:
     return found
 
 
-def module_imports(source: str, name: str) -> list[str]:
-    """Импорты модуля пакета collector.<name> в любой форме: абсолютные,
-    относительные (from . import name, from .name import x) и по голому
-    имени."""
+def is_package_module(module: str, name: str) -> bool:
+    """Импортированное — модуль пакета collector.<name> или имя из него, в
+    любой форме: абсолютной, относительной (from . import name, from .name
+    import x) и по голому имени."""
     full = f"collector.{name}"
+    return module in (name, full) or module.startswith(full + ".")
+
+
+def module_imports(source: str, name: str) -> list[str]:
+    """Импорты модуля пакета collector.<name> (is_package_module)."""
     return [
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
-        if module in (name, full) or module.startswith(full + ".")
+        if is_package_module(module, name)
     ]
 
 
-# Проверки «кто импортирует cian_collect / net» — для образцов стража.
+def module_level_imports(source: str, name: str) -> list[str]:
+    """Импорты модуля пакета collector.<name> вне функций — те, что
+    исполняются уже при импорте модуля."""
+    return [
+        f"строка {line}: {module}"
+        for line, module in module_level_imported_modules(source)
+        if is_package_module(module, name)
+    ]
+
+
+# Проверки «кто импортирует cian_collect и транспорты» — и для образцов стража.
 cian_collect_imports = functools.partial(module_imports, name="cian_collect")
-net_imports = functools.partial(module_imports, name="net")
+urllib_transport_imports = functools.partial(module_imports, name="urllib_transport")
+httpx_transport_imports = functools.partial(module_imports, name="httpx_transport")
+eager_httpx_transport_imports = functools.partial(
+    module_level_imports, name="httpx_transport"
+)
 
 
 def package_imports(source: str) -> list[str]:
@@ -3664,6 +3886,31 @@ def package_imports(source: str) -> list[str]:
     ]
 
 
+def package_module_name(module: str) -> str | None:
+    """Имя модуля пакета в импортированном: collector.transport.HttpReply →
+    transport, голое transport → transport; сам «collector» (основа «from
+    collector import x», x виден отдельно) и не пакет — None."""
+    parts = module.split(".")
+    if parts[0] == "collector":
+        return parts[1] if len(parts) > 1 else None
+    return parts[0] if parts[0] in PACKAGE_NAMES else None
+
+
+def foreign_package_imports(source: str, allowed: frozenset[str]) -> list[str]:
+    """Импорты модулей пакета, кроме модулей allowed."""
+    return [
+        f"строка {line}: {module}"
+        for line, module in imported_modules(source)
+        if package_module_name(module) not in {None, *allowed}
+    ]
+
+
+# Образцы слоёв: реализациям транспорта из пакета можно только transport.
+transport_layer_imports = functools.partial(
+    foreign_package_imports, allowed=LAYER_IMPORTS["urllib_transport.py"]
+)
+
+
 def relative_imports(source: str) -> list[str]:
     """Относительные импорты (from . import x, from .x import y): правило
     пакета — импорты абсолютные; держит его этот страж, а не запуск файлом
@@ -3675,70 +3922,119 @@ def relative_imports(source: str) -> list[str]:
     ]
 
 
+def test_21_78_package_modules_listed():
+    """21.78 Модули пакета на диске — ровно перечисленные стражем
+    (cian_collect и PACKAGE_MODULES): лишний модуль (например, оставшийся
+    net.py) или неучтённый новый страж бы не увидел. Модуль 21."""
+    on_disk = sorted(path.name for path in COLLECTOR_DIR.glob("*.py"))
+    assert on_disk == sorted(("cian_collect.py", *PACKAGE_MODULES))
+
+
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
-    """21.78 Модули правил (crawl, search_page, geometry, run_folder) не
-    импортируют time, socket, urllib.request, urllib.error, http: сеть — в
-    net, часы — в net и cian_collect. Модуль 21."""
+    """21.78 Модули правил (crawl, search_page, geometry, run_folder),
+    transport и page_fetch не импортируют time, socket, urllib.request,
+    urllib.error, http: сеть — в реализациях транспорта, часы — в
+    cian_collect (monotonic приходит в PageFetcher аргументом). Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
 
 
-@pytest.mark.parametrize("name", (*RULE_MODULES, "net.py"))
+@pytest.mark.parametrize("name", (*RULE_MODULES, *TRANSPORT_MODULES))
 def test_21_78_no_wall_clock_or_random_calls(name):
-    """21.78 Модули правил и модуль сети не обращаются к часам стены
-    (datetime.now, .today, .utcnow) и к модулю random — ни вызовом, ни
-    ссылкой: время и случайность приходят через Edges и аргумент rnd;
-    подсказка типа random.Random можно. Модуль 21."""
+    """21.78 Модули правил, transport, page_fetch и реализации транспорта не
+    обращаются к часам стены (datetime.now, .today, .utcnow) и к модулю
+    random — ни вызовом, ни ссылкой: время и случайность приходят через
+    Clock и аргумент rnd; подсказка типа random.Random можно. Модуль 21."""
     assert wall_clock_or_random_uses(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_disk_in_crawl_and_search_page(name):
-    """21.78 crawl и search_page не зовут open, не обращаются к os.* (кроме
-    os.path.basename), не импортируют gzip, io, pathlib, shutil: диск —
-    только в run_folder и низу geometry. Модуль 21."""
+    """21.78 crawl, search_page и transport не зовут open, не обращаются к
+    os.* (кроме os.path.basename), не импортируют gzip, io, pathlib,
+    shutil: диск — только в run_folder и низу geometry. Модуль 21."""
     assert disk_use(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_stdout_in_crawl_and_search_page(name):
-    """21.78 crawl и search_page не печатают в stdout (print, sys.stdout): по
-    таблице 2.4 документа stdout — только run_folder.append_log (эхо строк
-    night.log) и cian_collect. Модуль 21."""
+    """21.78 crawl, search_page и transport не печатают в stdout (print,
+    sys.stdout): по таблице 2.4 документа stdout — только
+    run_folder.append_log (эхо строк night.log) и cian_collect. Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 
-def test_21_78_net_no_disk_no_stdout():
-    """21.78 Модуль сети не зовёт open и os.*, не импортирует io, pathlib,
-    shutil и имён из os, не печатает в stdout; gzip и zlib — только
-    раскодирование тела. Модуль 21."""
-    source = collector_source("net.py")
-    found = net_disk_imports(source) + net_disk_calls(source) + stdout_use(source)
+def test_21_78_page_fetch_memory_only():
+    """21.78 page_fetch не зовёт open и os.*, не импортирует io, pathlib,
+    shutil и имён из os, не печатает в stdout: gzip и zlib — только
+    распаковка тела в памяти. Модуль 21."""
+    source = collector_source("page_fetch.py")
+    found = memory_disk_imports(source) + disk_calls(source) + stdout_use(source)
+    assert found == []
+
+
+@pytest.mark.parametrize("name", TRANSPORT_MODULES)
+def test_21_78_transports_no_disk_no_stdout(name):
+    """21.78 Реализации транспорта не зовут open (встроенный, gzip.open,
+    Path.open; HTTP-запрос <…>.opener.open — не диск) и os.*, не
+    импортируют gzip, io, pathlib, shutil и имён из os, не печатают в
+    stdout: тело приносят байтами, не распаковывая. Модуль 21."""
+    source = collector_source(name)
+    found = disk_imports(source) + transport_disk_calls(source) + stdout_use(source)
     assert found == []
 
 
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
 def test_21_78_cian_collect_not_imported(name):
     """21.78 cian_collect никем в пакете не импортируется (__init__, crawl,
-    search_page, geometry, run_folder, net, status). Модуль 21."""
+    search_page, geometry, run_folder, transport, page_fetch, транспорты,
+    status). Модуль 21."""
     assert module_imports(collector_source(name), "cian_collect") == []
 
 
+@pytest.mark.parametrize("implementation", ["urllib_transport", "httpx_transport"])
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
-def test_21_78_net_imported_only_by_cian_collect(name):
-    """21.78 Модуль сети никто в пакете, кроме cian_collect, не
-    импортирует. Модуль 21."""
-    assert module_imports(collector_source(name), "net") == []
+def test_21_78_transports_imported_only_by_cian_collect(name, implementation):
+    """21.78 Реализации транспорта (urllib_transport, httpx_transport) никто
+    в пакете, кроме cian_collect, не импортирует. Модуль 21."""
+    assert module_imports(collector_source(name), implementation) == []
 
 
 @pytest.mark.parametrize(
-    "name", ("cian_collect.py", *(m for m in PACKAGE_MODULES if m != "net.py"))
+    "name",
+    ("cian_collect.py", *(m for m in PACKAGE_MODULES if m != "urllib_transport.py")),
 )
-def test_21_78_network_only_in_net(name):
-    """21.78 Ни один модуль пакета, кроме net (cian_collect, __init__,
-    crawl, search_page, geometry, run_folder, status), не импортирует socket,
-    urllib.request, urllib.error, http: вся сеть — в net. Модуль 21."""
+def test_21_78_network_only_in_transports(name):
+    """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
+    __init__, правила, transport, page_fetch, httpx_transport, status), не
+    импортирует socket, urllib.request, urllib.error, http: сеть stdlib — в
+    urllib_transport. Модуль 21."""
     assert network_imports(collector_source(name)) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("cian_collect.py", *(m for m in PACKAGE_MODULES if m != "httpx_transport.py")),
+)
+def test_21_78_httpx_only_in_httpx_transport(name):
+    """21.78 Ни один модуль пакета, кроме httpx_transport, не импортирует
+    httpx: без библиотеки сборщик с транспортом urllib работает. Модуль 21."""
+    assert httpx_imports(collector_source(name)) == []
+
+
+def test_21_78_httpx_transport_imported_lazily():
+    """21.78 cian_collect импортирует httpx_transport только внутри функции
+    (при --transport httpx), на верхнем уровне модуля — нет. Модуль 21."""
+    assert eager_httpx_transport_imports(collector_source("cian_collect.py")) == []
+
+
+@pytest.mark.parametrize("name", list(LAYER_IMPORTS))
+def test_21_78_layer_order(name):
+    """21.78 Порядок слоёв без циклов (crawl → page_fetch → transport,
+    search_page): page_fetch берёт из пакета только transport и
+    search_page, реализации транспорта — только transport. Модуль 21."""
+    source = collector_source(name)
+    assert foreign_package_imports(source, LAYER_IMPORTS[name]) == []
 
 
 @pytest.mark.parametrize("name", ("cian_collect.py", *PACKAGE_MODULES))
@@ -3750,8 +4046,8 @@ def test_21_78_no_relative_imports(name):
 
 @pytest.mark.parametrize("name", LEAF_MODULES)
 def test_21_78_leaf_modules_import_no_package(name):
-    """21.78 search_page, geometry, run_folder не импортируют никого из пакета
-    collector (правило импорта, 2.1 документа). Модуль 21."""
+    """21.78 search_page, geometry, run_folder и transport не импортируют
+    никого из пакета collector (правило импорта, 2.1 документа). Модуль 21."""
     assert package_imports(collector_source(name)) == []
 
 
@@ -3789,11 +4085,11 @@ GUARD_SAMPLES = [
     (disk_imports, "import shutil"),
     (disk_imports, "from os import makedirs"),
     (disk_calls, "resp = self.opener.open(req)"),
-    (net_disk_calls, "raw = gzip.open(p).read()"),
-    (net_disk_calls, "text = Path(p).open().read()"),
-    (net_disk_calls, "text = open('x').read()"),
-    (net_disk_imports, "import pathlib"),
-    (net_disk_imports, "from os import makedirs"),
+    (transport_disk_calls, "raw = gzip.open(p).read()"),
+    (transport_disk_calls, "text = Path(p).open().read()"),
+    (transport_disk_calls, "text = open('x').read()"),
+    (memory_disk_imports, "import pathlib"),
+    (memory_disk_imports, "from os import makedirs"),
     (disk_calls, "os.makedirs(folder, exist_ok=True)"),
     (disk_calls, "found = os.path.exists(p)"),
     (disk_calls, "age = os.path.getmtime(p)"),
@@ -3811,8 +4107,26 @@ GUARD_SAMPLES = [
     (cian_collect_imports, "from . import cian_collect"),
     (cian_collect_imports, "from .cian_collect import main"),
     (cian_collect_imports, "import cian_collect"),
-    (net_imports, "from collector import net"),
-    (net_imports, "from .net import Fetcher"),
+    (urllib_transport_imports, "from collector import urllib_transport"),
+    (urllib_transport_imports, "from .urllib_transport import UrllibTransport"),
+    (httpx_transport_imports, "import collector.httpx_transport"),
+    (httpx_transport_imports, "from collector.httpx_transport import HttpxTransport"),
+    (httpx_imports, "import httpx"),
+    (httpx_imports, "from httpx import Client"),
+    (eager_httpx_transport_imports, "from collector import httpx_transport"),
+    (
+        eager_httpx_transport_imports,
+        "class Maker:\n    from collector import httpx_transport",
+    ),
+    (
+        eager_httpx_transport_imports,
+        "try:\n    from collector import httpx_transport\nexcept ImportError:\n"
+        "    httpx_transport = None",
+    ),
+    (transport_layer_imports, "from collector import crawl"),
+    (transport_layer_imports, "from collector.page_fetch import PageFetcher"),
+    (transport_layer_imports, "import search_page"),
+    (package_imports, "from collector import transport"),
     (package_imports, "from collector import crawl"),
     (package_imports, "import collector.search_page"),
     (package_imports, "from . import geometry"),
@@ -3863,24 +4177,52 @@ import math
 from dataclasses import dataclass
 """
 
-# Образец разрешённого модулю сети: HTTP-запрос self.opener.open, часы —
-# только time.monotonic, сжатие — в памяти (gzip.decompress, zlib), из
-# пакета — search_page.
-EDGE_CLEAN_SAMPLE = """
+# Образец разрешённого page_fetch: часы — переданная функция monotonic,
+# сжатие — в памяти (gzip.decompress, zlib), из пакета — transport и
+# search_page.
+PAGE_FETCH_CLEAN_SAMPLE = """
 import gzip
-import time
-import urllib.parse
 import zlib
+from collections.abc import Callable
 
-from collector import search_page
+from collector import search_page, transport
 
 
-def body(self, req) -> str:
-    t0 = time.monotonic()
-    with self.opener.open(req) as resp:
-        raw = resp.read()
+def body(raw: bytes, monotonic: Callable[[], float]) -> str:
+    started = monotonic()
     text = gzip.decompress(raw) + zlib.decompress(raw, -zlib.MAX_WBITS)
-    return text.decode() + str(time.monotonic() - t0) + search_page.CIAN_BASE_URL
+    took = str(monotonic() - started)
+    return text.decode() + took + search_page.CIAN_BASE_URL + transport.COOKIE_DOMAIN
+"""
+
+# Образец разрешённого urllib_transport: сеть stdlib, HTTP-запрос
+# self.opener.open, из пакета — transport.
+URLLIB_TRANSPORT_CLEAN_SAMPLE = """
+import http.cookiejar
+import socket
+import urllib.error
+import urllib.request
+
+from collector import transport
+from collector.transport import HttpReply
+
+
+def get(self, request) -> HttpReply:
+    with self.opener.open(request, timeout=transport.HTTP_TIMEOUT_S) as response:
+        return HttpReply(response.status, {}, response.read())
+"""
+
+# Образец разрешённого cian_collect: httpx_transport — только внутри функции.
+LAZY_CLEAN_SAMPLE = """
+from collector import urllib_transport
+
+
+def make_transport(name, cookie_header):
+    if name == "httpx":
+        from collector import httpx_transport
+
+        return httpx_transport.HttpxTransport(cookie_header)
+    return urllib_transport.UrllibTransport(cookie_header)
 """
 
 
@@ -3894,12 +4236,24 @@ def body(self, req) -> str:
         (cian_collect_imports, CLEAN_SAMPLE),
         (relative_imports, CLEAN_SAMPLE),
         (package_imports, LEAF_CLEAN_SAMPLE),
-        (network_imports, EDGE_CLEAN_SAMPLE),
-        (wall_clock_or_random_uses, EDGE_CLEAN_SAMPLE),
-        (net_disk_calls, EDGE_CLEAN_SAMPLE),
-        (net_disk_imports, EDGE_CLEAN_SAMPLE),
-        (stdout_use, EDGE_CLEAN_SAMPLE),
-        (net_imports, EDGE_CLEAN_SAMPLE),
+        (network_or_clock_imports, PAGE_FETCH_CLEAN_SAMPLE),
+        (wall_clock_or_random_uses, PAGE_FETCH_CLEAN_SAMPLE),
+        (memory_disk_imports, PAGE_FETCH_CLEAN_SAMPLE),
+        (disk_calls, PAGE_FETCH_CLEAN_SAMPLE),
+        (stdout_use, PAGE_FETCH_CLEAN_SAMPLE),
+        (
+            functools.partial(
+                foreign_package_imports, allowed=LAYER_IMPORTS["page_fetch.py"]
+            ),
+            PAGE_FETCH_CLEAN_SAMPLE,
+        ),
+        (transport_disk_calls, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (disk_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (wall_clock_or_random_uses, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (httpx_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (transport_layer_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (eager_httpx_transport_imports, LAZY_CLEAN_SAMPLE),
+        (httpx_imports, LAZY_CLEAN_SAMPLE),
     ],
     ids=[
         "сеть и часы",
@@ -3909,12 +4263,19 @@ def body(self, req) -> str:
         "cian_collect",
         "абсолютные импорты",
         "лист",
-        "сеть: urllib.parse и time",
-        "сеть: time.monotonic",
-        "сеть: opener.open и gzip в памяти",
-        "сеть: импорт gzip",
-        "сеть: stdout",
-        "сеть: импорт search_page",
+        "page_fetch: monotonic аргументом",
+        "page_fetch: время стены и random",
+        "page_fetch: импорт gzip",
+        "page_fetch: gzip и zlib в памяти",
+        "page_fetch: stdout",
+        "page_fetch: transport и search_page",
+        "urllib_transport: opener.open",
+        "urllib_transport: импорты сети",
+        "urllib_transport: время стены и random",
+        "urllib_transport: без httpx",
+        "urllib_transport: только transport",
+        "cian_collect: httpx_transport внутри функции",
+        "cian_collect: без httpx",
     ],
 )
 def test_21_78_guard_allows_clean_sample(check, sample):
@@ -3922,6 +4283,8 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     rnd, время через переданную now и методы переданного времени
     (fromisoformat, astimezone), urllib.parse, os.path.basename, импорт
     соседних модулей, без печати в stdout; у листа — импорты стандартной
-    библиотеки; у модуля сети — time.monotonic, gzip и zlib в памяти,
-    импорт search_page. Модуль 21."""
+    библиотеки; у page_fetch — переданный monotonic, gzip и zlib в памяти,
+    импорт transport и search_page; у urllib_transport — сеть stdlib,
+    self.opener.open, импорт transport; у cian_collect — импорт
+    httpx_transport внутри функции. Модуль 21."""
     assert check(sample) == []
