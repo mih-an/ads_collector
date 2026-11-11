@@ -1529,15 +1529,16 @@ def test_21_27_http_error_broken_deflate(fetch_env):
     assert (code, body, size) == (500, "not deflate", 11)
 
 
+def broken_decode(raw: bytes, content_encoding: str | None) -> str:
+    """Подмена net.decode_body: ошибка разбора тела, но не распаковки."""
+    raise ValueError("неожиданная ошибка разбора тела")
+
+
 def test_21_27_http_error_unexpected_decode_error_raises(fetch_env, monkeypatch):
     """21.27 Ответ-ошибка, при разборе тела которого случилась не ошибка
     распаковки (ValueError из decode_body), — исключение летит из get_serp,
     а не глотается: except сужен до OSError, EOFError, zlib.error (З164;
     «ошибки громко»). Модуль 21."""
-
-    def broken_decode(raw: bytes, content_encoding: str | None) -> str:
-        raise ValueError("неожиданная ошибка разбора тела")
-
     monkeypatch.setattr(net, "decode_body", broken_decode)
     session = fetcher(fetch_env, replies=[Reply(500, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
@@ -1576,6 +1577,53 @@ def test_21_29_network_errors(fetch_env, reply, detail):
     пусто, заголовков нет. Модуль 21."""
     result = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
     assert result == (0, "", 0, 250.0, detail, {})
+
+
+# Битое сжатие тела (З167): тело и Content-Encoding. Распаковка падает:
+# BadGzipFile (OSError), EOFError, zlib.error.
+BROKEN_COMPRESSION = {
+    "битый gzip": (b"not gzip", "gzip"),
+    "обрезанный gzip": (TRUNCATED_GZIP, "gzip"),
+    "битый deflate": (b"not deflate", "deflate"),
+}
+
+
+def decompress_error(raw: bytes, encoding: str) -> str:
+    """Текст исключения, которым стандартная библиотека отвечает на
+    распаковку raw, — то, что идёт в деталь decode:<текст> (З167)."""
+    try:
+        if encoding == "gzip":
+            gzip.decompress(raw)
+        else:
+            zlib.decompress(raw, -zlib.MAX_WBITS)
+    except (OSError, EOFError, zlib.error) as error:
+        return str(error)
+    raise AssertionError(f"{raw!r} распаковался без ошибки")
+
+
+@pytest.mark.parametrize(
+    ("raw", "encoding"),
+    list(BROKEN_COMPRESSION.values()),
+    ids=list(BROKEN_COMPRESSION),
+)
+def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
+    """21.29 Ответ 200 с битым сжатием (BadGzipFile, EOFError, zlib.error) —
+    сбой сети: код 0, тело пусто, размер 0, деталь decode:<текст
+    исключения>, заголовков нет (З167). Модуль 21."""
+    reply = Reply(200, raw, {"Content-Encoding": encoding})
+    result = fetcher(fetch_env, replies=[reply]).get_serp(fetch_env.url)
+    detail = "decode:" + decompress_error(raw, encoding)
+    assert result == (0, "", 0, 250.0, detail, {})
+
+
+def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
+    """21.29 Ответ 200, при разборе тела которого случилась не ошибка
+    распаковки (ValueError из decode_body), — исключение летит из get_serp,
+    не глотается (З167, «ошибки громко»). Модуль 21."""
+    monkeypatch.setattr(net, "decode_body", broken_decode)
+    session = fetcher(fetch_env, replies=[Reply(200, b"oops")])
+    with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
+        session.get_serp(fetch_env.url)
 
 
 def test_21_30_timeout_45_seconds(fetch_env):
@@ -2237,12 +2285,17 @@ def test_21_45_no_pause_when_budget_spent(env, monkeypatch):
     assert env.clock.pauses == []
 
 
-def retry_run(env, monkeypatch, failures: int, *args):
-    """Прогон: страница 1 клетки B отвечает 500 failures раз подряд, потом
-    OK (B — две страницы, total 30). Окно 0,01 ч: средний интервал 0,72 с,
-    паузы листания меньше 2 с — всё, что от 60 с и больше в FakeTime.pauses,
-    это паузы повторов (21.46)."""
-    errors = [Reply(500, b"oops") for _ in range(failures)]
+HTTP_500 = Reply(500, b"oops")
+# Ответ 200 с обрезанным gzip: сбой сети с повторами, как 500 (З167).
+TRUNCATED_OK = Reply(200, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
+
+
+def retry_run(env, monkeypatch, failures: int, *args, failure: Reply = HTTP_500):
+    """Прогон: страница 1 клетки B отвечает failure (по умолчанию 500)
+    failures раз подряд, потом OK (B — две страницы, total 30). Окно
+    0,01 ч: средний интервал 0,72 с, паузы листания меньше 2 с — всё, что
+    от 60 с и больше в FakeTime.pauses, это паузы повторов (21.46)."""
+    errors = [failure] * failures
     replies = {(B, 1): errors + [page(100, 28, 30)], (B, 2): [page(128, 2, 30)]}
     return run_main(
         env, monkeypatch, CELLS, short_a() | replies, "--window-hours", "0.01", *args
@@ -2307,6 +2360,50 @@ def test_21_46_fourth_failure_stops(env, monkeypatch):
             "spent": "5",
         }
     ]
+
+
+def test_21_46_broken_compression_retried(env, monkeypatch):
+    """21.46 Битое сжатие в ответе 200 на стр. 1 клетки B, затем страница:
+    один повтор (строка retry), клетка дочитана, ночь идёт дальше (З167).
+    Модуль 21."""
+    run_dir = retry_run(env, monkeypatch, 1, failure=TRUNCATED_OK)
+    summary = summary_of(run_dir)
+    assert (
+        len(events(run_dir, "retry")),
+        summary["stopped"],
+        summary["sectors"][B]["pages_done"],
+    ) == (1, "queue_empty", [1, 2])
+
+
+def test_21_46_broken_compression_fourth_stops(env, monkeypatch):
+    """21.46 Битое сжатие в ответе 200 четыре раза подряд — STOP net_error
+    (cls NET_ERROR, деталь decode:<текст>), summary.json записан, stopped
+    net_error (З167). Модуль 21."""
+    run_dir = retry_run(env, monkeypatch, 4, failure=TRUNCATED_OK)
+    detail = "decode:" + decompress_error(TRUNCATED_GZIP, "gzip")
+    stop = {
+        "event": "STOP",
+        "reason": "net_error",
+        "cls": "NET_ERROR",
+        "detail": detail,
+        "spent": "5",
+    }
+    assert (events(run_dir, "STOP"), summary_of(run_dir)["stopped"]) == (
+        [stop],
+        "net_error",
+    )
+
+
+def test_21_46_broken_compression_on_smoke(env, monkeypatch):
+    """21.46 Битое сжатие на пробе — smoke_failed, класс NET_ERROR, без
+    повторов: один запрос (З167). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [TRUNCATED_OK]})
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_class"], len(env.player.sent)) == (
+        "smoke_failed",
+        "NET_ERROR",
+        1,
+    )
 
 
 BLOCK_HEADERS = {
