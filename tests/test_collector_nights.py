@@ -608,11 +608,23 @@ def night_log_violations(run_dir: Path) -> list[str]:
     return found
 
 
+def snapshot_keys(snapshot) -> list[str]:
+    """Ключи клеток снимка по алфавиту; клетка без properties.sector — метка
+    «<нет properties.sector>», снимок без features — пусто: обе пропажи
+    видны как расхождение с sectors, а не KeyError."""
+    features = snapshot.get("features") if isinstance(snapshot, dict) else None
+    keys = []
+    for feature in features if isinstance(features, list) else []:
+        properties = feature.get("properties") if isinstance(feature, dict) else None
+        sector = properties.get("sector") if isinstance(properties, dict) else None
+        keys.append(sector if isinstance(sector, str) else "<нет properties.sector>")
+    return sorted(keys)
+
+
 def snapshot_violations(run_dir: Path, summary: dict) -> list[str]:
     """Ключи снимка = ключам summary.json sectors (без порядка); mtime gzip 0."""
     raw = (run_dir / "polygons.geojson.gz").read_bytes()
-    snapshot = json.loads(gzip.decompress(raw))
-    keys = sorted(f["properties"]["sector"] for f in snapshot["features"])
+    keys = snapshot_keys(json.loads(gzip.decompress(raw)))
     found = []
     if keys != sorted(summary["sectors"]):
         found.append(
@@ -625,27 +637,44 @@ def snapshot_violations(run_dir: Path, summary: dict) -> list[str]:
     return found
 
 
-def offers_on_pages(run_dir: Path, pages: set[tuple[str, int]], key: str) -> int:
-    """Объявлений на всех страницах .json.gz клетки key (pages — page_files)."""
-    count = 0
-    for cell, page in pages:
-        if cell == key:
-            path = run_dir / "raw" / f"{cell}_p{page}.json.gz"
-            count += len(json.loads(gzip.decompress(path.read_bytes()))["offers"])
-    return count
+def page_offers(path: Path) -> list | None:
+    """Список offers страницы raw/*.json.gz; нет списка — None."""
+    page = json.loads(gzip.decompress(path.read_bytes()))
+    offers = page.get("offers") if isinstance(page, dict) else None
+    return offers if isinstance(offers, list) else None
+
+
+def offers_on_pages(
+    run_dir: Path, pages: set[tuple[str, str]], key: str
+) -> tuple[int, list[str]]:
+    """Объявлений на страницах .json.gz клетки key (pages — page_files) и
+    имена страниц без списка offers."""
+    count, missing = 0, []
+    for cell, page in sorted(pages):
+        if cell != key:
+            continue
+        name = f"raw/{cell}_p{page}.json.gz"
+        offers = page_offers(run_dir / name)
+        if offers is None:
+            missing.append(name)
+        else:
+            count += len(offers)
+    return count, missing
 
 
 def ids_violations(run_dir: Path, summary: dict) -> list[str]:
-    """unique_ids + duplicate_ids клетки = объявлений на её страницах."""
+    """unique_ids + duplicate_ids клетки = объявлений на её страницах;
+    страница без offers — то же нарушение с её именем."""
     pages = page_files(run_dir, "json")
     found = []
     for key, sector in summary["sectors"].items():
         counted = sector["unique_ids"] + sector["duplicate_ids"]
-        offers = offers_on_pages(run_dir, pages, key)
-        if counted != offers:
+        offers, missing = offers_on_pages(run_dir, pages, key)
+        if counted != offers or missing:
+            without = f"; без списка offers: {', '.join(missing)}" if missing else ""
             found.append(
                 f"summary.json, sectors[{key}]: unique_ids + duplicate_ids = "
-                f"{counted} ≠ {offers} объявлений на страницах raw/"
+                f"{counted} ≠ {offers} объявлений на страницах raw/{without}"
             )
     return found
 
@@ -663,20 +692,22 @@ def spent_violations(summary: dict, plan: dict, log: list[dict]) -> list[str]:
     ]
 
 
-def page_files(run_dir: Path, kind: str) -> set[tuple[str, int]]:
-    """(клетка, страница) файлов raw/<клетка>_p<N>.<kind>.gz."""
+def page_files(run_dir: Path, kind: str) -> set[tuple[str, str]]:
+    """(клетка, страница строкой) файлов raw/<клетка>_p<N>.<kind>.gz; raw не
+    папка — пусто (это уже нарушение состава)."""
+    raw = run_dir / "raw"
     found = set()
-    for path in (run_dir / "raw").iterdir():
+    for path in raw.iterdir() if raw.is_dir() else []:
         match = PAGE_FILE.fullmatch(path.name)
         if match and match[3] == kind:
-            found.add((match[1], int(match[2])))
+            found.add((match[1], match[2]))
     return found
 
 
 def pages_violations(run_dir: Path, log: list[dict]) -> list[str]:
     """У каждой строки verdict=OK есть .json.gz и .html.gz страницы, и
-    наоборот."""
-    ok = {(r["sector"], int(r["page"])) for r in log if r.get("verdict") == "OK"}
+    наоборот. Страница сравнивается строкой: page=x не роняет проверку."""
+    ok = {(r["sector"], r["page"]) for r in log if r.get("verdict") == "OK"}
     found = []
     for kind in ("json", "html"):
         files = page_files(run_dir, kind)
@@ -725,10 +756,12 @@ def run_folder_violations(run_dir: Path) -> list[str]:
     found = layout_violations(run_dir)
     if any(not (run_dir / name).exists() for name in RUN_FILES):
         return found  # без обязательного файла дальше читать нечего
-    found += json_violations(run_dir) + night_log_violations(run_dir)
-    if found:
-        return found  # инварианты читают ключи и поля, проверенные выше
-    return invariant_violations(run_dir)
+    checked = json_violations(run_dir) + night_log_violations(run_dir)
+    if checked:
+        # инварианты читают ключи summary.json и plan.json и имена полей
+        # night.log — их и проверили выше
+        return found + checked
+    return found + invariant_violations(run_dir)
 
 
 # Проигрывания под контракт: метка ночи, доп. аргументы, замена ответов и
@@ -811,13 +844,18 @@ def increment(obj: dict, key: str) -> None:
     obj[key] += 1
 
 
-def rewrite_snapshot(run_dir: Path, drop_last: bool, mtime: int) -> None:
-    """Снимок охвата заново: без последней клетки и/или с mtime gzip."""
+def rewrite_snapshot(run_dir: Path, change=None, mtime: int = 0) -> None:
+    """Снимок охвата заново: после change(snapshot), с mtime gzip."""
     path = run_dir / "polygons.geojson.gz"
     snapshot = json.loads(gzip.decompress(path.read_bytes()))
-    if drop_last:
-        snapshot["features"].pop()
+    if change is not None:
+        change(snapshot)
     path.write_bytes(gzip.compress(json.dumps(snapshot).encode(), mtime=mtime))
+
+
+def write_page(run_dir: Path, name: str, page: dict) -> None:
+    """Страница raw/<name> заново: gzip JSON page."""
+    (run_dir / "raw" / name).write_bytes(gzip.compress(json.dumps(page).encode()))
 
 
 def log_line(*fields: str) -> str:
@@ -879,6 +917,12 @@ SPOILS = {
         ),
         ("summary.json, smoke:", "ждали sector"),
     ),
+    "порядок ключей smoke в plan": (
+        lambda d: edit_json(
+            d / "plan.json", lambda p: move_to_end(p["smoke"], "sector")
+        ),
+        ("plan.json, smoke:", "ждали sector"),
+    ),
     "нет smoke": (
         lambda d: edit_json(d / "summary.json", lambda s: s.pop("smoke")),
         ("summary.json:", "нет ключа smoke"),
@@ -914,6 +958,12 @@ SPOILS = {
             d / "summary.json", lambda s: s["split_events"][0].update(extra=1)
         ),
         ("summary.json, split_events[0]", "лишний ключ extra"),
+    ),
+    "лишний ключ в split_events plan": (
+        lambda d: edit_json(
+            d / "plan.json", lambda p: p["split_events"][0].update(extra=1)
+        ),
+        ("plan.json, split_events[0]", "лишний ключ extra"),
     ),
     "dry_run true": (
         lambda d: edit_json(d / "summary.json", lambda s: s.update(dry_run=True)),
@@ -961,12 +1011,39 @@ SPOILS = {
         ("night.log, строка 2:", "поля"),
     ),
     "клетка выпала из снимка": (
-        lambda d: rewrite_snapshot(d, drop_last=True, mtime=0),
+        lambda d: rewrite_snapshot(d, lambda s: s["features"].pop()),
         ("polygons.geojson.gz:", "sectors"),
     ),
+    "снимок без features": (
+        lambda d: rewrite_snapshot(d, lambda s: s.pop("features")),
+        ("polygons.geojson.gz:", "ключи снимка []"),
+    ),
+    "клетка снимка без sector": (
+        lambda d: rewrite_snapshot(
+            d, lambda s: s["features"][0]["properties"].pop("sector")
+        ),
+        ("polygons.geojson.gz:", "<нет properties.sector>"),
+    ),
     "mtime снимка": (
-        lambda d: rewrite_snapshot(d, drop_last=False, mtime=1),
+        lambda d: rewrite_snapshot(d, mtime=1),
         ("polygons.geojson.gz:", "mtime"),
+    ),
+    "страница без offers": (
+        lambda d: write_page(d, "T0611_p1.json.gz", {"totalOffers": 87}),
+        ("summary.json, sectors[T0611]", "без списка offers: raw/T0611_p1.json.gz"),
+    ),
+    "page=x в строке OK": (
+        lambda d: edit_text(
+            d / "night.log", "page=1\tkind=smoke", "page=x\tkind=smoke"
+        ),
+        ("raw/T0611_p1.json.gz:", "файл есть"),
+    ),
+    "лишний файл и spent + 1": (
+        lambda d: [
+            write_text(d / "notes.txt", "x"),
+            edit_json(d / "summary.json", lambda s: increment(s, "spent")),
+        ],
+        ("summary.json: spent",),
     ),
     "unique_ids + 1": (
         lambda d: edit_json(
@@ -1020,4 +1097,40 @@ def test_21_79_contract_catches_spoiled(clean_run, spoil, words):
 def test_21_79_contract_allows_clean_run(clean_run):
     """21.79 Нетронутая папка чистой ночи — нарушений нет: основа пробы
     контракта сама по формату. Модуль 21."""
+    assert run_folder_violations(clean_run) == []
+
+
+# Верные образцы видов, которых не дают проигрывания: подставляются в папку
+# чистой ночи, инвариантов не задевают (smoke они не читают, строки событий
+# не несут kind и verdict).
+RARE_KINDS = {
+    "строка smoke_empty": lambda d: append_text(
+        d / "night.log",
+        log_line("event=smoke_empty", "sector=T0611", "note=сектор пуст, беру другой"),
+    ),
+    "строка split_skip": lambda d: append_text(
+        d / "night.log",
+        log_line("event=split_skip", "sector=T0611", "note=нет непустых четвертей"),
+    ),
+    "smoke EMPTY": lambda d: edit_json(
+        d / "summary.json",
+        lambda s: s.update(
+            smoke={"sector": "T0611", "verdict": "EMPTY", "offers": 0, "total": 0}
+        ),
+    ),
+    "smoke провала пробы": lambda d: edit_json(
+        d / "summary.json",
+        lambda s: s.update(
+            smoke={"sector": "T0611", "verdict": "BLOCK", "detail": "http_403"}
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("put", list(RARE_KINDS.values()), ids=list(RARE_KINDS))
+def test_21_79_contract_allows_rare_kinds(clean_run, put):
+    """21.79 Верные образцы видов, которых не дают проигрывания (строки
+    smoke_empty и split_skip, smoke вида EMPTY и вида «провал пробы»), —
+    нарушений нет: таблицы этих видов не ловят лишнего. Модуль 21."""
+    put(clean_run)
     assert run_folder_violations(clean_run) == []
