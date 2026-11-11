@@ -112,7 +112,14 @@ class Fetcher:
         try:
             with self.opener.open(req, timeout=HTTP_TIMEOUT_S) as resp:
                 raw = resp.read()
-                body = decode_body(raw, resp.headers.get("Content-Encoding"))
+                try:
+                    body = decode_body(raw, resp.headers.get("Content-Encoding"))
+                # битое сжатие страницы 200 — сбой сети с повторами, а не
+                # падение ночи (21.29, 21.46; решение Андрея 11.11, З167);
+                # иные ошибки летят наружу
+                except (OSError, EOFError, zlib.error) as e:
+                    ms = (time.monotonic() - t0) * 1000
+                    return Response(0, "", 0, ms, f"decode:{e}", {})
                 ms = (time.monotonic() - t0) * 1000
                 return Response(
                     resp.status, body, len(raw), ms, None, lower_headers(resp.headers)
