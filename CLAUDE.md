@@ -127,11 +127,11 @@
 
 ## 8. Окружение на Mac Андрея
 
-- Своего `.venv` пока нет. Python и ruff — абсолютным путём из готового окружения (разрешение — в `.claude/settings.local.json`):
-  - `/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q …`
-  - `/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff check .` и `… ruff format --check .`
-  - `/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m mypy`
-- Не создавать окружение и ничего не устанавливать.
+- Своё окружение — `.venv` в корне, собирает Андрей скриптом `scripts/setup_env.sh` (решение Андрея 11.11). Python и ruff — абсолютным путём:
+  - `/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q …`
+  - `/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff check .` и `… ruff format --check .`
+  - `/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m mypy`
+- Не создавать и не пересобирать окружение, ничего не устанавливать: новая зависимость — вопрос Андрею, ставит он сам. Окружение land-monitor (`../land-monitor-raw/.venv`) не трогать.
 - Команды bash — простые: без `$…`, `$(…)`, `;` и `&&`. Запуск — из корня репозитория.
 - Поиск по файлам — только Grep и Glob, не grep/rg/find через Bash; если Grep недоступен — `git grep` (разрешён в настройках). Без `cd` и конвейеров (`|`).
 - Разовые опыты — файлом в `var/scratch/` (Write), запуск тем же абсолютным python: `<python> var/scratch/<имя>.py`; путь к проекту ставит сам скрипт — `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов `collector`.
