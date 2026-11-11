@@ -1,7 +1,8 @@
 """Фикстуры тестов сборщика ЦИАН (модуль 21): выборка клеток настоящих ночей.
 
-Получает каталог прогонов (data/runs), файл клеток (geo/), страницы
-Servicepipe (var/scratch/servicepipe) и каталог-приёмник; пишет в приёмник
+Получает каталог прогонов (data/runs) и файл клеток (geo/) — оба лежат в
+репозитории land-monitor, здесь их нет, — страницы Servicepipe
+(var/scratch/servicepipe) и каталог-приёмник; пишет в приёмник
 вход проигрывания каждой ночи: meta.json (аргументы прогона, seed),
 tiles.geojson (клетки выборки на начало ночи, деления этой ночи откачены),
 responses.json (ответы ЦИАН по ключу «клетка, страница» в порядке
@@ -23,13 +24,16 @@ expected/ этот скрипт не пишет: это папка прогон�
 отличается от запущенной только проверками (коммит 467536e и правки по
 ревью PR #116) и импортом serp/geometry из пакета collector (раньше —
 загрузка файлом по пути, PR #121); выход у неё тот же байт в байт.
-Выборка ночи 2026-09-18_2306 убрана вместе с её фикстурой (З165); поля
-NightSample, нужные только ей, оставлены. Текст
-README приведён к tests/fixtures/collector/README.md (пояснение к
-servicepipe/, З155).
+Выборка ночи 2026-09-18_2306 убрана вместе с её фикстурой (З165). Из
+полей NightSample удалено has_html (у всех выборок было True); поля
+discovery, may_skip и budget остаются: они идут в meta.json уже
+записанных фикстур. Текст README приведён к
+tests/fixtures/collector/README.md (пояснение к servicepipe/, З155).
 
 Запуск один раз из корня репозитория (каталога <out>/nights ещё нет),
-модулем — так пакет collector виден из корня:
+только модулем — так пакет collector виден из корня; файлом
+(python scripts/collector_fixtures.py) пакет не найдётся. Пути data/runs
+и geo/ — в клоне land-monitor:
   .venv/bin/python -m scripts.collector_fixtures --runs-dir data/runs \
     --tiles geo/cian_collect_tiles.geojson \
     --servicepipe var/scratch/servicepipe --out <каталог>

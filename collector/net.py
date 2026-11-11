@@ -4,7 +4,7 @@ net.py — вся сеть сборщика: запрос страницы вы�
 Получает UA и строку кук билета (Fetcher), отдаёт serp.Response на каждый
 запрос: куки в банке с ротацией из Set-Cookie, заголовки как у браузера,
 распаковка тела, без редиректов, длительность запроса по time.monotonic.
-Сбой сети — Response с кодом 0 и деталью. Пакет импортирует только serp.
+Сбой сети — Response с кодом 0 и деталью. Из пакета берёт только serp.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class Fetcher:
     def _do(self, req) -> Response:
         """→ Response(code, body, size, ms, neterr, headers). neterr заполнен при
         сетевом сбое. decode_body берётся по имени модуля в момент вызова: так
-        его подменяет тест 21.27."""
+        его подменяют кейсы 21.27 и 21.29."""
         t0 = time.monotonic()
         try:
             with self.opener.open(req, timeout=HTTP_TIMEOUT_S) as resp:

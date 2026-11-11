@@ -193,7 +193,7 @@ def main() -> None:
     wait_start(settings, rnd)
     ticket = read_ticket(settings, time.time(), rnd)
     # Fetcher и time берутся по имени модуля в момент вызова: так их подменяют
-    # тесты (net.Fetcher, cc.time)
+    # тесты (net.Fetcher, cian_collect.time)
     fetcher = net.Fetcher(ticket.ua, ticket.cookie_header)
     edges = Edges(get_serp=fetcher.get_serp, rnd=rnd, now=now_local, sleep=time.sleep)
     night = Night(settings, tiles, grid, ticket, edges)
