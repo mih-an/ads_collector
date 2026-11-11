@@ -59,7 +59,7 @@ TEXT_FILES = ("night.log", "plan.json", "summary.json")
 RUN_FILES = ["night.log", "plan.json", "polygons.geojson.gz", "raw", "summary.json"]
 
 # Тело синтетических ответов-ошибок. Почему синтетическое (data-checker
-# 10.11): HTML сохраняется только при OK (Night.request); тел
+# 10.11): HTML сохраняется только при OK (Crawl.request); тел
 # 301/500/553 и тайм-аутов в 101 прогоне data/runs нет. Сборщику важен код.
 ERROR_BODY = b"<html>error</html>"
 

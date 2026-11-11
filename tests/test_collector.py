@@ -7,7 +7,7 @@
 net.Fetcher сборщика получает ответы от CianPlayer
 (tests/collector_support.py); часы и сон подменены, случайность — --seed,
 папки и билет — во временной папке теста. Имена берутся из своих модулей:
-serp (разбор ответа), geometry (клетки), net (сеть), night (ночь); через
+search_page (разбор ответа), geometry (клетки), net (сеть), crawl (обход); через
 cc — только запуск и края.
 
 Точки подмены, которые код обязан сохранить:
@@ -21,12 +21,12 @@ cc — только запуск и края.
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста, net.time и cc.time — одним FakeTime;
 - cc.parse_settings, cc.read_ticket, cc.now_local, cc.random (Random,
-  randrange) и night.Night.sleep_between (подглядывание в 21.36);
-- чистые функции serp и geometry, помощники net (parse_cookie_header,
+  randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
+- чистые функции search_page и geometry, помощники net (parse_cookie_header,
   seed_jar, lower_headers, NoRedirect) — с теми же сигнатурами; файлы
   прогона — в том же формате.
 Тесты с пометкой «Внутреннее» держат поведение через внутренний интерфейс
-(функции правил night, run_folder, методы Night), а не через main.
+(функции правил crawl, run_folder, методы Crawl), а не через main.
 """
 
 import ast
@@ -64,7 +64,7 @@ from collector_support import (  # noqa: F401 — no_network: автофикст
 )
 
 import collector.cian_collect as cc
-from collector import geometry, net, night, serp
+from collector import crawl, geometry, net, search_page
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "collector"
@@ -153,7 +153,7 @@ def offer(oid: int) -> dict:
     }
 
 
-def serp_html(offers: list, total) -> str:
+def search_page_html(offers: list, total) -> str:
     """Страница выдачи: два блока _cianConfig, нужный initialState — второй."""
     state = {"results": {"totalOffers": total, "offers": offers}}
     return (
@@ -168,7 +168,7 @@ def serp_html(offers: list, total) -> str:
 def page(first_id: int, count: int, total) -> Reply:
     """Ответ 200: страница с count объявлениями, id подряд с first_id."""
     offers = [offer(first_id + i) for i in range(count)]
-    return Reply(200, serp_html(offers, total).encode("utf-8"))
+    return Reply(200, search_page_html(offers, total).encode("utf-8"))
 
 
 def short_a(total: int = 6) -> dict:
@@ -240,7 +240,7 @@ def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=F
 def settings_of(folder: Path, **changes):
     """Settings ночи сценария: файл клеток и runs/ в папке теста, бюджет 50,
     окно 1 ч, без пробы-only и паузы старта, seed 1; changes перекрывают."""
-    settings = night.Settings(
+    settings = crawl.Settings(
         budget=50,
         window_hours=1.0,
         tiles_path=str(folder / "tiles.geojson"),
@@ -264,21 +264,21 @@ def tile_state(**changes):
         "parent": None,
         "base": None,
     }
-    return night.TileState(**(fields | changes))
+    return crawl.TileState(**(fields | changes))
 
 
 def fake_ticket():
     """Билет сценария: кука, UA и возраст — как у билета в папке env."""
-    return night.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
+    return crawl.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
 
 
-def make_night(env, features, **changes):
-    """Night нового интерфейса без main(): файл клеток features, билет как в
+def make_crawl(env, features, **changes):
+    """Crawl нового интерфейса без main(): файл клеток features, билет как в
     env, сеть — проигрыватель env, часы и сон — env; changes — поля Settings."""
     write_features(env.tiles, features)
     tiles = geometry.load_sectors(str(env.tiles))
     ticket = fake_ticket()
-    edges = night.Edges(
+    edges = crawl.Edges(
         get_serp=net.Fetcher(USER_AGENT, FAKE_COOKIE).get_serp,
         rnd=random.Random(1),
         now=cc.now_local,
@@ -286,7 +286,7 @@ def make_night(env, features, **changes):
     )
     settings = settings_of(env.folder, **changes)
     grid = geometry.infer_tile_grid(tiles)
-    return night.Night(settings, tiles, grid, ticket, edges)
+    return crawl.Crawl(settings, tiles, grid, ticket, edges)
 
 
 def read_json(path: Path):
@@ -319,9 +319,14 @@ def pages_asked(env, cell: str) -> list[int]:
 
 def test_21_1_page_gives_ok_total_offers():
     """21.1 Страница выдачи → OK, «-», totalOffers и объявления как в
-    странице (classify_serp, _finish). Модуль 21."""
+    странице (classify_page, _finish). Модуль 21."""
     offers = [offer(1), offer(2)]
-    assert serp.classify_serp(200, serp_html(offers, 60)) == (serp.OK, "-", 60, offers)
+    assert search_page.classify_page(200, search_page_html(offers, 60)) == (
+        search_page.OK,
+        "-",
+        60,
+        offers,
+    )
 
 
 def full_page(label: str, name: str) -> str:
@@ -344,9 +349,9 @@ def test_21_2_real_page_right_initial_state(label, name, expected):
     (7, 5 или 3); сборщик берёт то, где results.offers: totalOffers и
     число объявлений = записанным той ночью. Модуль 21."""
     html = full_page(label, name)
-    verdict, _, total, offers = serp.classify_serp(200, html)
+    verdict, _, total, offers = search_page.classify_page(200, html)
     found = (html.count("initialState"), total, len(offers))
-    assert (verdict, *found) == (serp.OK, *expected)
+    assert (verdict, *found) == (search_page.OK, *expected)
 
 
 GOOD_STATE = '"initialState":{"results":{"totalOffers":1,"offers":[{"id":5}]}}'
@@ -370,7 +375,7 @@ GOOD_STATE = '"initialState":{"results":{"totalOffers":1,"offers":[{"id":5}]}}'
 def test_21_3_bad_entries_skipped(bad):
     """21.3 Негодное вхождение initialState пропускается, сборщик берёт
     следующее годное (extract_initial_state). Модуль 21."""
-    state = serp.extract_initial_state(bad + "," + GOOD_STATE)
+    state = search_page.extract_initial_state(bad + "," + GOOD_STATE)
     assert state == {"results": {"totalOffers": 1, "offers": [{"id": 5}]}}
 
 
@@ -378,7 +383,7 @@ def offer_id_after_gap(gap: int) -> int:
     """id объявления блока, который выберет сборщик, когда между словом
     initialState и «{» первого блока gap знаков (у второго блока — 2)."""
     first = "initialState" + " " * gap + '{"results":{"offers":[{"id":7}]}}'
-    state = serp.extract_initial_state(first + "," + GOOD_STATE)
+    state = search_page.extract_initial_state(first + "," + GOOD_STATE)
     return state["results"]["offers"][0]["id"]
 
 
@@ -411,7 +416,7 @@ def test_21_3_brace_41_skipped():
 )
 def test_21_3_nothing_found_gives_none(html):
     """21.3 Годного initialState нет — None. Модуль 21."""
-    assert serp.extract_initial_state(html) is None
+    assert search_page.extract_initial_state(html) is None
 
 
 def test_21_4_braces_and_escapes_inside_strings():
@@ -419,62 +424,75 @@ def test_21_4_braces_and_escapes_inside_strings():
     объект кончается на своей закрывающей скобке (_balanced_object через
     extract_initial_state). Модуль 21."""
     html = 'initialState={"results":{"offers":[{"t":"}{\\""}]}}хвост}'
-    assert serp.extract_initial_state(html) == {"results": {"offers": [{"t": '}{"'}]}}
+    assert search_page.extract_initial_state(html) == {
+        "results": {"offers": [{"t": '}{"'}]}
+    }
 
 
 def test_21_4_unclosed_object():
     """21.4 Незакрытый объект — блока нет, None. Модуль 21."""
-    assert serp.extract_initial_state('initialState={"results":{"offers":[]}') is None
+    assert (
+        search_page.extract_initial_state('initialState={"results":{"offers":[]}')
+        is None
+    )
 
 
 def test_21_5_captcha_without_state_is_block():
     """21.5 Капча без initialState → BLOCK captcha. Модуль 21."""
     body = "<html>Подтвердите, что вы не робот</html>"
-    assert serp.classify_serp(200, body) == (serp.BLOCK, "captcha", None, [])
+    assert search_page.classify_page(200, body) == (
+        search_page.BLOCK,
+        "captcha",
+        None,
+        [],
+    )
 
 
 def test_21_5_captcha_marker_ends_at_limit():
     """21.5 Маркер капчи кончается ровно на 200 000-м знаке — ещё BLOCK
     (_has_captcha смотрит первые 200 000 знаков). Модуль 21."""
     body = "x" * (200_000 - len("recaptcha")) + "recaptcha"
-    assert serp.classify_serp(200, body)[:2] == (serp.BLOCK, "captcha")
+    assert search_page.classify_page(200, body)[:2] == (search_page.BLOCK, "captcha")
 
 
 def test_21_5_captcha_marker_beyond_limit():
     """21.5 Маркер капчи выходит за 200 000 знаков → API_CHANGED
     no_initial_state. Модуль 21."""
     body = "x" * (200_001 - len("recaptcha")) + "recaptcha"
-    assert serp.classify_serp(200, body)[:2] == (serp.API_CHANGED, "no_initial_state")
+    assert search_page.classify_page(200, body)[:2] == (
+        search_page.API_CHANGED,
+        "no_initial_state",
+    )
 
 
 def test_21_5_captcha_word_with_offers_is_ok():
     """21.5 Слово капчи рядом с объявлениями — OK: капча проверяется только
     без initialState. Модуль 21."""
-    body = serp_html([offer(1)], 1) + "<div>recaptcha</div>"
-    assert serp.classify_serp(200, body)[0] == serp.OK
+    body = search_page_html([offer(1)], 1) + "<div>recaptcha</div>"
+    assert search_page.classify_page(200, body)[0] == search_page.OK
 
 
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
-        (403, (serp.BLOCK, "http_403")),
-        (429, (serp.BLOCK, "http_429")),
-        (404, (serp.API_CHANGED, "http_404")),
-        (410, (serp.API_CHANGED, "http_410")),
-        (499, (serp.API_CHANGED, "http_499")),
-        (500, (serp.NET_ERROR, "http_500")),
-        (553, (serp.NET_ERROR, "http_553")),
-        (204, (serp.API_CHANGED, "http_204")),
-        (400, (serp.API_CHANGED, "http_400")),
-        (200, (serp.API_CHANGED, "no_initial_state")),
+        (403, (search_page.BLOCK, "http_403")),
+        (429, (search_page.BLOCK, "http_429")),
+        (404, (search_page.API_CHANGED, "http_404")),
+        (410, (search_page.API_CHANGED, "http_410")),
+        (499, (search_page.API_CHANGED, "http_499")),
+        (500, (search_page.NET_ERROR, "http_500")),
+        (553, (search_page.NET_ERROR, "http_553")),
+        (204, (search_page.API_CHANGED, "http_204")),
+        (400, (search_page.API_CHANGED, "http_400")),
+        (200, (search_page.API_CHANGED, "no_initial_state")),
     ],
 )
 def test_21_6_classify_http(code, expected):
-    """21.6 Код ответа (classify_serp, _classify_http): 403/429 → BLOCK,
+    """21.6 Код ответа (classify_page, _classify_http): 403/429 → BLOCK,
     404/410 → API_CHANGED, ≥500 → NET_ERROR, прочий не-200 → API_CHANGED
     http_N; 200 идёт дальше в разбор тела (пустое тело — no_initial_state).
     Модуль 21."""
-    assert serp.classify_serp(code, "") == (*expected, None, [])
+    assert search_page.classify_page(code, "") == (*expected, None, [])
 
 
 CAT = "https://www.cian.ru/cat.php?deal_type=sale"
@@ -483,17 +501,35 @@ CAT = "https://www.cian.ru/cat.php?deal_type=sale"
 @pytest.mark.parametrize(
     ("code", "page_no", "location", "waf", "expected"),
     [
-        (302, 1, "/cian-captcha/?x=1", None, (serp.BLOCK, "captcha_redirect")),
-        (302, 5, "", "challenge", (serp.BLOCK, "captcha_redirect")),
-        (301, 5, CAT, None, (serp.PAGE_END, "redirect_to_p1_301")),
-        (301, 5, CAT + "&p=1", None, (serp.PAGE_END, "redirect_to_p1_301")),
-        (302, 2, CAT + "&p=1", None, (serp.PAGE_END, "redirect_to_p1_302")),
-        (301, 5, CAT + "&p=3", None, (serp.BLOCK, "redirect_301")),
-        (301, 5, "https://www.cian.ru/other/", None, (serp.BLOCK, "redirect_301")),
-        (301, 5, None, None, (serp.BLOCK, "redirect_301")),
-        (301, 1, CAT + "&p=1", None, (serp.BLOCK, "redirect_301")),
-        (300, 5, "https://www.cian.ru/other/", None, (serp.BLOCK, "redirect_300")),
-        (399, 5, "https://www.cian.ru/other/", None, (serp.BLOCK, "redirect_399")),
+        (302, 1, "/cian-captcha/?x=1", None, (search_page.BLOCK, "captcha_redirect")),
+        (302, 5, "", "challenge", (search_page.BLOCK, "captcha_redirect")),
+        (301, 5, CAT, None, (search_page.PAGE_END, "redirect_to_p1_301")),
+        (301, 5, CAT + "&p=1", None, (search_page.PAGE_END, "redirect_to_p1_301")),
+        (302, 2, CAT + "&p=1", None, (search_page.PAGE_END, "redirect_to_p1_302")),
+        (301, 5, CAT + "&p=3", None, (search_page.BLOCK, "redirect_301")),
+        (
+            301,
+            5,
+            "https://www.cian.ru/other/",
+            None,
+            (search_page.BLOCK, "redirect_301"),
+        ),
+        (301, 5, None, None, (search_page.BLOCK, "redirect_301")),
+        (301, 1, CAT + "&p=1", None, (search_page.BLOCK, "redirect_301")),
+        (
+            300,
+            5,
+            "https://www.cian.ru/other/",
+            None,
+            (search_page.BLOCK, "redirect_300"),
+        ),
+        (
+            399,
+            5,
+            "https://www.cian.ru/other/",
+            None,
+            (search_page.BLOCK, "redirect_399"),
+        ),
     ],
     ids=[
         "капча",
@@ -510,27 +546,41 @@ CAT = "https://www.cian.ru/cat.php?deal_type=sale"
     ],
 )
 def test_21_7_classify_redirect(code, page_no, location, waf, expected):
-    """21.7 Редирект (classify_serp, _classify_redirect): отвод на капчу →
+    """21.7 Редирект (classify_page, _classify_redirect): отвод на капчу →
     BLOCK; p>1 на cat.php без p или с p=1 → PAGE_END redirect_to_p1_N;
     прочее → BLOCK redirect_N; total и объявлений нет. Модуль 21."""
-    result = serp.classify_serp(code, "", page=page_no, location=location, waf=waf)
+    result = search_page.classify_page(
+        code, "", page=page_no, location=location, waf=waf
+    )
     assert result == (*expected, None, [])
 
 
 def test_21_8_network_failure():
     """21.8 Сетевой сбой → NET_ERROR с текстом сбоя. Модуль 21."""
-    result = serp.classify_serp(0, "", neterr="urlerror:timed out")
-    assert result == (serp.NET_ERROR, "urlerror:timed out", None, [])
+    result = search_page.classify_page(0, "", neterr="urlerror:timed out")
+    assert result == (search_page.NET_ERROR, "urlerror:timed out", None, [])
 
 
 @pytest.mark.parametrize(
     ("state", "page_no", "expected"),
     [
-        ({"totalOffers": 60, "offers": []}, 1, (serp.API_CHANGED, "empty_offers", 60)),
-        ({"totalOffers": 1, "offers": []}, 1, (serp.API_CHANGED, "empty_offers", 1)),
-        ({"totalOffers": 60, "offers": []}, 2, (serp.PAGE_END, "empty_page", 60)),
-        ({"totalOffers": 0, "offers": []}, 1, (serp.OK, "-", 0)),
-        ({"offers": []}, 1, (serp.OK, "-", None)),
+        (
+            {"totalOffers": 60, "offers": []},
+            1,
+            (search_page.API_CHANGED, "empty_offers", 60),
+        ),
+        (
+            {"totalOffers": 1, "offers": []},
+            1,
+            (search_page.API_CHANGED, "empty_offers", 1),
+        ),
+        (
+            {"totalOffers": 60, "offers": []},
+            2,
+            (search_page.PAGE_END, "empty_page", 60),
+        ),
+        ({"totalOffers": 0, "offers": []}, 1, (search_page.OK, "-", 0)),
+        ({"offers": []}, 1, (search_page.OK, "-", None)),
     ],
     ids=["total>0 на p1", "total 1 на p1", "total>0 на p2", "total 0", "нет total"],
 )
@@ -538,7 +588,7 @@ def test_21_9_empty_result(state, page_no, expected):
     """21.9 Пустая выдача: total>0 на p1 → API_CHANGED empty_offers, на p>1
     → PAGE_END empty_page; total 0 или нет total → OK. Модуль 21."""
     html = "<script>initialState=" + json.dumps({"results": state}) + "</script>"
-    verdict, detail, total, offers = serp.classify_serp(200, html, page=page_no)
+    verdict, detail, total, offers = search_page.classify_page(200, html, page=page_no)
     assert (verdict, detail, total, offers) == (*expected, [])
 
 
@@ -591,28 +641,31 @@ def broken(**changes) -> dict:
 def test_21_10_missing_fields(offers, lost):
     """21.10 missing_fields: поле потеряно, только если его нет (или оно
     непригодно) во всех первых 5 объявлениях. Модуль 21."""
-    assert serp.missing_fields(offers) == lost
+    assert search_page.missing_fields(offers) == lost
 
 
 def test_21_10_fifth_offer_still_checked():
     """21.10 Годное объявление пятым — поля не потеряны (выборка — первые 5).
     Модуль 21."""
-    assert serp.missing_fields([{}] * 4 + [offer(1)]) == []
+    assert search_page.missing_fields([{}] * 4 + [offer(1)]) == []
 
 
 def test_21_10_sixth_offer_not_checked():
     """21.10 Годное объявление шестым не спасает: все поля потеряны.
     Модуль 21."""
     lost = ["id", "bargainTerms.price", "geo.coordinates", "land.area"]
-    assert serp.missing_fields([{}] * 5 + [offer(1)]) == lost
+    assert search_page.missing_fields([{}] * 5 + [offer(1)]) == lost
 
 
 def test_21_10_fields_missing_verdict():
     """21.10 Потерянное поле на странице → API_CHANGED fields_missing:<поля>.
     Модуль 21."""
-    html = serp_html([broken(bargainTerms__price=None)], 1)
-    verdict, detail, _, _ = serp.classify_serp(200, html)
-    assert (verdict, detail) == (serp.API_CHANGED, "fields_missing:bargainTerms.price")
+    html = search_page_html([broken(bargainTerms__price=None)], 1)
+    verdict, detail, _, _ = search_page.classify_page(200, html)
+    assert (verdict, detail) == (
+        search_page.API_CHANGED,
+        "fields_missing:bargainTerms.price",
+    )
 
 
 @pytest.mark.parametrize(
@@ -628,7 +681,7 @@ def test_21_10_fields_missing_verdict():
 def test_21_10_get_path(obj, path, expected):
     """21.10 get_path: значение по пути через точку; нет ключа или не
     словарь на пути — None. Модуль 21."""
-    assert serp.get_path(obj, path) == expected
+    assert search_page.get_path(obj, path) == expected
 
 
 def test_21_11_offer_ids():
@@ -642,44 +695,44 @@ def test_21_11_offer_ids():
         "s",
         {"id": "9"},
     ]
-    assert serp.offer_ids(offers) == [5, 7, 8, 9]
+    assert search_page.offer_ids(offers) == [5, 7, 8, 9]
 
 
 @pytest.mark.parametrize("total", [None, 0, -5])
 def test_21_12_pages_for_no_total(total):
     """21.12 pages_for: нет totalOffers, 0 или отрицательное → 1 страница.
     Модуль 21."""
-    assert serp.pages_for(total) == 1
+    assert search_page.pages_for(total) == 1
 
 
 def test_21_12_pages_for_27():
     """21.12 pages_for(27) → 1: неполная страница. Модуль 21."""
-    assert serp.pages_for(27) == 1
+    assert search_page.pages_for(27) == 1
 
 
 def test_21_12_pages_for_28():
     """21.12 pages_for(28) → 1: ровно одна полная страница. Модуль 21."""
-    assert serp.pages_for(28) == 1
+    assert search_page.pages_for(28) == 1
 
 
 def test_21_12_pages_for_29():
     """21.12 pages_for(29) → 2. Модуль 21."""
-    assert serp.pages_for(29) == 2
+    assert search_page.pages_for(29) == 2
 
 
 def test_21_12_pages_for_below_cap():
     """21.12 pages_for(1484) → 53: ниже потолка 54 страниц. Модуль 21."""
-    assert serp.pages_for(1484) == 53
+    assert search_page.pages_for(1484) == 53
 
 
 def test_21_12_pages_for_at_cap():
     """21.12 pages_for(1512) → 54: ровно потолок MAX_PAGES. Модуль 21."""
-    assert serp.pages_for(1512) == 54
+    assert search_page.pages_for(1512) == 54
 
 
 def test_21_12_pages_for_above_cap():
     """21.12 pages_for(10⁶) → 54: больше потолка не бывает. Модуль 21."""
-    assert serp.pages_for(10**6) == 54
+    assert search_page.pages_for(10**6) == 54
 
 
 SERVICEPIPE_STAMPS = ["013140", "091718"]
@@ -708,14 +761,24 @@ def test_21_13_servicepipe_page_is_block(stamp):
     servicepipe (З155; решение Андрея 10.11: деталь — servicepipe).
     Модуль 21."""
     html = servicepipe_body(stamp).decode("utf-8")
-    assert serp.classify_serp(200, html) == (serp.BLOCK, "servicepipe", None, [])
+    assert search_page.classify_page(200, html) == (
+        search_page.BLOCK,
+        "servicepipe",
+        None,
+        [],
+    )
 
 
 def test_21_13_servicepipe_marker_is_block():
     """21.13 Синтетическая страница без initialState с признаком
     «servicepipe.tech» → BLOCK servicepipe (З155). Модуль 21."""
     body = '<html><script src="https://servicepipe.tech/loaders/x.js"></script></html>'
-    assert serp.classify_serp(200, body) == (serp.BLOCK, "servicepipe", None, [])
+    assert search_page.classify_page(200, body) == (
+        search_page.BLOCK,
+        "servicepipe",
+        None,
+        [],
+    )
 
 
 def test_21_13_page_without_marker_is_api_changed():
@@ -724,22 +787,22 @@ def test_21_13_page_without_marker_is_api_changed():
     Модуль 21."""
     html = servicepipe_body("013140").decode("utf-8")
     plain = html.replace(SERVICEPIPE_MARKER, "loader.example.org")
-    assert serp.classify_serp(200, plain) == (
-        serp.API_CHANGED,
+    assert search_page.classify_page(200, plain) == (
+        search_page.API_CHANGED,
         "no_initial_state",
         None,
         [],
     )
 
 
-def test_21_13_real_serp_without_state_not_servicepipe():
+def test_21_13_real_page_without_state_not_servicepipe():
     """21.13 Настоящая страница выдачи ночи 10-08 с испорченным initialState
     (признака Servicepipe в ней нет) → API_CHANGED no_initial_state, не
     BLOCK (З155). Модуль 21."""
     html = full_page("2026-10-08_0032", "T0803_p1.html.xz")
     spoiled = html.replace("initialState", "initialStore")
-    assert serp.classify_serp(200, spoiled) == (
-        serp.API_CHANGED,
+    assert search_page.classify_page(200, spoiled) == (
+        search_page.API_CHANGED,
         "no_initial_state",
         None,
         [],
@@ -755,7 +818,12 @@ def test_21_13_servicepipe_checked_before_captcha():
         "<html>Check your browser"
         '<script src="https://servicepipe.tech/loaders/x.js"></script></html>'
     )
-    assert serp.classify_serp(200, body) == (serp.BLOCK, "servicepipe", None, [])
+    assert search_page.classify_page(200, body) == (
+        search_page.BLOCK,
+        "servicepipe",
+        None,
+        [],
+    )
 
 
 def test_21_13_servicepipe_word_with_offers_is_ok():
@@ -763,8 +831,8 @@ def test_21_13_servicepipe_word_with_offers_is_ok():
     в постороннем скрипте → OK: признак проверяется только без initialState
     (З155). Модуль 21."""
     script = '<script src="https://servicepipe.tech/loaders/x.js"></script>'
-    body = serp_html([offer(1)], 1) + script
-    assert serp.classify_serp(200, body)[0] == serp.OK
+    body = search_page_html([offer(1)], 1) + script
+    assert search_page.classify_page(200, body)[0] == search_page.OK
 
 
 def test_21_13_servicepipe_marker_beyond_200000_is_block():
@@ -772,7 +840,12 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
     initialState → BLOCK servicepipe: признак ищется во всём HTML, а не в
     первых 200 000 знаках, как маркер капчи (З155). Модуль 21."""
     body = "x" * 200_001 + SERVICEPIPE_MARKER
-    assert serp.classify_serp(200, body) == (serp.BLOCK, "servicepipe", None, [])
+    assert search_page.classify_page(200, body) == (
+        search_page.BLOCK,
+        "servicepipe",
+        None,
+        [],
+    )
 
 
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
@@ -869,16 +942,16 @@ URL_P1 = (
 )
 
 
-def test_21_16_serp_url_page_1():
-    """21.16 build_serp_url страницы 1: GET cat.php, параметры по алфавиту,
+def test_21_16_page_url_page_1():
+    """21.16 page_url страницы 1: GET cat.php, параметры по алфавиту,
     7 знаков координат, без p. Модуль 21."""
-    assert serp.build_serp_url(RING3) == URL_P1
+    assert search_page.page_url(RING3) == URL_P1
 
 
-def test_21_16_serp_url_page_3():
-    """21.16 build_serp_url страницы 3: p=3 перед polygon_name. Модуль 21."""
+def test_21_16_page_url_page_3():
+    """21.16 page_url страницы 3: p=3 перед polygon_name. Модуль 21."""
     expected = URL_P1.replace("&polygon_name", "&p=3&polygon_name")
-    assert serp.build_serp_url(RING3, 3) == expected
+    assert search_page.page_url(RING3, 3) == expected
 
 
 @pytest.mark.parametrize(
@@ -1372,7 +1445,7 @@ def fetch_env(tmp_path, monkeypatch):
     write_features(tiles, [tile(A)])
     player = CianPlayer(tiles, {})
     monkeypatch.setattr(net, "time", FakeTime(EPOCH))
-    return SimpleNamespace(player=player, url=serp.build_serp_url(rect_ring(A)))
+    return SimpleNamespace(player=player, url=search_page.page_url(rect_ring(A)))
 
 
 def fetcher(fetch_env, cookie="a=b", replies=()):
@@ -1861,13 +1934,13 @@ def use_random(monkeypatch, random_class) -> None:
 def pause_factors(env, monkeypatch, random_class) -> list[float]:
     """Множители пауз прогона CELLS + B_60 при случайности random_class."""
     factors = []
-    original = night.Night.sleep_between
+    original = crawl.Crawl.sleep_between
 
     def spy(self, factor=1.0):
         factors.append(factor)
         original(self, factor)
 
-    monkeypatch.setattr(night.Night, "sleep_between", spy)
+    monkeypatch.setattr(crawl.Crawl, "sleep_between", spy)
     use_random(monkeypatch, random_class)
     run_main(env, monkeypatch, CELLS, short_a() | B_60)
     return factors
@@ -1891,16 +1964,16 @@ def test_21_36_pause_factors_high(env, monkeypatch):
 def test_21_36_pause_lower_bound():
     """21.36 Нижняя граница паузы — 0,6 × средний интервал × множитель
     (pause_bounds(72, 2, 0,40); 72 с = 3600 / 50). Внутреннее. Модуль 21."""
-    assert night.pause_bounds(72.0, 2.0, 0.40)[0] == pytest.approx(0.6 * 72 * 2)
+    assert crawl.pause_bounds(72.0, 2.0, 0.40)[0] == pytest.approx(0.6 * 72 * 2)
 
 
 def test_21_36_pause_upper_bound():
     """21.36 Верхняя граница паузы — 1,4 × средний интервал × множитель
     (pause_bounds(72, 2, 0,40)). Внутреннее. Модуль 21."""
-    assert night.pause_bounds(72.0, 2.0, 0.40)[1] == pytest.approx(1.4 * 72 * 2)
+    assert crawl.pause_bounds(72.0, 2.0, 0.40)[1] == pytest.approx(1.4 * 72 * 2)
 
 
-def night_pauses(env, monkeypatch, random_class) -> list[float]:
+def crawl_pages_pauses(env, monkeypatch, random_class) -> list[float]:
     """Паузы (FakeTime) прогона CELLS + short_a + B_60 через main при
     случайности random_class; средний интервал 3600 / 50 = 72 с."""
     use_random(monkeypatch, random_class)
@@ -1908,20 +1981,20 @@ def night_pauses(env, monkeypatch, random_class) -> list[float]:
     return env.clock.pauses
 
 
-def test_21_36_night_sleeps_lower_pauses(env, monkeypatch):
-    """21.36 Ночь спит паузы U(0,6; 1,4) × средний интервал × множитель; на
+def test_21_36_crawl_sleeps_lower_pauses(env, monkeypatch):
+    """21.36 Обход спит паузы U(0,6; 1,4) × средний интервал × множитель; на
     нижнем краю случайности: после пробы и между двумя страницами B —
     0,6 × 72 = 43,2 с, между клетками (множитель 1,5) — 0,6 × 72 × 1,5 =
     64,8 с; после последней клетки паузы нет. Модуль 21."""
-    pauses = night_pauses(env, monkeypatch, LowRandom)
+    pauses = crawl_pages_pauses(env, monkeypatch, LowRandom)
     assert pauses == pytest.approx([43.2, 43.2, 43.2, 64.8])
 
 
-def test_21_36_night_sleeps_upper_pauses(env, monkeypatch):
+def test_21_36_crawl_sleeps_upper_pauses(env, monkeypatch):
     """21.36 На верхнем краю случайности: после пробы и между страницами —
     1,4 × 72 = 100,8 с, между клетками (множитель 3,0) — 1,4 × 72 × 3 =
     302,4 с. Модуль 21."""
-    pauses = night_pauses(env, monkeypatch, HighRandom)
+    pauses = crawl_pages_pauses(env, monkeypatch, HighRandom)
     assert pauses == pytest.approx([100.8, 100.8, 100.8, 302.4])
 
 
@@ -1964,7 +2037,7 @@ def test_21_36_page_saved_before_ids_parsed(env, monkeypatch):
     объявления «abc» роняет прогон ValueError из main, а файл страницы уже
     записан [E-22, E-41]. Модуль 21."""
     broken_offer = offer(100) | {"id": "abc"}
-    reply = Reply(200, serp_html([broken_offer], 1).encode("utf-8"))
+    reply = Reply(200, search_page_html([broken_offer], 1).encode("utf-8"))
     with pytest.raises(ValueError, match="abc"):
         run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [reply]})
     (run_dir,) = (env.folder / "runs").iterdir()
@@ -2018,9 +2091,9 @@ def test_21_38_empty_page_end(env, monkeypatch):
 
 
 def test_21_38_sector_end_logged_once(env):
-    """21.38 Конец клетки пишется в night.log один раз: Night.mark_end
+    """21.38 Конец клетки пишется в night.log один раз: Crawl.mark_end
     дважды — одна строка sector_end. Внутреннее. Модуль 21."""
-    run = make_night(env, CELLS)
+    run = make_crawl(env, CELLS)
     run.mark_end(B, "short_page")
     run.mark_end(B, "page_end")
     assert [r for r in log_records(Path(run.paths.folder)) if r.get("event")] == [
@@ -2230,14 +2303,14 @@ def test_21_44_no_split(changes, tile_mode, threshold):
     нет totalOffers (режим сетки, порог 400, дно 3); порог 0 — режима
     сетки нет, деления нет — split_decision даёт «no». Внутреннее.
     Модуль 21."""
-    decision = night.split_decision(tile_state(**changes), tile_mode, threshold, 3)
+    decision = crawl.split_decision(tile_state(**changes), tile_mode, threshold, 3)
     assert decision == "no"
 
 
 def test_21_44_threshold_zero_disables_tile_mode(env):
     """21.44 Порог деления 0 (Settings.split_threshold) — режим сетки
-    выключен, Night.tile_mode ложь [E-42]. Внутреннее. Модуль 21."""
-    assert make_night(env, CELLS, split_threshold=0).tile_mode is False
+    выключен, Crawl.tile_mode ложь [E-42]. Внутреннее. Модуль 21."""
+    assert make_crawl(env, CELLS, split_threshold=0).tile_mode is False
 
 
 def test_21_44_threshold_zero_summary_without_tile_mode(tmp_path):
@@ -2245,10 +2318,10 @@ def test_21_44_threshold_zero_summary_without_tile_mode(tmp_path):
     (summary_report) режима сетки нет: tile_mode ложь, split_threshold
     None [E-42]. Внутреннее. Модуль 21."""
     tiles = {B: tile_state()}
-    night.absorb_page(tiles[B], 1, 100, [100, 101, 102])
+    crawl.absorb_page(tiles[B], 1, 100, [100, 101, 102])
     settings = settings_of(tmp_path, split_threshold=0)
-    state = night.NightState()
-    report = night.summary_report(state, settings, fake_ticket(), MOMENT, tiles)
+    state = crawl.CrawlState()
+    report = crawl.summary_report(state, settings, fake_ticket(), MOMENT, tiles)
     assert (report["tile_mode"], report["split_threshold"]) == (False, None)
 
 
@@ -2423,7 +2496,7 @@ def page2_run(env, monkeypatch, reply: Reply):
     return run_main(env, monkeypatch, CELLS, short_a() | replies)
 
 
-def test_21_47_block_stops_night(env, monkeypatch):
+def test_21_47_block_stops_crawl(env, monkeypatch):
     """21.47 BLOCK посреди обхода — STOP: stopped block, класс BLOCK.
     Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(403, b"<html>no</html>"))
@@ -2859,8 +2932,8 @@ def test_21_53_same_page_absorbed_once():
     """21.53 Повторный учёт той же страницы (absorb_page дважды): номер
     страницы один раз, все id второго раза — дубли. Внутреннее. Модуль 21."""
     tile_b = tile_state()
-    night.absorb_page(tile_b, 1, 100, [1, 2])
-    night.absorb_page(tile_b, 1, 100, [1, 2])
+    crawl.absorb_page(tile_b, 1, 100, [1, 2])
+    crawl.absorb_page(tile_b, 1, 100, [1, 2])
     assert (tile_b.pages_done, tile_b.ids, tile_b.dup_ids) == ([1], [1, 2], 2)
 
 
@@ -2944,7 +3017,7 @@ def test_21_54_ladder(stopped, stop_class, expected):
     """21.54 Ступень лестницы (ladder): бюджет или очередь — passed, блок —
     blocked, проба — smoke_only, прочее — не засчитана. Внутреннее.
     Модуль 21."""
-    assert night.ladder(stopped, stop_class) == expected
+    assert crawl.ladder(stopped, stop_class) == expected
 
 
 def test_21_54_nothing_complete(tmp_path):
@@ -2961,10 +3034,10 @@ def test_21_54_nothing_complete(tmp_path):
         ),
         B: tile_state(),
     }
-    night.absorb_page(tiles[B], 1, 100, list(range(28)))
-    state = night.NightState()
+    crawl.absorb_page(tiles[B], 1, 100, list(range(28)))
+    state = crawl.CrawlState()
     settings = settings_of(tmp_path)
-    report = night.summary_report(state, settings, fake_ticket(), MOMENT, tiles)
+    report = crawl.summary_report(state, settings, fake_ticket(), MOMENT, tiles)
     assert (
         report["stateless_pagination_ok"],
         report["served_vs_total_median"],
@@ -3293,10 +3366,10 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
 # нет, тест красный, а не «зелёный по пустому списку».
 
 COLLECTOR_DIR = REPO_ROOT / "collector"
-RULE_MODULES = ("night.py", "serp.py", "geometry.py", "run_folder.py")
-NO_DISK_MODULES = ("night.py", "serp.py")
+RULE_MODULES = ("crawl.py", "search_page.py", "geometry.py", "run_folder.py")
+NO_DISK_MODULES = ("crawl.py", "search_page.py")
 # Листья пакета: не импортируют никого из collector (2.1 документа).
-LEAF_MODULES = ("serp.py", "geometry.py", "run_folder.py")
+LEAF_MODULES = ("search_page.py", "geometry.py", "run_folder.py")
 # Все модули пакета, кроме файла запуска cian_collect.py.
 PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, "net.py", "status.py")
 
@@ -3306,9 +3379,9 @@ CLOCK_IMPORTS = {"time"}
 DISK_IMPORTS = {"gzip", "io", "pathlib", "shutil"}
 # Из модуля os можно только имя файла из пути; os и os.path — ступени к нему.
 ALLOWED_OS = {"os", "os.path", "os.path.basename"}
-# Модули пакета по голому имени: так их видно в «from . import serp» и
-# «from .serp import x» (imported_modules отбрасывает точки).
-PACKAGE_NAMES = {"collector", "night", "serp", "geometry", "run_folder"}
+# Модули пакета по голому имени: так их видно в «from . import search_page» и
+# «from .search_page import x» (imported_modules отбрасывает точки).
+PACKAGE_NAMES = {"collector", "crawl", "search_page", "geometry", "run_folder"}
 PACKAGE_NAMES |= {"cian_collect", "net", "status"}
 CLOCK_CLASSES = {"datetime", "date"}
 WALL_CLOCK_ATTRS = {"now", "today", "utcnow"}
@@ -3581,9 +3654,9 @@ net_imports = functools.partial(module_imports, name="net")
 
 
 def package_imports(source: str) -> list[str]:
-    """Импорты пакета collector: абсолютные (collector, collector.serp),
-    относительные и по голому имени модуля пакета (from . import serp,
-    from .serp import x, import serp)."""
+    """Импорты пакета collector: абсолютные (collector, collector.search_page),
+    относительные и по голому имени модуля пакета (from . import search_page,
+    from .search_page import x, import search_page)."""
     return [
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
@@ -3604,7 +3677,7 @@ def relative_imports(source: str) -> list[str]:
 
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
-    """21.78 Модули правил (night, serp, geometry, run_folder) не
+    """21.78 Модули правил (crawl, search_page, geometry, run_folder) не
     импортируют time, socket, urllib.request, urllib.error, http: сеть — в
     net, часы — в net и cian_collect. Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
@@ -3620,16 +3693,16 @@ def test_21_78_no_wall_clock_or_random_calls(name):
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
-def test_21_78_no_disk_in_night_and_serp(name):
-    """21.78 night и serp не зовут open, не обращаются к os.* (кроме
+def test_21_78_no_disk_in_crawl_and_search_page(name):
+    """21.78 crawl и search_page не зовут open, не обращаются к os.* (кроме
     os.path.basename), не импортируют gzip, io, pathlib, shutil: диск —
     только в run_folder и низу geometry. Модуль 21."""
     assert disk_use(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
-def test_21_78_no_stdout_in_night_and_serp(name):
-    """21.78 night и serp не печатают в stdout (print, sys.stdout): по
+def test_21_78_no_stdout_in_crawl_and_search_page(name):
+    """21.78 crawl и search_page не печатают в stdout (print, sys.stdout): по
     таблице 2.4 документа stdout — только run_folder.append_log (эхо строк
     night.log) и cian_collect. Модуль 21."""
     assert stdout_use(collector_source(name)) == []
@@ -3646,8 +3719,8 @@ def test_21_78_net_no_disk_no_stdout():
 
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
 def test_21_78_cian_collect_not_imported(name):
-    """21.78 cian_collect никем в пакете не импортируется (__init__, night,
-    serp, geometry, run_folder, net, status). Модуль 21."""
+    """21.78 cian_collect никем в пакете не импортируется (__init__, crawl,
+    search_page, geometry, run_folder, net, status). Модуль 21."""
     assert module_imports(collector_source(name), "cian_collect") == []
 
 
@@ -3663,7 +3736,7 @@ def test_21_78_net_imported_only_by_cian_collect(name):
 )
 def test_21_78_network_only_in_net(name):
     """21.78 Ни один модуль пакета, кроме net (cian_collect, __init__,
-    night, serp, geometry, run_folder, status), не импортирует socket,
+    crawl, search_page, geometry, run_folder, status), не импортирует socket,
     urllib.request, urllib.error, http: вся сеть — в net. Модуль 21."""
     assert network_imports(collector_source(name)) == []
 
@@ -3671,13 +3744,13 @@ def test_21_78_network_only_in_net(name):
 @pytest.mark.parametrize("name", ("cian_collect.py", *PACKAGE_MODULES))
 def test_21_78_no_relative_imports(name):
     """21.78 В пакете нет относительных импортов: импорты абсолютные (from
-    collector import serp). Модуль 21."""
+    collector import search_page). Модуль 21."""
     assert relative_imports(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", LEAF_MODULES)
 def test_21_78_leaf_modules_import_no_package(name):
-    """21.78 serp, geometry, run_folder не импортируют никого из пакета
+    """21.78 search_page, geometry, run_folder не импортируют никого из пакета
     collector (правило импорта, 2.1 документа). Модуль 21."""
     assert package_imports(collector_source(name)) == []
 
@@ -3740,12 +3813,12 @@ GUARD_SAMPLES = [
     (cian_collect_imports, "import cian_collect"),
     (net_imports, "from collector import net"),
     (net_imports, "from .net import Fetcher"),
-    (package_imports, "from collector import night"),
-    (package_imports, "import collector.serp"),
+    (package_imports, "from collector import crawl"),
+    (package_imports, "import collector.search_page"),
     (package_imports, "from . import geometry"),
     (package_imports, "from .run_folder import PageAnswer"),
-    (relative_imports, "from . import serp"),
-    (relative_imports, "from .serp import OK"),
+    (relative_imports, "from . import search_page"),
+    (relative_imports, "from .search_page import OK"),
 ]
 
 
@@ -3768,12 +3841,12 @@ import urllib.parse
 from collections.abc import Callable
 from datetime import datetime
 
-from collector import geometry, serp
+from collector import geometry, search_page
 
 
 def pause(rnd: random.Random, now: Callable[[], datetime]) -> float:
     stamp = now().strftime("%H%M%S")
-    return rnd.uniform(1.0, 2.0) + len(stamp) + len(serp.SERP_HOST)
+    return rnd.uniform(1.0, 2.0) + len(stamp) + len(search_page.CIAN_BASE_URL)
 
 
 def label(path: str, started_at: datetime, text: str) -> str:
@@ -3792,14 +3865,14 @@ from dataclasses import dataclass
 
 # Образец разрешённого модулю сети: HTTP-запрос self.opener.open, часы —
 # только time.monotonic, сжатие — в памяти (gzip.decompress, zlib), из
-# пакета — serp.
+# пакета — search_page.
 EDGE_CLEAN_SAMPLE = """
 import gzip
 import time
 import urllib.parse
 import zlib
 
-from collector import serp
+from collector import search_page
 
 
 def body(self, req) -> str:
@@ -3807,7 +3880,7 @@ def body(self, req) -> str:
     with self.opener.open(req) as resp:
         raw = resp.read()
     text = gzip.decompress(raw) + zlib.decompress(raw, -zlib.MAX_WBITS)
-    return text.decode() + str(time.monotonic() - t0) + serp.SERP_HOST
+    return text.decode() + str(time.monotonic() - t0) + search_page.CIAN_BASE_URL
 """
 
 
@@ -3841,7 +3914,7 @@ def body(self, req) -> str:
         "сеть: opener.open и gzip в памяти",
         "сеть: импорт gzip",
         "сеть: stdout",
-        "сеть: импорт serp",
+        "сеть: импорт search_page",
     ],
 )
 def test_21_78_guard_allows_clean_sample(check, sample):
@@ -3850,5 +3923,5 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     (fromisoformat, astimezone), urllib.parse, os.path.basename, импорт
     соседних модулей, без печати в stdout; у листа — импорты стандартной
     библиотеки; у модуля сети — time.monotonic, gzip и zlib в памяти,
-    импорт serp. Модуль 21."""
+    импорт search_page. Модуль 21."""
     assert check(sample) == []
