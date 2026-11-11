@@ -1,0 +1,32 @@
+# Проверки на каждый PR и на push в main: ruff, mypy, pytest с покрытием.
+# Минуты GitHub Actions кончились (решение Андрея 11.11): пока эта проверка
+# не запускается, основная проверка — локальный прогон тех же команд перед
+# каждым push (CLAUDE.md §7), его вывод идёт в раздел 4 описания PR.
+
+name: checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Установка зависимостей
+        run: pip install -r requirements-dev.txt
+      - name: Линтер
+        run: ruff check .
+      - name: Форматирование
+        run: ruff format --check .
+      - name: Типы
+        run: python -m mypy
+      # -n 4, а не auto: фиксированное число исполнителей, не «все ядра»;
+      # так же, как локально перед push.
+      - name: Тесты
+        run: python -m pytest -q -n 4 --cov --cov-report=term-missing

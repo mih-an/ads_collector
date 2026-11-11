@@ -1,0 +1,42 @@
+# окружение и кэши
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# файл данных coverage: остаётся после каждого запуска с покрытием
+.coverage
+
+# секреты
+.env
+
+# рабочие файлы и разовые опыты (var/scratch/)
+var/
+
+# боевой сборщик: секреты, прогоны и рабочие файлы сервера (collector/README.md)
+collector/cookies.txt
+collector/ua.txt
+collector/tg.conf
+collector/runs/
+collector/*.out
+collector/watchdog.log
+collector/ALERT.txt
+collector/*.geojson
+collector/cian_serp_sample.json
+
+# то же в корне: сборщик запускается из папки, где лежит collector/,
+# и берёт билет и runs/ из текущей папки
+/runs/
+/cookies.txt
+/ua.txt
+
+# локальные рабочие файлы — не для репозитория
+PR_DESCRIPTION.md
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# PyCharm
+.idea/
