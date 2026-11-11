@@ -2,10 +2,12 @@
 
 Используются tests/test_collector.py, tests/test_collector_nights.py,
 tests/test_collector_transport.py и tests/test_collector_status.py. Здесь
-только то, что нужно двум и больше файлам: запрет сети, подставные часы
-(FakeTime, frozen_datetime), билет во временной папке, фальшивый транспорт
-FakeTransport (сценарии обхода) и проигрыватель ответов ЦИАН CianPlayer с
-фабрикой player_transport (эталонные ночи на настоящем UrllibTransport).
+две группы. Общее для нескольких файлов: запрет сети, подставные часы
+(FakeTime, frozen_datetime), билет во временной папке, ответ ЦИАН Reply.
+И подмены сети одного файла, собранные рядом с общими: фальшивый
+транспорт FakeTransport — только сценарии обхода test_collector.py;
+проигрыватель ответов ЦИАН CianPlayer с фабрикой player_transport — только
+эталонные ночи test_collector_nights.py (на настоящем UrllibTransport).
 Кода сборщика не меняет.
 
 Что сборщик обязан сохранить, чтобы эти подмены работали (cc —

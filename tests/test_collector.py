@@ -45,6 +45,7 @@ import re
 import runpy
 import shutil
 import sys
+import urllib.request
 import zlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -1546,7 +1547,8 @@ def test_21_26_fetched_page_ok(fetch_env):
 
 def test_21_27_http_error_403(fetch_env):
     """21.27 Ответ-ошибка 403: код, тело, размер, ms, без сбоя сети,
-    заголовки в нижнем регистре. Модуль 21."""
+    заголовки ответа транспорта — как есть (нижний регистр — забота
+    транспорта, 21.31). Модуль 21."""
     reply = Reply(403, "запрет".encode(), {"Server": "nginx"})
     result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (403, "запрет", 12, 250.0, None, {"server": "nginx"})
@@ -1687,6 +1689,13 @@ def test_21_29_broken_compression_in_300(fetch_env):
     Модуль 21."""
     result = broken_gzip_result(fetch_env, 300)
     assert (result.code, result.body, result.neterr) == (300, "not gzip", None)
+
+
+def test_21_29_broken_compression_in_199(fetch_env):
+    """21.29 Битое сжатие в ответе 199 (под нижним краем 2xx) — не сбой
+    сети: код 199, тело — сырые байты как текст. Модуль 21."""
+    result = broken_gzip_result(fetch_env, 199)
+    assert (result.code, result.body, result.neterr) == (199, "not gzip", None)
 
 
 def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
@@ -3367,6 +3376,24 @@ def test_21_81_make_transport_urllib():
     assert type(made) is urllib_transport.UrllibTransport
 
 
+def urllib_jar_cookies(made: urllib_transport.UrllibTransport) -> list[tuple]:
+    """Куки банка UrllibTransport (CookieJar его HTTPCookieProcessor):
+    (имя, значение, домен)."""
+    (processor,) = [
+        handler
+        for handler in made.opener.handlers
+        if isinstance(handler, urllib.request.HTTPCookieProcessor)
+    ]
+    return [(c.name, c.value, c.domain) for c in processor.cookiejar]
+
+
+def test_21_81_make_transport_urllib_cookie():
+    """21.81 make_transport("urllib", строка Cookie) — строка билета в банке
+    кук созданного транспорта на домене .cian.ru. Модуль 21."""
+    made = cc.make_transport("urllib", FAKE_COOKIE)
+    assert urllib_jar_cookies(made) == [("a", "b", ".cian.ru")]
+
+
 # Переменные прокси окружения: httpx.Client читает их при создании; тест не
 # должен зависеть от того, что задано на машине.
 PROXY_ENV = (
@@ -3389,14 +3416,44 @@ def test_21_81_make_transport_httpx(monkeypatch):
     assert type(made) is httpx_transport.HttpxTransport
 
 
+def test_21_81_make_transport_httpx_cookie(monkeypatch):
+    """21.81 make_transport("httpx", строка Cookie) — строка билета в банке
+    кук созданного транспорта (client.cookies) на домене .cian.ru.
+    Модуль 21."""
+    for name in PROXY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    made = cc.make_transport("httpx", FAKE_COOKIE)
+    cookies = [(c.name, c.value, c.domain) for c in made.client.cookies.jar]
+    assert cookies == [("a", "b", ".cian.ru")]
+
+
+def test_21_81_make_transport_unknown_name():
+    """21.81 make_transport с незнакомым именем — ValueError, в сообщении
+    имя параметра name и значение (DECISIONS, block/transport, решения по
+    ревью PR #2; «ошибки громко»). Модуль 21."""
+    with pytest.raises(ValueError) as raised:
+        cc.make_transport("curl", FAKE_COOKIE)
+    message = str(raised.value)
+    assert [word for word in ("name", "curl") if word not in message] == []
+
+
+def error_line(err: str) -> str:
+    """Текст ошибки argparse из stderr — то, что после «error:». Слова ищутся
+    только в нём: строка usage выше перечисляет все флаги запуска."""
+    lines = [line for line in err.splitlines() if "error:" in line]
+    if len(lines) != 1:
+        raise AssertionError(f"в stderr не одна строка error: {err!r}")
+    return lines[0].split("error:", 1)[1]
+
+
 def test_21_81_unknown_transport_exits(capsys):
     """21.81 --transport не из {urllib, httpx} — выход argparse с кодом 2,
-    в сообщении назван флаг --transport. Модуль 21."""
+    в строке ошибки назван флаг --transport. Модуль 21."""
     with pytest.raises(SystemExit) as stop:
         cc.parse_settings(["--geojson", "x.geojson", "--transport", "curl"])
-    err = capsys.readouterr().err
+    error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о значении, а не о незнакомом флаге
-    assert (stop.value.code, "--transport" in err, "unrecognized" in err) == (
+    assert (stop.value.code, "--transport" in error, "unrecognized" in error) == (
         2,
         True,
         False,
@@ -3414,13 +3471,13 @@ def main_exit(env, monkeypatch, *args) -> SystemExit:
 
 def test_21_81_httpx_missing_exits(env, monkeypatch, capsys):
     """21.81 --transport httpx, а библиотеки httpx нет — выход с кодом 2;
-    в сообщении — флаг --transport, библиотека httpx и команда установки
+    в строке ошибки — флаг --transport, библиотека httpx и команда установки
     pip install -r requirements.txt. Модуль 21."""
     monkeypatch.setitem(sys.modules, "httpx", None)  # import httpx — ImportError
     stop = main_exit(env, monkeypatch, "--transport", "httpx")
-    err = capsys.readouterr().err
+    error = error_line(capsys.readouterr().err)
     words = ("--transport", "httpx", "pip install -r requirements.txt")
-    assert (stop.code, [word for word in words if word not in err]) == (2, [])
+    assert (stop.code, [word for word in words if word not in error]) == (2, [])
 
 
 def test_21_81_httpx_missing_exits_before_start_pause(env, monkeypatch):
@@ -3443,7 +3500,14 @@ def test_21_81_urllib_without_httpx(monkeypatch):
     # свежий импорт: верхний уровень cian_collect не тянет httpx;
     # monkeypatch вернёт прежний модуль в sys.modules после теста
     monkeypatch.delitem(sys.modules, "collector.cian_collect")
-    monkeypatch.setattr(collector, "cian_collect", cc)  # вернёт и имя в пакете
+    # import_module ниже перепишет атрибут пакета collector.cian_collect на
+    # свежий модуль. setattr тем же значением ничего не меняет сейчас, но
+    # запоминает прежний модуль cc: после теста monkeypatch вернёт его в
+    # атрибут. Иначе sys.modules вернулся бы к cc, а collector.cian_collect
+    # остался бы свежим модулем — и тесты, которые после этого подменяют часы
+    # через collector.cian_collect.time, подменяли бы не тот модуль, что
+    # зовёт cc.main.
+    monkeypatch.setattr(collector, "cian_collect", cc)
     fresh = importlib.import_module("collector.cian_collect")
     settings = fresh.parse_settings(["--geojson", "x.geojson", "--seed", "1"])
     made = fresh.make_transport(settings.transport, FAKE_COOKIE)
@@ -3477,19 +3541,44 @@ def test_21_82_ticket_flags_paths(env, monkeypatch):
 @pytest.mark.parametrize("flag", ["--cookies", "--ua"])
 def test_21_82_ticket_flag_missing_file_exits(tmp_path, capsys, flag):
     """21.82 Явно названный, но отсутствующий файл --cookies или --ua —
-    выход с кодом 2; в сообщении названы флаг и путь. Модуль 21."""
+    выход с кодом 2; в строке ошибки названы флаг и путь. Модуль 21."""
     missing = tmp_path / "нет-файла.txt"
-    argv = ["--geojson", "x.geojson", "--seed", "1", flag, str(missing)]
+    assert ticket_flag_exit(capsys, flag, missing) == (2, True, True, False)
+
+
+def ticket_flag_exit(capsys, flag: str, path: Path) -> tuple:
+    """parse_settings с флагом билета flag на путь path, который обязан
+    выйти. → (код выхода, назван ли флаг, назван ли путь, «unrecognized») —
+    слова только из строки ошибки (error_line)."""
+    argv = ["--geojson", "x.geojson", "--seed", "1", flag, str(path)]
     with pytest.raises(SystemExit) as stop:
         cc.parse_settings(argv)
-    err = capsys.readouterr().err
+    error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о файле, а не о незнакомом флаге
-    assert (
-        stop.value.code,
-        flag in err,
-        str(missing) in err,
-        "unrecognized" in err,
-    ) == (2, True, True, False)
+    return (stop.value.code, flag in error, str(path) in error, "unrecognized" in error)
+
+
+@pytest.mark.parametrize("content", ["", " \n"], ids=["0 байт", "пробелы"])
+@pytest.mark.parametrize("flag", ["--cookies", "--ua"])
+def test_21_82_ticket_flag_empty_file_exits(tmp_path, capsys, flag, content):
+    """21.82 Явно названный, но пустой файл --cookies или --ua (0 байт или
+    одни пробелы — пустой, как в 21.52) — выход с кодом 2; в строке ошибки
+    названы флаг и путь. Без флагов пустые cookies.txt и ua.txt — без
+    билета, как раньше (21.52). Допущение уровня 2 «ошибки громко» (ревью
+    PR #2). Модуль 21."""
+    empty = tmp_path / "пусто.txt"
+    empty.write_text(content, encoding="utf-8")
+    assert ticket_flag_exit(capsys, flag, empty) == (2, True, True, False)
+
+
+@pytest.mark.parametrize("flag", ["--cookies", "--ua"])
+def test_21_82_ticket_flag_folder_exits(tmp_path, capsys, flag):
+    """21.82 --cookies или --ua указывает на папку, а не на файл — выход с
+    кодом 2; в строке ошибки названы флаг и путь (DECISIONS, block/transport:
+    проверка os.path.isfile). Модуль 21."""
+    folder = tmp_path / "папка"
+    folder.mkdir()
+    assert ticket_flag_exit(capsys, flag, folder) == (2, True, True, False)
 
 
 def test_21_82_ticket_flags_parsed(tmp_path):
@@ -3998,7 +4087,7 @@ def test_21_78_no_wall_clock_or_random_calls(name):
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
-def test_21_78_no_disk_in_crawl_and_search_page(name):
+def test_21_78_no_disk_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не зовут open, не обращаются к
     os.* (кроме os.path.basename), не импортируют gzip, io, pathlib,
     shutil: диск — только в run_folder и низу geometry. Модуль 21."""
@@ -4006,7 +4095,7 @@ def test_21_78_no_disk_in_crawl_and_search_page(name):
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
-def test_21_78_no_stdout_in_crawl_and_search_page(name):
+def test_21_78_no_stdout_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не печатают в stdout (print,
     sys.stdout): по таблице 2.4 документа stdout — только
     run_folder.append_log (эхо строк night.log) и cian_collect. Модуль 21."""
@@ -4053,7 +4142,7 @@ def test_21_78_transports_imported_only_by_cian_collect(name, implementation):
     "name",
     ("cian_collect.py", *(m for m in PACKAGE_MODULES if m != "urllib_transport.py")),
 )
-def test_21_78_network_only_in_transports(name):
+def test_21_78_network_only_in_urllib_transport(name):
     """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
     __init__, правила, transport, page_fetch, httpx_transport, status), не
     импортирует socket, urllib.request, urllib.error, http: сеть stdlib — в
