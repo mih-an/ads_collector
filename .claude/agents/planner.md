@@ -39,8 +39,8 @@ docs/DECISIONS.md (решения уровня 1 и решения Андрея)
 - Оценка размера двумя строками: код и тесты (тесты обычно ×2–2.7 от кода).
   Блок идёт целиком, без разреза по размеру кода.
 - Числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
-  в collector/search_page.py, не россыпью по коду (CLAUDE.md §6); два
-  исключения: `HTTP_TIMEOUT_S` — в collector/transport.py, умолчания
+  в collector/search_page.py, не россыпью по коду (CLAUDE.md §6);
+  исключения: `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в collector/transport.py, умолчания
   аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`,
   `COOKIES_FILE`, `UA_FILE`) — в collector/cian_collect.py.
   Правила обхода и разбора — чистыми функциями; сеть (реализации транспорта

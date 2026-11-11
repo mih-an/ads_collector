@@ -63,8 +63,8 @@ docs/DECISIONS.md — решения уровня 1 и решения Андре
 - правила обхода и разбора — чистыми функциями; сеть (collector/urllib_transport.py,
   collector/httpx_transport.py), часы, сон, случайность, argv — только по краям;
 - числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
-  в collector/search_page.py; два исключения: `HTTP_TIMEOUT_S` — в
-  collector/transport.py, умолчания аргументов запуска (`BUDGET`,
+  в collector/search_page.py; исключения: `HTTP_TIMEOUT_S` и
+  `COOKIE_DOMAIN` — в collector/transport.py, умолчания аргументов запуска (`BUDGET`,
   `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `COOKIES_FILE`, `UA_FILE`) — в
   collector/cian_collect.py; никаких магических чисел россыпью;
 - формат папки прогона (docs/CIAN_DATA_FORMAT.md) не меняется без решения
