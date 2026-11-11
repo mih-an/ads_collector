@@ -1,12 +1,16 @@
-"""Модуль 21 «Сборщик ЦИАН»: эталонные ночи и фикстуры, кейсы 21.68–21.70, 21.73.
+"""Модуль 21 «Сборщик ЦИАН»: эталонные ночи, фикстуры и контракт формата,
+кейсы 21.68–21.70, 21.73, 21.79.
 
 Ночь проигрывается боевым main() сборщика (collector/cian_collect.py) на
 ответах ЦИАН настоящей ночи из tests/fixtures/collector/nights/<метка>/input
 (выборка клеток, scripts/collector_fixtures.py). Папка прогона сверяется
 файл за файлом с эталоном expected/ (записан один раз до рефакторинга
 разовым скриптом, решение Андрея 10.11) и с тем, что настоящая ночь
-записала про эти клетки. Сети нет: ответы отдаёт CianPlayer через
-подменённый net.Fetcher; часы net.time и cc.time — один FakeTime.
+записала про эти клетки. Контракт формата (21.79) проверяет папки
+проигрываний по разделу 7 docs/reference/collector_architecture.md, без
+загрузчика land-monitor; проба контракта портит чистую папку. Сети нет:
+ответы отдаёт CianPlayer через подменённый net.Fetcher; часы net.time и
+cc.time — один FakeTime.
 """
 
 import gzip
@@ -325,3 +329,560 @@ def test_21_73_fixtures_fit_size_limit():
         pytest.fail(f"фикстур нет: {FIXTURES}")
     size = sum(p.stat().st_size for p in FIXTURES.rglob("*") if p.is_file())
     assert size <= FIXTURES_SIZE_LIMIT
+
+
+# ───────────────────── контракт формата папки прогона ─────────────────────
+# Кейс 21.79. Объём — раздел 7 docs/reference/collector_architecture.md;
+# ключи, их порядок и поля строк night.log — перечень 3.1 там же. Каждое
+# нарушение начинается с файла и называет ключ, строку или имя.
+
+RUN_NAME = re.compile(r"\d{4}-\d\d-\d\d_\d{4}(-smoke)?")
+RUN_FILES = ["night.log", "plan.json", "polygons.geojson.gz", "raw", "summary.json"]
+# Маски имён в raw/; ключ клетки — без «_».
+RAW_NAMES = (
+    re.compile(r"[^_]+_p\d+\.(json|html)\.gz"),
+    re.compile(r"_broken_[^_]+_p\d+_(smoke|ssr)_\d+_\d{6}\.(html\.gz|note\.txt)"),
+    re.compile(r"_block_[^_]+_p\d+_\d+_\d{6}\.txt"),
+)
+PAGE_FILE = re.compile(r"([^_]+)_p(\d+)\.(json|html)\.gz")
+ISO_WITH_ZONE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d")
+
+# Таблицы «ключ → допустимое» в порядке ключей файла: кортеж — типы
+# (сверка type(v) in …, чтобы bool не сходил за int), frozenset — значения.
+NONE = type(None)
+STOPPED = frozenset(
+    {"smoke_failed", "smoke_only", "budget_exhausted", "queue_empty"}
+    | {"block", "api_changed", "net_error", "interrupted"}
+)
+STOP_CLASSES = frozenset({None, "BLOCK", "API_CHANGED", "NET_ERROR", "interrupted"})
+SUMMARY_KEYS = {
+    "night": (str,),
+    "dry_run": frozenset({False}),
+    "budget": (int,),
+    "spent": (int,),
+    "stopped": STOPPED,
+    "stop_class": STOP_CLASSES,
+    "stop_detail": (str, NONE),
+    "smoke": (dict,),
+    "ticket": (bool,),
+    "cookie_age_h": (float, NONE),
+    "ladder_step_valid": (bool,),
+    "ladder_result": frozenset({"passed", "blocked", "smoke_only", "invalid"}),
+    "sectors_touched": (int,),
+    "sectors_complete": (int,),
+    "duplicate_ids_total": (int,),
+    "stateless_pagination_ok": (bool, NONE),
+    "served_vs_total_median": (float, NONE),
+    "collect_file": (str,),
+    "tile_mode": (bool,),
+    "split_threshold": (int, NONE),
+    "split_events": (list,),
+    "sectors": (dict,),
+}
+SUMMARY_SECTOR_KEYS = {
+    "name": (str,),
+    "status": (str,),
+    "level": (int, NONE),
+    "parent": (str, NONE),
+    "split": (bool,),
+    "children": (list,),
+    "total_offers": (int, NONE),
+    "pages_planned": (int, NONE),
+    "pages_done": (list,),
+    "served_end": (bool,),
+    "unique_ids": (int,),
+    "duplicate_ids": (int,),
+    "complete": (bool,),
+    "served_vs_total": (float, NONE),
+}
+PLAN_KEYS = {
+    "night": (str,),
+    "dry_run": frozenset({False}),
+    "started_at": (str,),
+    "budget": (int,),
+    "spent": (int,),
+    "window_hours": (float,),
+    "mean_interval_s": (float,),
+    "user_agent": (str,),
+    "seed": (int,),
+    "ticket": (bool,),
+    "cookie_age_h": (float, NONE),
+    "smoke": (dict,),
+    "stopped": STOPPED,
+    "stop_class": STOP_CLASSES,
+    "stop_detail": (str, NONE),
+    "sectors": (dict,),
+    "split_events": (list,),
+    "done": (list,),
+    "pending_sectors": (list,),
+}
+PLAN_SECTOR_KEYS = {
+    "name": (str,),
+    "status": (str,),
+    "area_km2": (float,),
+    "level": (int, NONE),
+    "parent": (str, NONE),
+    "base": (list, NONE),
+    "split": (bool,),
+    "children": (list,),
+    "total_offers": (int, NONE),
+    "pages_planned": (int, NONE),
+    "pages_done": (list,),
+    "ids": (list,),
+    "dup_ids": (int,),
+    "served_end": (bool,),
+}
+TASK_KEYS = {
+    "sector": (str,),
+    "page": (int,),
+    "kind": frozenset({"ssr"}),
+    "origin": frozenset({"seed", "expanded"}),
+    "attempts": (int,),
+    "state": frozenset({"done", "page_end", "net_error", "failed"}),
+    "detail": (str,),
+}
+SPLIT_EVENT_KEYS = {"parent": (str,), "total_offers": (int,), "children": (list,)}
+# Поля строк night.log по порядку; строка запроса начинается с n=.
+LOG_FIELDS = {
+    "start": ("event", "budget", "sectors", "window_h", "mean_interval_s")
+    + ("ticket", "cookie_age_h", "order", "dry_run"),
+    "request": ("n", "sector", "page", "kind", "http", "ms", "offers", "bytes")
+    + ("total", "verdict", "err"),
+    "sector_end": ("event", "sector", "why"),
+    "smoke_empty": ("event", "sector", "note"),
+    "split": ("event", "sector", "total", "level", "children"),
+    "split_floor": ("event", "sector", "level", "total", "note"),
+    "split_skip": ("event", "sector", "note"),
+    "retry": ("event", "sector", "page", "attempt", "of", "after_s"),
+    "STOP": ("event", "reason", "cls", "detail", "spent"),
+}
+
+
+def read_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def layout_violations(run_dir: Path) -> list[str]:
+    """Имя папки, ровно пять имён в ней, маски имён raw/, нет .tmp."""
+    found = []
+    if not RUN_NAME.fullmatch(run_dir.name):
+        found.append(f"папка {run_dir.name}: имя не ГГГГ-ММ-ДД_ЧЧММ[-smoke]")
+    names = {p.name for p in run_dir.iterdir()}
+    found += [f"{n}: нет в папке прогона" for n in sorted(set(RUN_FILES) - names)]
+    found += [f"{n}: лишнее в папке прогона" for n in sorted(names - set(RUN_FILES))]
+    found += [f"{p.relative_to(run_dir)}: остался .tmp" for p in run_dir.rglob("*.tmp")]
+    raw = sorted((run_dir / "raw").iterdir()) if (run_dir / "raw").is_dir() else []
+    return found + [
+        f"raw/{p.name}: имя не подходит ни под одну маску"
+        for p in raw
+        if not any(mask.fullmatch(p.name) for mask in RAW_NAMES)
+    ]
+
+
+def allowed_value(value, allowed) -> bool:
+    """Значение по таблице: frozenset — одно из значений того же типа,
+    кортеж — строго один из типов."""
+    if isinstance(allowed, frozenset):
+        return any(type(value) is type(v) and value == v for v in allowed)
+    return type(value) in allowed
+
+
+def key_order_violations(where: str, obj: dict, table: dict) -> list[str]:
+    """Набор ключей obj = ключам таблицы и в том же порядке."""
+    found = [f"{where}: нет ключа {key}" for key in table if key not in obj]
+    found += [f"{where}: лишний ключ {key}" for key in obj if key not in table]
+    if found or list(obj) == list(table):
+        return found
+    pairs = zip(obj, table, strict=True)
+    place, (got, want) = next((i, p) for i, p in enumerate(pairs) if p[0] != p[1])
+    return [f"{where}: ключ {got} на месте {place + 1}, ждали {want}"]
+
+
+def keys_violations(where: str, obj: dict, table: dict) -> list[str]:
+    """Ключи obj по таблице: набор, порядок, типы или значения."""
+    return key_order_violations(where, obj, table) + [
+        f"{where}: {key} = {obj[key]!r} — не по таблице"
+        for key in table
+        if key in obj and not allowed_value(obj[key], table[key])
+    ]
+
+
+def items_violations(where: str, items: dict | list, table: dict) -> list[str]:
+    """Ключи каждого элемента словаря или списка по таблице."""
+    pairs = items.items() if isinstance(items, dict) else enumerate(items)
+    found = []
+    for name, item in pairs:
+        found += keys_violations(f"{where}[{name}]", item, table)
+    return found
+
+
+def json_violations(run_dir: Path) -> list[str]:
+    """Ключи summary.json и plan.json, их клеток, задач и делений;
+    started_at — ISO с поясом."""
+    summary = read_json(run_dir / "summary.json")
+    plan = read_json(run_dir / "plan.json")
+    found = keys_violations("summary.json", summary, SUMMARY_KEYS)
+    found += keys_violations("plan.json", plan, PLAN_KEYS)
+    nested = [
+        ("summary.json", "sectors", summary, SUMMARY_SECTOR_KEYS),
+        ("summary.json", "split_events", summary, SPLIT_EVENT_KEYS),
+        ("plan.json", "sectors", plan, PLAN_SECTOR_KEYS),
+        ("plan.json", "split_events", plan, SPLIT_EVENT_KEYS),
+        ("plan.json", "done", plan, TASK_KEYS),
+    ]
+    for file, key, obj, table in nested:
+        found += items_violations(f"{file}, {key}", obj[key], table)
+    started_at = plan["started_at"]
+    if not ISO_WITH_ZONE.fullmatch(str(started_at)):
+        found.append(f"plan.json: started_at {started_at!r} не ISO с поясом")
+    return found
+
+
+def log_lines(run_dir: Path) -> list[tuple[str, list[str]]]:
+    """Строки night.log: (время, поля «ключ=значение»)."""
+    text = (run_dir / "night.log").read_text(encoding="utf-8")
+    return [(line.split("\t")[0], line.split("\t")[1:]) for line in text.splitlines()]
+
+
+def log_record(fields: list[str]) -> dict[str, str]:
+    return dict(field.split("=", 1) for field in fields if "=" in field)
+
+
+def line_violations(number: int, stamp: str, fields: list[str]) -> list[str]:
+    """Строка night.log: время с поясом, известное событие, поля по порядку,
+    kind запроса — smoke или ssr."""
+    where = f"night.log, строка {number}"
+    found = []
+    if not ISO_WITH_ZONE.fullmatch(stamp):
+        found.append(f"{where}: время {stamp!r} не ISO с поясом")
+    keys = [field.split("=", 1)[0] for field in fields]
+    record = log_record(fields)
+    name = record.get("event", "request" if keys[:1] == ["n"] else "?")
+    if name not in LOG_FIELDS:
+        return found + [f"{where}: неизвестное событие {name}"]
+    if keys != list(LOG_FIELDS[name]):
+        found.append(f"{where}: поля {keys}, ждали {list(LOG_FIELDS[name])}")
+    if name == "request" and record.get("kind") not in ("smoke", "ssr"):
+        found.append(f"{where}: kind={record.get('kind')}")
+    return found
+
+
+def night_log_violations(run_dir: Path) -> list[str]:
+    """Грамматика night.log; первая строка — event=start."""
+    lines = log_lines(run_dir)
+    found = []
+    if not lines or log_record(lines[0][1]).get("event") != "start":
+        found.append("night.log, строка 1: не event=start")
+    for number, (stamp, fields) in enumerate(lines, start=1):
+        found += line_violations(number, stamp, fields)
+    return found
+
+
+def snapshot_violations(run_dir: Path, summary: dict) -> list[str]:
+    """Ключи снимка по порядку = ключам summary.json sectors; mtime gzip 0."""
+    raw = (run_dir / "polygons.geojson.gz").read_bytes()
+    snapshot = json.loads(gzip.decompress(raw))
+    keys = [f["properties"]["sector"] for f in snapshot["features"]]
+    found = []
+    if keys != list(summary["sectors"]):
+        found.append(
+            f"polygons.geojson.gz: ключи снимка {keys} ≠ ключам sectors "
+            f"summary.json {list(summary['sectors'])}"
+        )
+    mtime = int.from_bytes(raw[4:8], "little")
+    if mtime != 0:
+        found.append(f"polygons.geojson.gz: mtime в заголовке gzip {mtime}, ждали 0")
+    return found
+
+
+def offers_on_pages(run_dir: Path, key: str) -> int:
+    """Объявлений на всех страницах клетки key в raw/."""
+    count = 0
+    for path in (run_dir / "raw").glob(f"{key}_p*.json.gz"):
+        count += len(json.loads(gzip.decompress(path.read_bytes()))["offers"])
+    return count
+
+
+def ids_violations(run_dir: Path, summary: dict) -> list[str]:
+    """unique_ids + duplicate_ids клетки = объявлений на её страницах."""
+    found = []
+    for key, sector in summary["sectors"].items():
+        counted = sector["unique_ids"] + sector["duplicate_ids"]
+        offers = offers_on_pages(run_dir, key)
+        if counted != offers:
+            found.append(
+                f"summary.json, sectors[{key}]: unique_ids + duplicate_ids = "
+                f"{counted} ≠ {offers} объявлений на страницах raw/"
+            )
+    return found
+
+
+def spent_violations(summary: dict, plan: dict, log: list[dict]) -> list[str]:
+    """len(done) + строк kind=smoke = spent."""
+    smoke = sum(1 for record in log if record.get("kind") == "smoke")
+    if len(plan["done"]) + smoke == summary["spent"]:
+        return []
+    return [
+        f"summary.json: spent {summary['spent']} ≠ len(done) {len(plan['done'])} "
+        f"в plan.json + строк kind=smoke {smoke} в night.log"
+    ]
+
+
+def page_files(run_dir: Path, kind: str) -> set[tuple[str, int]]:
+    """(клетка, страница) файлов raw/<клетка>_p<N>.<kind>.gz."""
+    found = set()
+    for path in (run_dir / "raw").iterdir():
+        match = PAGE_FILE.fullmatch(path.name)
+        if match and match[3] == kind:
+            found.add((match[1], int(match[2])))
+    return found
+
+
+def pages_violations(run_dir: Path, log: list[dict]) -> list[str]:
+    """У каждой строки verdict=OK есть .json.gz и .html.gz страницы, и
+    наоборот."""
+    ok = {(r["sector"], int(r["page"])) for r in log if r.get("verdict") == "OK"}
+    found = []
+    for kind in ("json", "html"):
+        files = page_files(run_dir, kind)
+        found += [
+            f"raw/{key}_p{page}.{kind}.gz: нет файла, а в night.log строка verdict=OK"
+            for key, page in sorted(ok - files)
+        ]
+        found += [
+            f"raw/{key}_p{page}.{kind}.gz: файл есть, а строки verdict=OK в "
+            "night.log нет"
+            for key, page in sorted(files - ok)
+        ]
+    return found
+
+
+def children_violations(summary: dict, plan: dict) -> list[str]:
+    """У split=true все дети в summary.json sectors ∪ plan.json
+    pending_sectors."""
+    known = set(summary["sectors"]) | set(plan["pending_sectors"])
+    return [
+        f"summary.json, sectors[{key}]: ребёнок {child} нет ни в sectors, ни в "
+        "pending_sectors plan.json"
+        for key, sector in summary["sectors"].items()
+        if sector["split"]
+        for child in sector["children"]
+        if child not in known
+    ]
+
+
+def invariant_violations(run_dir: Path) -> list[str]:
+    """Инварианты раздела 7: снимок, объявления, бюджет, страницы, дети."""
+    summary = read_json(run_dir / "summary.json")
+    plan = read_json(run_dir / "plan.json")
+    log = [log_record(fields) for _, fields in log_lines(run_dir)]
+    return (
+        snapshot_violations(run_dir, summary)
+        + ids_violations(run_dir, summary)
+        + spent_violations(summary, plan, log)
+        + pages_violations(run_dir, log)
+        + children_violations(summary, plan)
+    )
+
+
+def run_folder_violations(run_dir: Path) -> list[str]:
+    """Нарушения контракта формата папки прогона; [] — папка по формату."""
+    found = layout_violations(run_dir)
+    if any(not (run_dir / name).exists() for name in RUN_FILES):
+        return found  # без обязательного файла дальше читать нечего
+    return (
+        found
+        + json_violations(run_dir)
+        + night_log_violations(run_dir)
+        + invariant_violations(run_dir)
+    )
+
+
+# Проигрывания под контракт: метка ночи, доп. аргументы, замена ответов.
+# Блок и смена API — на T0707 p4 ночи 10-08 (там была 553): 403 и ответ 200
+# без initialState.
+CONTRACT_REPLAYS = {
+    "2026-10-07_0013": ("2026-10-07_0013", (), {}),
+    "2026-11-08_0007": ("2026-11-08_0007", (), {}),
+    "2026-10-08_0032": ("2026-10-08_0032", (), {}),
+    "smoke_only": ("2026-10-08_0032", ("--smoke-only",), {}),
+    "block": ("2026-10-08_0032", (), {("T0707", 4): Reply(403, ERROR_BODY)}),
+    "api_changed": (
+        "2026-10-08_0032",
+        (),
+        {("T0707", 4): Reply(200, b"<html>other</html>")},
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(CONTRACT_REPLAYS))
+def test_21_79_run_folder_contract(name, tmp_path, monkeypatch):
+    """21.79 Папка прогона проигрывания соответствует контракту формата:
+    состав и маски имён; ключи summary.json и plan.json — набор, порядок,
+    типы; грамматика night.log; инварианты (снимок = sectors, unique+dup =
+    объявлениям, done + smoke = spent, OK ↔ файл страницы, дети деления,
+    dry_run false, mtime снимка 0, нет .tmp). Модуль 21."""
+    label, args, replaced = CONTRACT_REPLAYS[name]
+    replies = {key: [reply] for key, reply in replaced.items()}
+    run = replay_night(
+        NIGHTS_DIR / label,
+        tmp_path,
+        monkeypatch,
+        extra_args=args,
+        replace_replies=replies,
+    )
+    assert run_folder_violations(run.run_dir) == []
+
+
+@pytest.fixture
+def clean_run(tmp_path, monkeypatch) -> Path:
+    """Папка прогона чистой ночи 10-07 (деление, дно, 301) — основа пробы
+    контракта. Проигрывание короче секунды, поэтому своё у каждого теста."""
+    return replay_night(NIGHTS_DIR / "2026-10-07_0013", tmp_path, monkeypatch).run_dir
+
+
+def write_text(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+
+
+def edit_json(path: Path, change) -> None:
+    """Перезаписать JSON-файл прогона после change(obj) — как пишет сборщик."""
+    obj = read_json(path)
+    change(obj)
+    write_text(path, json.dumps(obj, ensure_ascii=False, indent=1))
+
+
+def edit_text(path: Path, old: str, new: str) -> None:
+    """Заменить первое вхождение old в текстовом файле."""
+    write_text(path, path.read_text(encoding="utf-8").replace(old, new, 1))
+
+
+def append_text(path: Path, text: str) -> None:
+    write_text(path, path.read_text(encoding="utf-8") + text)
+
+
+def move_to_end(obj: dict, key: str) -> None:
+    obj[key] = obj.pop(key)
+
+
+def rewrite_snapshot(run_dir: Path, drop_last: bool, mtime: int) -> None:
+    """Снимок охвата заново: без последней клетки и/или с mtime gzip."""
+    path = run_dir / "polygons.geojson.gz"
+    snapshot = json.loads(gzip.decompress(path.read_bytes()))
+    if drop_last:
+        snapshot["features"].pop()
+    path.write_bytes(gzip.compress(json.dumps(snapshot).encode(), mtime=mtime))
+
+
+LOG_LINE = "2026-10-07T00:13:20+03:00\tevent=bogus\tsector=T0611\n"
+
+# Порча чистой папки: (что сделать, слова одного нарушения). По одной на
+# пункт контракта раздела 7.
+SPOILS = {
+    "остался plan.json.tmp": (
+        lambda d: write_text(d / "plan.json.tmp", "{}"),
+        ("plan.json.tmp", ".tmp"),
+    ),
+    "нет summary.json": (
+        lambda d: (d / "summary.json").unlink(),
+        ("summary.json", "нет"),
+    ),
+    "имя папки": (
+        lambda d: d.rename(d.with_name("2026-10-07_13")),
+        ("папка 2026-10-07_13",),
+    ),
+    "страница без .gz": (
+        lambda d: write_text(d / "raw" / "T0611_p1.json", "{}"),
+        ("raw/T0611_p1.json:",),
+    ),
+    "порядок ключей summary": (
+        lambda d: edit_json(d / "summary.json", lambda s: move_to_end(s, "budget")),
+        ("summary.json:", "ждали budget"),
+    ),
+    "лишний ключ summary": (
+        lambda d: edit_json(d / "summary.json", lambda s: s.update(extra=1)),
+        ("summary.json:", "extra"),
+    ),
+    "budget строкой": (
+        lambda d: edit_json(d / "summary.json", lambda s: s.update(budget="550")),
+        ("summary.json:", "budget"),
+    ),
+    "dry_run true": (
+        lambda d: edit_json(d / "summary.json", lambda s: s.update(dry_run=True)),
+        ("summary.json:", "dry_run"),
+    ),
+    "нет complete у клетки": (
+        lambda d: edit_json(
+            d / "summary.json", lambda s: s["sectors"]["T0611"].pop("complete")
+        ),
+        ("summary.json, sectors[T0611]", "complete"),
+    ),
+    "состояние задачи": (
+        lambda d: edit_json(d / "plan.json", lambda p: p["done"][0].update(state="x")),
+        ("plan.json, done[0]", "state"),
+    ),
+    "время без пояса": (
+        lambda d: edit_text(d / "night.log", "+03:00\tevent=start", "\tevent=start"),
+        ("night.log, строка 1:", "время"),
+    ),
+    "неизвестное событие": (
+        lambda d: append_text(d / "night.log", LOG_LINE),
+        ("night.log, строка 33", "bogus"),
+    ),
+    "поля запроса не по порядку": (
+        lambda d: edit_text(d / "night.log", "http=200\tms=250", "ms=250\thttp=200"),
+        ("night.log, строка 2:", "поля"),
+    ),
+    "клетка выпала из снимка": (
+        lambda d: rewrite_snapshot(d, drop_last=True, mtime=0),
+        ("polygons.geojson.gz:", "sectors"),
+    ),
+    "mtime снимка": (
+        lambda d: rewrite_snapshot(d, drop_last=False, mtime=1),
+        ("polygons.geojson.gz:", "mtime"),
+    ),
+    "unique_ids + 1": (
+        lambda d: edit_json(
+            d / "summary.json", lambda s: s["sectors"]["T0611"].update(unique_ids=88)
+        ),
+        ("summary.json, sectors[T0611]", "unique_ids"),
+    ),
+    "spent + 1": (
+        lambda d: edit_json(d / "summary.json", lambda s: s.update(spent=23)),
+        ("summary.json:", "spent 23"),
+    ),
+    "удалена страница строки OK": (
+        lambda d: (d / "raw" / "T1307_p2.json.gz").unlink(),
+        ("raw/T1307_p2.json.gz:", "нет файла"),
+    ),
+    "страница без строки OK": (
+        lambda d: shutil.copyfile(
+            d / "raw" / "T1307_p2.json.gz", d / "raw" / "T1307_p3.json.gz"
+        ),
+        ("raw/T1307_p3.json.gz:", "файл есть"),
+    ),
+    "ребёнок деления не в sectors и pending": (
+        lambda d: edit_json(
+            d / "summary.json",
+            lambda s: s["sectors"]["T1112"]["children"].append("T1112z"),
+        ),
+        ("summary.json, sectors[T1112]", "T1112z"),
+    ),
+}
+
+
+@pytest.mark.parametrize(("spoil", "words"), list(SPOILS.values()), ids=list(SPOILS))
+def test_21_79_contract_catches_spoiled(clean_run, spoil, words):
+    """21.79 Проба контракта: каждая порча чистой папки даёт нарушение с
+    названным файлом или ключом — иначе контракт мог бы быть зелёным
+    впустую. Модуль 21."""
+    spoil(clean_run)
+    (run_dir,) = clean_run.parent.iterdir()  # порча могла переименовать папку
+    violations = run_folder_violations(run_dir)
+    assert any(all(word in v for word in words) for v in violations), violations
+
+
+def test_21_79_contract_allows_clean_copy(clean_run):
+    """21.79 Нетронутая папка чистой ночи — нарушений нет: основа пробы
+    контракта сама по формату. Модуль 21."""
+    assert run_folder_violations(clean_run) == []
