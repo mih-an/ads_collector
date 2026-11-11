@@ -55,6 +55,7 @@ from types import SimpleNamespace
 import pytest
 from collector_support import (  # noqa: F401 — no_network: автофикстура
     FAKE_COOKIE,
+    PROXY_ENV,
     USER_AGENT,
     FakeTime,
     FakeTransport,
@@ -3394,20 +3395,6 @@ def test_21_81_make_transport_urllib_cookie():
     assert urllib_jar_cookies(made) == [("a", "b", ".cian.ru")]
 
 
-# Переменные прокси окружения: httpx.Client читает их при создании; тест не
-# должен зависеть от того, что задано на машине.
-PROXY_ENV = (
-    "ALL_PROXY",
-    "all_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "NO_PROXY",
-    "no_proxy",
-)
-
-
 def test_21_81_make_transport_httpx(monkeypatch):
     """21.81 make_transport("httpx", …) — HttpxTransport. Модуль 21."""
     for name in PROXY_ENV:
@@ -3536,6 +3523,23 @@ def test_21_82_ticket_flags_paths(env, monkeypatch):
         headers["user-agent"],
         read_json(run_dir / "plan.json")["cookie_age_h"],
     ) == ([("urllib", "sid=elsewhere")], "Agent/2.0 (--ua)", 2.5)
+
+
+def test_21_82_empty_default_ticket_files_without_flags(env, monkeypatch):
+    """21.82 Без флагов пустые cookies.txt / ua.txt — штатный режим без
+    билета, как в 21.52; проверка пустоты касается только явно названных
+    флагов. Полный запуск main без --cookies и --ua, файлы в папке запуска —
+    одни пробелы: выхода нет, фабрика транспорта получает строку Cookie None,
+    User-Agent первого запроса — из списка сборщика (USER_AGENTS). Защищает
+    запуск по cron на сервере. Модуль 21."""
+    (env.folder / "cookies.txt").write_text("  \n", encoding="utf-8")
+    (env.folder / "ua.txt").write_text(" \n", encoding="utf-8")
+    run_main(env, monkeypatch, CELLS, FAILED_SMOKE)
+    headers = lower_keys(env.transport.sent[0].headers)
+    assert (env.transport.made, headers["user-agent"] in cc.USER_AGENTS) == (
+        [("urllib", None)],
+        True,
+    )
 
 
 @pytest.mark.parametrize("flag", ["--cookies", "--ua"])

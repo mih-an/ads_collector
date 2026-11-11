@@ -62,6 +62,20 @@ USER_AGENT = (
 # Строка куки билета в тестах — выдуманная: настоящих кук в репозитории нет.
 FAKE_COOKIE = "a=b"
 
+# Переменные прокси окружения: httpx.Client читает их при создании; тесты
+# настоящего транспорта (test_collector.py, test_collector_transport.py)
+# снимают их, чтобы не зависеть от того, что задано на машине.
+PROXY_ENV = (
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
 
 def refuse(*args: object, **kwargs: object) -> None:
     raise AssertionError("сеть в тестах запрещена")

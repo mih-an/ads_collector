@@ -29,6 +29,7 @@ import httpx
 import pytest
 from collector_support import (
     FAKE_COOKIE,
+    PROXY_ENV,
     USER_AGENT,
     no_network,  # noqa: F401 — автофикстура
 )
@@ -481,10 +482,14 @@ def test_21_80_request_headers_delivered(kit):
     ids=["только User-Agent", "только Accept"],
 )
 def test_21_80_partial_headers_delivered(kit, given):
-    """21.80 Неполный набор заголовков (один заголовок) с билетом уходит
-    ровно таким плюс Host и Cookie: недостающих User-Agent, Accept и прочих
-    транспорт не дописывает (у urllib — без своего Python-urllib; DECISIONS,
-    block/transport, решения по ревью PR #2). Модуль 21."""
+    """21.80 Неполный набор заголовков (один заголовок) с билетом доходит до
+    библиотеки (у urllib — до do_open) ровно таким плюс Host и Cookie:
+    недостающих User-Agent, Accept и прочих транспорт не дописывает (у
+    urllib — без своего Python-urllib; DECISIONS, block/transport, решения
+    по ревью PR #2). Ниже, в http.client, библиотека сама добавляет
+    Accept-Encoding: identity, если его нет в наборе, и Connection: close —
+    это свойства библиотеки, а не транспорта; тест стоит выше них.
+    Модуль 21."""
     kit.transport(FAKE_COOKIE, [Wire(body=b"x")]).get(URL, given)
     expected = {name.lower(): value for name, value in given.items()}
     expected |= {"host": "www.cian.ru", "cookie": FAKE_COOKIE}
@@ -497,20 +502,6 @@ def test_21_80_get_by_url_as_is(kit):
     байт в байт. Модуль 21."""
     kit.transport(None, [Wire(body=b"x")]).get(URL_P1, {})
     assert (kit.seen[0].method, kit.seen[0].url) == ("GET", URL_P1)
-
-
-# Переменные прокси окружения: httpx.Client читает их при создании; тест не
-# должен зависеть от того, что задано на машине.
-PROXY_ENV = (
-    "ALL_PROXY",
-    "all_proxy",
-    "HTTP_PROXY",
-    "http_proxy",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "NO_PROXY",
-    "no_proxy",
-)
 
 
 @pytest.mark.parametrize("name", ["urllib", "httpx"])
@@ -532,9 +523,10 @@ def test_21_80_real_network_refused(monkeypatch, name):
 # Одна последовательность «провода» для обеих реализаций: ответ 200 с gzip,
 # 403 с Set-Cookie, 301 с Location, повтор заголовка, все виды сбоя
 # (NETWORK_FAILURES) и сбой чтения тела ответов-ошибок.
+SET_COOKIE_403 = Wire(403, [("Server", "nginx"), ("Set-Cookie", "x=y")], b"no")
 SAME_INPUT = [
     Wire(200, [("Content-Encoding", "gzip")], gzip.compress(b"page", mtime=0)),
-    Wire(403, [("Server", "nginx"), ("Set-Cookie", "x=y")], b"no"),
+    SET_COOKIE_403,
     Wire(301, [("Location", URL.replace("p=2", "p=1"))]),
     Wire(200, [("X-Dup", "1"), ("X-Dup", "2")], b"dup"),
     *(Wire(failure=failure) for failure, _ in NETWORK_FAILURES.values()),
@@ -563,3 +555,12 @@ def test_21_80_same_input_same_reply():
     даёт у urllib и httpx равные HttpReply и NetworkFailure и равные Cookie
     запросов. Модуль 21."""
     assert replies_of(Kit("urllib")) == replies_of(Kit("httpx"))
+
+
+def test_21_80_same_input_cookie_after_set_cookie(kit):
+    """21.80 В той же последовательности запрос после ответа 403 с
+    Set-Cookie x=y уходит с Cookie, где есть x=y: равенство списков двух
+    транспортов выше не ловит случай, когда оба теряют куку. Модуль 21."""
+    _, cookies = replies_of(kit)
+    after_403 = cookies[SAME_INPUT.index(SET_COOKIE_403) + 1]
+    assert "x=y" in after_403.split("; ")
