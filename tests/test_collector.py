@@ -3483,13 +3483,18 @@ def is_os_use(node: ast.Attribute, bindings: dict[str, str]) -> bool:
     return name is not None and name.split(".")[0] == "os" and name not in ALLOWED_OS
 
 
-def disk_imports(source: str) -> list[str]:
-    """Импорты gzip, io, pathlib, shutil и имён из os."""
+def disk_imports(source: str, allowed: frozenset[str] = frozenset()) -> list[str]:
+    """Импорты gzip, io, pathlib, shutil и имён из os, кроме модулей allowed."""
     return [
         f"строка {line}: {module}"
         for line, module in imported_modules(source)
-        if is_disk_import(module)
+        if is_disk_import(module) and module.split(".")[0] not in allowed
     ]
+
+
+# Модулю сети из «дисковых» модулей можно только gzip: раскодирование тела
+# ответа в памяти.
+net_disk_imports = functools.partial(disk_imports, allowed=frozenset({"gzip"}))
 
 
 def disk_calls(source: str) -> list[str]:
@@ -3596,10 +3601,12 @@ def test_21_78_no_stdout_in_night_and_serp(name):
 
 
 def test_21_78_net_no_disk_no_stdout():
-    """21.78 Модуль сети не зовёт open и os.*, не печатает в stdout;
-    gzip и zlib — только раскодирование тела. Модуль 21."""
+    """21.78 Модуль сети не зовёт open и os.*, не импортирует io, pathlib,
+    shutil и имён из os, не печатает в stdout; gzip и zlib — только
+    раскодирование тела. Модуль 21."""
     source = collector_source("net.py")
-    assert disk_calls(source) + stdout_use(source) == []
+    found = net_disk_imports(source) + disk_calls(source) + stdout_use(source)
+    assert found == []
 
 
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
@@ -3662,6 +3669,8 @@ GUARD_SAMPLES = [
     (disk_imports, "from pathlib import Path"),
     (disk_imports, "import shutil"),
     (disk_imports, "from os import makedirs"),
+    (net_disk_imports, "import pathlib"),
+    (net_disk_imports, "from os import makedirs"),
     (disk_calls, "os.makedirs(folder, exist_ok=True)"),
     (disk_calls, "found = os.path.exists(p)"),
     (disk_calls, "age = os.path.getmtime(p)"),
@@ -3759,6 +3768,7 @@ def body(raw: bytes) -> str:
         (network_imports, EDGE_CLEAN_SAMPLE),
         (wall_clock_or_random_uses, EDGE_CLEAN_SAMPLE),
         (disk_calls, EDGE_CLEAN_SAMPLE),
+        (net_disk_imports, EDGE_CLEAN_SAMPLE),
         (stdout_use, EDGE_CLEAN_SAMPLE),
         (net_imports, EDGE_CLEAN_SAMPLE),
     ],
@@ -3772,6 +3782,7 @@ def body(raw: bytes) -> str:
         "сеть: urllib.parse и time",
         "сеть: time.monotonic",
         "сеть: gzip в памяти",
+        "сеть: импорт gzip",
         "сеть: stdout",
         "сеть: импорт serp",
     ],
