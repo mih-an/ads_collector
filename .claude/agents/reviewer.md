@@ -55,11 +55,12 @@ docs/reference/collector_architecture.md; docs/DECISIONS.md — строки э�
 3. Разделение ролей: коммит «код» не трогает tests/ (git show --stat по
    коммитам); коммит «тесты» не содержит реализации. Нарушение — БЛОКЕР.
 4. Нет ли чисел сборщика россыпью по коду (их место — `Settings` в
-   collector/night.py и константы контракта в collector/serp.py; два
-   исключения, CLAUDE.md §6: `HTTP_TIMEOUT_S` — в collector/net.py,
-   умолчания аргументов запуска `BUDGET`, `WINDOW_HOURS`, `RUNS_DIR` — в
-   collector/cian_collect.py), сетевых обращений вне модуля сети
-   collector/net.py, внешнего мира (часы, сон, случайность, argv)
+   collector/crawl.py и константы контракта в collector/search_page.py; два
+   исключения, CLAUDE.md §6: `HTTP_TIMEOUT_S` — в collector/transport.py,
+   умолчания аргументов запуска `BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`,
+   `TRANSPORT`, `COOKIES_FILE`, `UA_FILE` — в collector/cian_collect.py),
+   сетевых обращений вне реализаций транспорта
+   (collector/urllib_transport.py, collector/httpx_transport.py), внешнего мира (часы, сон, случайность, argv)
    не на краю, нарушений правила импортов (CLAUDE.md §6), сторонних
    библиотек в collector/, молчаливой починки данных, пустых except, веток
    обработки ошибок без теста, тестов, которые могут выйти в настоящую сеть.

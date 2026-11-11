@@ -38,13 +38,16 @@ docs/DECISIONS.md (решения уровня 1 и решения Андрея)
   CLAUDE.md §10 и разделу 2 collector_architecture.md.
 - Оценка размера двумя строками: код и тесты (тесты обычно ×2–2.7 от кода).
   Блок идёт целиком, без разреза по размеру кода.
-- Числа сборщика — в `Settings` (collector/night.py) и константах контракта
-  в collector/serp.py, не россыпью по коду (CLAUDE.md §6); два исключения:
-  `HTTP_TIMEOUT_S` — в collector/net.py, умолчания аргументов запуска
-  (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`) — в collector/cian_collect.py.
-  Правила обхода и разбора — чистыми функциями; сеть (collector/net.py),
-  часы, сон, случайность, argv — по краям.
-- В `collector/` — только стандартная библиотека.
+- Числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
+  в collector/search_page.py, не россыпью по коду (CLAUDE.md §6); два
+  исключения: `HTTP_TIMEOUT_S` — в collector/transport.py, умолчания
+  аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`,
+  `COOKIES_FILE`, `UA_FILE`) — в collector/cian_collect.py.
+  Правила обхода и разбора — чистыми функциями; сеть (реализации транспорта
+  collector/urllib_transport.py и collector/httpx_transport.py), часы, сон,
+  случайность, argv — по краям.
+- В `collector/` — только стандартная библиотека, кроме httpx в
+  collector/httpx_transport.py.
 - Общие файлы, которые блок тронет (`pyproject.toml`, `pytest.ini`,
   `tests/collector_support.py`, `.github/`, `CLAUDE.md`), — отдельным списком.
 - Вопросы — только там, где тест-план, описание формата, CLAUDE.md и

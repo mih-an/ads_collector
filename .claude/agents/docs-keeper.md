@@ -42,7 +42,7 @@ docs/process/TEAMLEAD_REPORT.md (их ведёт только тимлид); к�
    кодом; перечни файлов тестов и диапазоны кейсов в шапке модуля верны.
 2. docs/CIAN_DATA_FORMAT.md: имена файлов, ключи и их порядок, имена
    функций сборщика, на которые документ ссылается, совпадают с кодом
-   `collector/run_folder.py` и `collector/night.py`. Расхождение по
+   `collector/run_folder.py` и `collector/crawl.py`. Расхождение по
    существу формата не правь — это вопрос тимлиду (формат меняется только
    решением Андрея, двумя PR: здесь и в land-monitor).
 3. docs/reference/collector_architecture.md: раздел 2 не правишь — его

@@ -54,16 +54,19 @@ docs/DECISIONS.md — решения уровня 1 и решения Андре
 исполнению.
 
 Правила кода — CLAUDE.md §6, из них главные:
-- в collector/ — только стандартная библиотека;
-- правило импортов: никто в пакете не импортирует `cian_collect`; `serp`,
-  `geometry`, `run_folder` не импортируют никого из пакета (страж — 21.78);
-- правила обхода и разбора — чистыми функциями; сеть (collector/net.py),
-  часы, сон, случайность, argv — только по краям;
-- числа сборщика — в `Settings` (collector/night.py) и константах контракта
-  в collector/serp.py; два исключения: `HTTP_TIMEOUT_S` — в
-  collector/net.py, умолчания аргументов запуска (`BUDGET`, `WINDOW_HOURS`,
-  `RUNS_DIR`) — в collector/cian_collect.py; никаких магических чисел
-  россыпью;
+- в collector/ — только стандартная библиотека, кроме httpx в
+  collector/httpx_transport.py;
+- правило импортов: никто в пакете не импортирует `cian_collect`;
+  `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого
+  из пакета; реализации транспорта импортирует только `cian_collect`
+  (страж — 21.78);
+- правила обхода и разбора — чистыми функциями; сеть (collector/urllib_transport.py,
+  collector/httpx_transport.py), часы, сон, случайность, argv — только по краям;
+- числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
+  в collector/search_page.py; два исключения: `HTTP_TIMEOUT_S` — в
+  collector/transport.py, умолчания аргументов запуска (`BUDGET`,
+  `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `COOKIES_FILE`, `UA_FILE`) — в
+  collector/cian_collect.py; никаких магических чисел россыпью;
 - формат папки прогона (docs/CIAN_DATA_FORMAT.md) не меняется без решения
   Андрея: порядок ключей, имена файлов, кодировки — как есть;
 - ошибки громко, с именем файла/ключа/параметра; пустых except нет;
