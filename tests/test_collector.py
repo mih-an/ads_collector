@@ -3591,6 +3591,17 @@ def package_imports(source: str) -> list[str]:
     ]
 
 
+def relative_imports(source: str) -> list[str]:
+    """Относительные импорты (from . import x, from .x import y): правило
+    пакета — импорты абсолютные; держит его этот страж, а не запуск файлом
+    (21.61 идёт через run_module)."""
+    return [
+        f"строка {node.lineno}: from {'.' * node.level}{node.module or ''} import"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.level > 0
+    ]
+
+
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (night, serp, geometry, run_folder) не
@@ -3647,10 +3658,21 @@ def test_21_78_net_imported_only_by_cian_collect(name):
     assert module_imports(collector_source(name), "net") == []
 
 
-def test_21_78_cian_collect_no_network():
-    """21.78 cian_collect не импортирует socket, urllib.request,
-    urllib.error, http: вся сеть — в net. Модуль 21."""
-    assert network_imports(collector_source("cian_collect.py")) == []
+@pytest.mark.parametrize(
+    "name", ("cian_collect.py", *(m for m in PACKAGE_MODULES if m != "net.py"))
+)
+def test_21_78_network_only_in_net(name):
+    """21.78 Ни один модуль пакета, кроме net (cian_collect, __init__,
+    night, serp, geometry, run_folder, status), не импортирует socket,
+    urllib.request, urllib.error, http: вся сеть — в net. Модуль 21."""
+    assert network_imports(collector_source(name)) == []
+
+
+@pytest.mark.parametrize("name", ("cian_collect.py", *PACKAGE_MODULES))
+def test_21_78_no_relative_imports(name):
+    """21.78 В пакете нет относительных импортов: импорты абсолютные (from
+    collector import serp). Модуль 21."""
+    assert relative_imports(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", LEAF_MODULES)
@@ -3722,6 +3744,8 @@ GUARD_SAMPLES = [
     (package_imports, "import collector.serp"),
     (package_imports, "from . import geometry"),
     (package_imports, "from .run_folder import PageAnswer"),
+    (relative_imports, "from . import serp"),
+    (relative_imports, "from .serp import OK"),
 ]
 
 
@@ -3795,6 +3819,7 @@ def body(self, req) -> str:
         (disk_use, CLEAN_SAMPLE),
         (stdout_use, CLEAN_SAMPLE),
         (cian_collect_imports, CLEAN_SAMPLE),
+        (relative_imports, CLEAN_SAMPLE),
         (package_imports, LEAF_CLEAN_SAMPLE),
         (network_imports, EDGE_CLEAN_SAMPLE),
         (wall_clock_or_random_uses, EDGE_CLEAN_SAMPLE),
@@ -3809,6 +3834,7 @@ def body(self, req) -> str:
         "диск",
         "stdout",
         "cian_collect",
+        "абсолютные импорты",
         "лист",
         "сеть: urllib.parse и time",
         "сеть: time.monotonic",

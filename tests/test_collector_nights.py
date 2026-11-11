@@ -43,8 +43,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "collector"
 NIGHTS_DIR = FIXTURES / "nights"
 
-NIGHTS = ("2026-10-07_0013", "2026-11-08_0007", "2026-10-08_0032")
-
 # Потолок всех фикстур сборщика (решение Андрея 10.11).
 FIXTURES_SIZE_LIMIT = 3_000_000
 
@@ -333,13 +331,14 @@ def test_21_73_fixtures_fit_size_limit():
 # нарушение начинается с файла и называет ключ, строку или имя.
 
 RUN_NAME = re.compile(r"\d{4}-\d\d-\d\d_\d{4}(-smoke)?")
-# Маски имён в raw/; ключ клетки — без «_».
+# Маски имён в raw/; ключ клетки — без «_». Маска страницы делит имя на
+# клетку, номер и вид (json или html).
+PAGE_FILE = re.compile(r"([^_]+)_p(\d+)\.(json|html)\.gz")
 RAW_NAMES = (
-    re.compile(r"[^_]+_p\d+\.(json|html)\.gz"),
+    PAGE_FILE,
     re.compile(r"_broken_[^_]+_p\d+_(smoke|ssr)_\d+_\d{6}\.(html\.gz|note\.txt)"),
     re.compile(r"_block_[^_]+_p\d+_\d+_\d{6}\.txt"),
 )
-PAGE_FILE = re.compile(r"([^_]+)_p(\d+)\.(json|html)\.gz")
 ISO_WITH_ZONE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d")
 
 # Таблицы «ключ → допустимое» в порядке ключей файла: кортеж — типы
@@ -358,7 +357,7 @@ SUMMARY_KEYS = {
     "stopped": STOPPED,
     "stop_class": STOP_CLASSES,
     "stop_detail": (str, NONE),
-    "smoke": (dict, NONE),
+    "smoke": (dict,),
     "ticket": (bool,),
     "cookie_age_h": (float, NONE),
     "ladder_step_valid": (bool,),
@@ -374,8 +373,7 @@ SUMMARY_KEYS = {
     "split_events": (list,),
     "sectors": (dict,),
 }
-# Три вида smoke (перечень 3.1); null — пробы не было (Night.state.smoke
-# до пробы, пустой пул пробы).
+# Три вида smoke (перечень 3.1): OK, EMPTY, провал пробы (есть detail).
 SMOKE_OK_KEYS = {
     "sector": (str,),
     "verdict": frozenset({"OK"}),
@@ -419,7 +417,7 @@ PLAN_KEYS = {
     "seed": (int,),
     "ticket": (bool,),
     "cookie_age_h": (float, NONE),
-    "smoke": (dict, NONE),
+    "smoke": (dict,),
     "stopped": STOPPED,
     "stop_class": STOP_CLASSES,
     "stop_detail": (str, NONE),
@@ -431,7 +429,7 @@ PLAN_KEYS = {
 PLAN_SECTOR_KEYS = {
     "name": (str,),
     "status": (str,),
-    "area_km2": (float,),
+    "area_km2": (int, float),  # из файла клеток как есть
     "level": (int, NONE),
     "parent": (str, NONE),
     "base": (list, NONE),
@@ -511,27 +509,38 @@ def key_order_violations(where: str, obj: dict, table: dict) -> list[str]:
     return []
 
 
+def described(allowed) -> str:
+    """Допустимое из таблицы словами: значения через «или», типы через «|»."""
+    if isinstance(allowed, frozenset):
+        return " или ".join(sorted(repr(v) for v in allowed))
+    return "|".join(t.__name__ for t in allowed)
+
+
 def keys_violations(where: str, obj: dict, table: dict) -> list[str]:
     """Ключи obj по таблице: набор, порядок, типы или значения."""
     return key_order_violations(where, obj, table) + [
-        f"{where}: {key} = {obj[key]!r} — не по таблице"
+        f"{where}: {key} = {obj[key]!r} — не по таблице, ждали {described(table[key])}"
         for key in table
         if key in obj and not allowed_value(obj[key], table[key])
     ]
 
 
 def items_violations(where: str, items: dict | list, table: dict) -> list[str]:
-    """Ключи каждого элемента словаря или списка по таблице."""
+    """Ключи каждого элемента словаря или списка по таблице; элемент не
+    словарь — нарушение."""
     pairs = items.items() if isinstance(items, dict) else enumerate(items)
     found = []
     for name, item in pairs:
-        found += keys_violations(f"{where}[{name}]", item, table)
+        if isinstance(item, dict):
+            found += keys_violations(f"{where}[{name}]", item, table)
+        else:
+            found.append(f"{where}[{name}]: {item!r} — не словарь")
     return found
 
 
 def smoke_violations(file: str, smoke) -> list[str]:
     """Ключи smoke по таблице своего вида: провал (есть detail), EMPTY или
-    OK; null и не словарь — дело таблицы верхнего уровня."""
+    OK; не словарь — дело таблицы верхнего уровня."""
     if not isinstance(smoke, dict):
         return []
     table = SMOKE_OK_KEYS
@@ -548,8 +557,8 @@ def json_violations(run_dir: Path) -> list[str]:
     plan = read_json(run_dir / "plan.json")
     found = keys_violations("summary.json", summary, SUMMARY_KEYS)
     found += keys_violations("plan.json", plan, PLAN_KEYS)
-    found += smoke_violations("summary.json", summary["smoke"])
-    found += smoke_violations("plan.json", plan["smoke"])
+    found += smoke_violations("summary.json", summary.get("smoke"))
+    found += smoke_violations("plan.json", plan.get("smoke"))
     nested = [
         ("summary.json", "sectors", summary, SUMMARY_SECTOR_KEYS),
         ("summary.json", "split_events", summary, SPLIT_EVENT_KEYS),
@@ -558,7 +567,9 @@ def json_violations(run_dir: Path) -> list[str]:
         ("plan.json", "done", plan, TASK_KEYS),
     ]
     for file, key, obj, table in nested:
-        found += items_violations(f"{file}, {key}", obj[key], table)
+        # нет ключа или не тот тип — уже нарушение верхнего уровня
+        if isinstance(obj.get(key), dict | list):
+            found += items_violations(f"{file}, {key}", obj[key], table)
     return found
 
 
@@ -614,20 +625,23 @@ def snapshot_violations(run_dir: Path, summary: dict) -> list[str]:
     return found
 
 
-def offers_on_pages(run_dir: Path, key: str) -> int:
-    """Объявлений на всех страницах клетки key в raw/."""
+def offers_on_pages(run_dir: Path, pages: set[tuple[str, int]], key: str) -> int:
+    """Объявлений на всех страницах .json.gz клетки key (pages — page_files)."""
     count = 0
-    for path in (run_dir / "raw").glob(f"{key}_p*.json.gz"):
-        count += len(json.loads(gzip.decompress(path.read_bytes()))["offers"])
+    for cell, page in pages:
+        if cell == key:
+            path = run_dir / "raw" / f"{cell}_p{page}.json.gz"
+            count += len(json.loads(gzip.decompress(path.read_bytes()))["offers"])
     return count
 
 
 def ids_violations(run_dir: Path, summary: dict) -> list[str]:
     """unique_ids + duplicate_ids клетки = объявлений на её страницах."""
+    pages = page_files(run_dir, "json")
     found = []
     for key, sector in summary["sectors"].items():
         counted = sector["unique_ids"] + sector["duplicate_ids"]
-        offers = offers_on_pages(run_dir, key)
+        offers = offers_on_pages(run_dir, pages, key)
         if counted != offers:
             found.append(
                 f"summary.json, sectors[{key}]: unique_ids + duplicate_ids = "
@@ -637,13 +651,15 @@ def ids_violations(run_dir: Path, summary: dict) -> list[str]:
 
 
 def spent_violations(summary: dict, plan: dict, log: list[dict]) -> list[str]:
-    """len(done) + строк kind=smoke = spent."""
+    """len(done) + строк kind=smoke = spent и в summary.json, и в plan.json
+    (CIAN_DATA_FORMAT.md §8: оба spent равны)."""
     smoke = sum(1 for record in log if record.get("kind") == "smoke")
-    if len(plan["done"]) + smoke == summary["spent"]:
-        return []
+    spent = len(plan["done"]) + smoke
     return [
-        f"summary.json: spent {summary['spent']} ≠ len(done) {len(plan['done'])} "
-        f"в plan.json + строк kind=smoke {smoke} в night.log"
+        f"{file}: spent {obj['spent']} ≠ len(done) {len(plan['done'])} в "
+        f"plan.json + строк kind=smoke {smoke} в night.log"
+        for file, obj in (("summary.json", summary), ("plan.json", plan))
+        if obj["spent"] != spent
     ]
 
 
@@ -709,12 +725,10 @@ def run_folder_violations(run_dir: Path) -> list[str]:
     found = layout_violations(run_dir)
     if any(not (run_dir / name).exists() for name in RUN_FILES):
         return found  # без обязательного файла дальше читать нечего
-    return (
-        found
-        + json_violations(run_dir)
-        + night_log_violations(run_dir)
-        + invariant_violations(run_dir)
-    )
+    found += json_violations(run_dir) + night_log_violations(run_dir)
+    if found:
+        return found  # инварианты читают ключи и поля, проверенные выше
+    return invariant_violations(run_dir)
 
 
 # Проигрывания под контракт: метка ночи, доп. аргументы, замена ответов и
@@ -806,14 +820,32 @@ def rewrite_snapshot(run_dir: Path, drop_last: bool, mtime: int) -> None:
     path.write_bytes(gzip.compress(json.dumps(snapshot).encode(), mtime=mtime))
 
 
-LOG_LINE = "2026-10-07T00:13:20+03:00\tevent=bogus\tsector=T0611\n"
+def log_line(*fields: str) -> str:
+    """Строка night.log ночи 10-07 с полями fields."""
+    return "\t".join(("2026-10-07T00:13:20+03:00", *fields)) + "\n"
+
+
+# smoke вида «провал пробы» с переставленными ключами и вида EMPTY с
+# объявлениями: таблицы этих видов проигрывания не дают.
+FAILED_SMOKE_SWAPPED = {"verdict": "BLOCK", "sector": "T0611", "detail": "http_403"}
+EMPTY_SMOKE_WITH_OFFERS = {
+    "sector": "T0611",
+    "verdict": "EMPTY",
+    "offers": 5,
+    "total": 87,
+}
 
 # Порча чистой папки: (что сделать, слова одного нарушения). По одной на
-# пункт контракта раздела 7.
+# пункт контракта раздела 7 и на каждую таблицу и событие, которых не дают
+# проигрывания.
 SPOILS = {
     "остался plan.json.tmp": (
         lambda d: write_text(d / "plan.json.tmp", "{}"),
         ("plan.json.tmp", "остался .tmp"),
+    ),
+    "посторонний файл в папке": (
+        lambda d: write_text(d / "notes.txt", "x"),
+        ("notes.txt", "лишнее в папке"),
     ),
     "нет summary.json": (
         lambda d: (d / "summary.json").unlink(),
@@ -847,6 +879,42 @@ SPOILS = {
         ),
         ("summary.json, smoke:", "ждали sector"),
     ),
+    "нет smoke": (
+        lambda d: edit_json(d / "summary.json", lambda s: s.pop("smoke")),
+        ("summary.json:", "нет ключа smoke"),
+    ),
+    "smoke null": (
+        lambda d: edit_json(d / "summary.json", lambda s: s.update(smoke=None)),
+        ("summary.json:", "smoke = None"),
+    ),
+    "smoke провала с переставленными ключами": (
+        lambda d: edit_json(
+            d / "summary.json", lambda s: s.update(smoke=FAILED_SMOKE_SWAPPED)
+        ),
+        ("summary.json, smoke:", "ключ verdict на месте 1, ждали sector"),
+    ),
+    "smoke EMPTY с объявлениями": (
+        lambda d: edit_json(
+            d / "summary.json", lambda s: s.update(smoke=EMPTY_SMOKE_WITH_OFFERS)
+        ),
+        ("summary.json, smoke:", "offers = 5"),
+    ),
+    "порядок ключей plan": (
+        lambda d: edit_json(d / "plan.json", lambda p: move_to_end(p, "night")),
+        ("plan.json:", "ждали night"),
+    ),
+    "нет ids у клетки plan": (
+        lambda d: edit_json(
+            d / "plan.json", lambda p: p["sectors"]["T0611"].pop("ids")
+        ),
+        ("plan.json, sectors[T0611]", "нет ключа ids"),
+    ),
+    "лишний ключ в split_events": (
+        lambda d: edit_json(
+            d / "summary.json", lambda s: s["split_events"][0].update(extra=1)
+        ),
+        ("summary.json, split_events[0]", "лишний ключ extra"),
+    ),
     "dry_run true": (
         lambda d: edit_json(d / "summary.json", lambda s: s.update(dry_run=True)),
         ("summary.json:", "dry_run"),
@@ -857,6 +925,12 @@ SPOILS = {
         ),
         ("summary.json, sectors[T0611]", "complete"),
     ),
+    "нет unique_ids у клетки": (
+        lambda d: edit_json(
+            d / "summary.json", lambda s: s["sectors"]["T0611"].pop("unique_ids")
+        ),
+        ("summary.json, sectors[T0611]", "нет ключа unique_ids"),
+    ),
     "состояние задачи": (
         lambda d: edit_json(d / "plan.json", lambda p: p["done"][0].update(state="x")),
         ("plan.json, done[0]", "state"),
@@ -866,8 +940,21 @@ SPOILS = {
         ("night.log, строка 1:", "время"),
     ),
     "неизвестное событие": (
-        lambda d: append_text(d / "night.log", LOG_LINE),
+        lambda d: append_text(d / "night.log", log_line("event=bogus", "sector=T0611")),
         ("night.log, строка", "неизвестное событие bogus"),
+    ),
+    "лишнее поле smoke_empty": (
+        lambda d: append_text(
+            d / "night.log",
+            log_line("event=smoke_empty", "sector=T0611", "note=x", "extra=1"),
+        ),
+        ("night.log, строка", "поля ['event', 'sector', 'note', 'extra']"),
+    ),
+    "поля split_skip не по порядку": (
+        lambda d: append_text(
+            d / "night.log", log_line("event=split_skip", "note=x", "sector=T0611")
+        ),
+        ("night.log, строка", "поля ['event', 'note', 'sector']"),
     ),
     "поля запроса не по порядку": (
         lambda d: edit_text(d / "night.log", "http=200\tms=250", "ms=250\thttp=200"),
@@ -887,13 +974,21 @@ SPOILS = {
         ),
         ("summary.json, sectors[T0611]", "unique_ids"),
     ),
-    "spent + 1": (
+    "spent + 1 в summary.json": (
         lambda d: edit_json(d / "summary.json", lambda s: increment(s, "spent")),
         ("summary.json: spent",),
+    ),
+    "spent + 1 в plan.json": (
+        lambda d: edit_json(d / "plan.json", lambda p: increment(p, "spent")),
+        ("plan.json: spent",),
     ),
     "удалена страница строки OK": (
         lambda d: (d / "raw" / "T1307_p2.json.gz").unlink(),
         ("raw/T1307_p2.json.gz:", "нет файла"),
+    ),
+    "удалён .html.gz строки OK": (
+        lambda d: (d / "raw" / "T1307_p2.html.gz").unlink(),
+        ("raw/T1307_p2.html.gz:", "нет файла"),
     ),
     "страница без строки OK": (
         lambda d: shutil.copyfile(
@@ -922,7 +1017,7 @@ def test_21_79_contract_catches_spoiled(clean_run, spoil, words):
     assert any(all(word in v for word in words) for v in violations), violations
 
 
-def test_21_79_contract_allows_clean_copy(clean_run):
+def test_21_79_contract_allows_clean_run(clean_run):
     """21.79 Нетронутая папка чистой ночи — нарушений нет: основа пробы
     контракта сама по формату. Модуль 21."""
     assert run_folder_violations(clean_run) == []
