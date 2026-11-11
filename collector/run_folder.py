@@ -36,8 +36,8 @@ class PageAnswer:
     """Ответ на один запрос выдачи: строка лога, учёт страницы и вход записи
     _broken_* и _block_*. На входе записи detail — деталь разбора ответа, без
     хвоста «|saved:<имя файла>» и без пометки «|cookie_expired_or_burned».
-    Хвост ночь добавляет к ответу после записи _broken_* (Night._write_answer),
-    пометку — только к итогу при стопе (night.burned_mark)."""
+    Хвост ночь добавляет к ответу после записи _broken_* (Crawl._write_answer),
+    пометку — только к итогу при стопе (crawl.burned_mark)."""
 
     key: str
     page: int

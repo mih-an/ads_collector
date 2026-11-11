@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 import zlib
 
-from collector.serp import SERP_HOST, Response
+from collector.search_page import CIAN_BASE_URL, Response
 
 HTTP_TIMEOUT_S = 45
 
@@ -169,7 +169,7 @@ class Fetcher:
             headers["Referer"] = referer
         elif self.has_ticket:
             headers["Sec-Fetch-Site"] = "same-origin"
-            headers["Referer"] = SERP_HOST + "/"
+            headers["Referer"] = CIAN_BASE_URL + "/"
         else:
             headers["Sec-Fetch-Site"] = "none"
         return self._do(urllib.request.Request(url, headers=headers))

@@ -11,8 +11,8 @@ night.log), real_events.json (что ночь записала про эти к�
 обёртка с блоком initialState). Источник только читается; любое
 расхождение — ошибка с файлом и ключом.
 
-Зовёт внутренние функции сборщика (serp.extract_initial_state,
-serp._balanced_object, geometry.TILE_KEY_RE), а правило «{ не дальше 40
+Зовёт внутренние функции сборщика (search_page.extract_initial_state,
+search_page._balanced_object, geometry.TILE_KEY_RE), а правило «{ не дальше 40
 знаков» в has_offers_block скопировано из extract_initial_state.
 
 История записи (решение Андрея 10.11): фикстуры записаны этим скриптом в
@@ -22,7 +22,7 @@ expected/ этот скрипт не пишет: это папка прогон�
 что в tests/test_collector_nights.py (replay_night), с seed из meta.json;
 записал её разовый скрипт вне репозитория. Нынешняя версия скрипта
 отличается от запущенной только проверками (коммит 467536e и правки по
-ревью PR #116) и импортом serp/geometry из пакета collector (раньше —
+ревью PR #116) и импортом search_page/geometry из пакета collector (раньше —
 загрузка файлом по пути, PR #121); выход у неё тот же байт в байт.
 Выборка ночи 2026-09-18_2306 убрана вместе с её фикстурой (З165). Из
 полей NightSample удалено has_html (у всех выборок было True); поля
@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from collector import geometry, serp
+from collector import geometry, search_page
 
 # Потолок всех фикстур сборщика (решение Андрея 10.11, задание п. 7).
 SIZE_LIMIT = 3_000_000
@@ -282,7 +282,7 @@ def night_results(night_dir: Path, page_id: tuple[str, int], from_json: bool) ->
 def html_results(path: Path) -> dict:
     """Блок results, который сборщик нашёл бы в сохранённом HTML."""
     html = gzip.decompress(path.read_bytes()).decode("utf-8")
-    state = serp.extract_initial_state(html)
+    state = search_page.extract_initial_state(html)
     if state is None:
         raise FixtureError(f"{path}: initialState с results.offers не найден")
     results = state["results"]
@@ -315,7 +315,7 @@ def page_results(
     cell, page = page_id
     results = night_results(night_dir, page_id, sample.pages_from_json)
     wrapper = reduced_html(results)
-    state = serp.extract_initial_state(wrapper)
+    state = search_page.extract_initial_state(wrapper)
     if state is None or state["results"] != results:
         raise FixtureError(f"{night_dir}: обёртка {cell} p{page} ≠ блоку страницы")
     # HTML против json.gz — только если блок взят из json.gz: у ночи без
@@ -344,7 +344,7 @@ def has_offers_block(html: str, position: int) -> bool:
     brace = html.find("{", end)
     if brace == -1 or brace - end > 40:
         return False
-    blob = serp._balanced_object(html, brace)
+    blob = search_page._balanced_object(html, brace)
     try:
         state = json.loads(blob) if blob else None
     except (ValueError, RecursionError):

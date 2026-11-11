@@ -3,7 +3,7 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 
 Получает argv (parse_settings → Settings), файл клеток сбора [E-42], входной
 билет из папки запуска (read_ticket → Ticket). Собирает Edges — запрос выдачи
-(net.Fetcher), случайность, часы, сон — и отдаёт ночь night.Night; печатает
+(net.Fetcher), случайность, часы, сон — и отдаёт ночь crawl.Crawl; печатает
 сетку и итог ночи в stdout. Сети здесь нет: она вся в collector/net.py.
 Python 3.12, только stdlib; сервер, cron и запуск — collector/README.md.
 """
@@ -18,12 +18,12 @@ import time
 from datetime import datetime
 
 from collector import net
+from collector.crawl import Crawl, Edges, Settings, Ticket
 from collector.geometry import infer_tile_grid, load_sectors
-from collector.night import Edges, Night, Settings, Ticket
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
 
-# Умолчания аргументов запуска; пороги ночи — умолчания night.Settings.
+# Умолчания аргументов запуска; пороги ночи — умолчания crawl.Settings.
 RUNS_DIR = "runs"
 BUDGET = 50
 WINDOW_HOURS = 8.0
@@ -57,7 +57,7 @@ def _file_text(path: str) -> str:
 
 def read_ticket(settings: Settings, now_ts: float, rnd: random.Random) -> Ticket:
     """Входной билет из папки запуска (cookies.txt и ua.txt, имена —
-    night.Settings): куки и UA браузера, прошедшего челлендж WAF. Файлы
+    crawl.Settings): куки и UA браузера, прошедшего челлендж WAF. Файлы
     ищутся в каталоге запуска (cron делает cd ~/calib2); пустой или
     отсутствующий cookies.txt — без билета (анонимный режим); возраст кук —
     по mtime и часам now_ts."""
@@ -196,8 +196,8 @@ def main() -> None:
     # тесты (net.Fetcher, cian_collect.time)
     fetcher = net.Fetcher(ticket.ua, ticket.cookie_header)
     edges = Edges(get_serp=fetcher.get_serp, rnd=rnd, now=now_local, sleep=time.sleep)
-    night = Night(settings, tiles, grid, ticket, edges)
-    print_summary(night.run(), night.paths.folder)
+    crawl = Crawl(settings, tiles, grid, ticket, edges)
+    print_summary(crawl.run(), crawl.paths.folder)
 
 
 if __name__ == "__main__":
