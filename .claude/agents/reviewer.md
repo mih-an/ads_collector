@@ -15,13 +15,10 @@ tools: Read, Grep, Glob, Bash
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров (`| grep`, `| tail`).
 
-Разовые опыты на Python — файлом в `var/scratch/` (Write), запуск
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python var/scratch/<имя>.py`
-из корня; без приставок (`env PYTHONPATH=.`) и `python -c` с многострочным
-кодом. Путь к проекту ставит сам скрипт:
-`sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов
-`collector`. Файлы правятся только Edit/Write; запрещено править или
-создавать файлы через python, heredoc (`<<'EOF'`), sed, awk, `echo >`.
+Инструмента Write нет — разовых скриптов не пишешь; без `python -c` с
+многострочным кодом. Запрещено создавать файлы через python, heredoc
+(`<<'EOF'`), sed, awk, `echo >`. Временные папки не создавать в
+`var/scratch/` и не удалять через `find -exec` / `rm -rf` (CLAUDE.md §8).
 Причина: иначе Claude Code спрашивает разрешение у Андрея.
 
 Модель Fable 5.2 выбрана намеренно: другая, чем у авторов тестов и кода
@@ -58,8 +55,11 @@ docs/reference/collector_architecture.md; docs/DECISIONS.md — строки э�
 3. Разделение ролей: коммит «код» не трогает tests/ (git show --stat по
    коммитам); коммит «тесты» не содержит реализации. Нарушение — БЛОКЕР.
 4. Нет ли чисел сборщика россыпью по коду (их место — `Settings` в
-   collector/night.py и константы контракта в collector/serp.py), сетевых
-   обращений вне модуля сети, внешнего мира (часы, сон, случайность, argv)
+   collector/night.py и константы контракта в collector/serp.py; два
+   исключения, CLAUDE.md §6: `HTTP_TIMEOUT_S` — в collector/net.py,
+   умолчания аргументов запуска `BUDGET`, `WINDOW_HOURS`, `RUNS_DIR` — в
+   collector/cian_collect.py), сетевых обращений вне модуля сети
+   collector/net.py, внешнего мира (часы, сон, случайность, argv)
    не на краю, нарушений правила импортов (CLAUDE.md §6), сторонних
    библиотек в collector/, молчаливой починки данных, пустых except, веток
    обработки ошибок без теста, тестов, которые могут выйти в настоящую сеть.

@@ -14,15 +14,11 @@ tools: Read, Grep, Glob, Bash
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров.
 
-Разовые опыты на Python — файлом в `var/scratch/` (Write), запуск
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python var/scratch/<имя>.py`
-из корня; без приставок (`env PYTHONPATH=.`) и `python -c` с многострочным
-кодом. Путь к проекту ставит сам скрипт:
-`sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов
-`collector`. Файлы правятся только Edit/Write; запрещено править или
-создавать файлы через python, heredoc (`<<'EOF'`), sed, awk, `echo >`.
-Сообщение коммита — через `-m "…"`, без heredoc. Причина: иначе Claude Code
-спрашивает разрешение у Андрея.
+Инструмента Write нет — разовых скриптов не пишешь; без `python -c` с
+многострочным кодом. Запрещено создавать файлы через python, heredoc
+(`<<'EOF'`), sed, awk, `echo >`. Временные папки не создавать в
+`var/scratch/` и не удалять через `find -exec` / `rm -rf` (CLAUDE.md §8).
+Причина: иначе Claude Code спрашивает разрешение у Андрея.
 
 Ты планируешь один блок разработки сборщика ЦИАН (репозиторий ads_collector).
 Инструментов правки у тебя нет: ничего не меняй, не коммить, ветки не создавай.
@@ -43,8 +39,11 @@ docs/DECISIONS.md (решения уровня 1 и решения Андрея)
 - Оценка размера двумя строками: код и тесты (тесты обычно ×2–2.7 от кода).
   Блок идёт целиком, без разреза по размеру кода.
 - Числа сборщика — в `Settings` (collector/night.py) и константах контракта
-  в collector/serp.py, не россыпью по коду (CLAUDE.md §6). Правила обхода и
-  разбора — чистыми функциями; сеть, часы, сон, случайность, argv — по краям.
+  в collector/serp.py, не россыпью по коду (CLAUDE.md §6); два исключения:
+  `HTTP_TIMEOUT_S` — в collector/net.py, умолчания аргументов запуска
+  (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`) — в collector/cian_collect.py.
+  Правила обхода и разбора — чистыми функциями; сеть (collector/net.py),
+  часы, сон, случайность, argv — по краям.
 - В `collector/` — только стандартная библиотека.
 - Общие файлы, которые блок тронет (`pyproject.toml`, `pytest.ini`,
   `tests/collector_support.py`, `.github/`, `CLAUDE.md`), — отдельным списком.

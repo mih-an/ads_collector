@@ -21,8 +21,10 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов
 `collector`. Файлы правятся только Edit/Write; запрещено править или
 создавать файлы через python, heredoc (`<<'EOF'`), sed, awk, `echo >`.
-Сообщение коммита — через `-m "…"`, без heredoc. Причина: иначе Claude Code
-спрашивает разрешение у Андрея.
+Сообщение коммита — через `-m "…"`, без heredoc. Временные папки не
+создавать в `var/scratch/` и не удалять через `find -exec` / `rm -rf`: в
+скриптах — `tempfile.TemporaryDirectory()` (CLAUDE.md §8). Причина: иначе
+Claude Code спрашивает разрешение у Андрея.
 
 Ты следишь, чтобы документы сборщика ЦИАН (репозиторий ads_collector) не
 разъезжались между собой и с кодом. Правишь только docs/, `README.md` в
