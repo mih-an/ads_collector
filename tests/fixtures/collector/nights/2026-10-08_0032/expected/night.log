@@ -1,0 +1,27 @@
+2026-10-08T00:32:32+03:00	event=start	budget=550	sectors=5	window_h=7.0	mean_interval_s=45	ticket=1	cookie_age_h=463.2	order=sectors_shuffled_pages_sequential	dry_run=0
+2026-10-08T00:32:32+03:00	n=1	sector=T0712	page=1	kind=smoke	http=200	ms=250	offers=28	bytes=62189	total=102	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=2	sector=T0803	page=1	kind=ssr	http=500	ms=250	offers=0	bytes=18	total=-	verdict=NET_ERROR	err=http_500
+2026-10-08T00:32:32+03:00	event=retry	sector=T0803	page=1	attempt=1	of=3	after_s=95
+2026-10-08T00:32:32+03:00	n=3	sector=T0803	page=1	kind=ssr	http=200	ms=250	offers=16	bytes=148830	total=75	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	event=sector_end	sector=T0803	why=short_page
+2026-10-08T00:32:32+03:00	n=4	sector=T0606	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=69007	total=57	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=5	sector=T0606	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=65736	total=57	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=6	sector=T0606	page=3	kind=ssr	http=301	ms=250	offers=0	bytes=0	total=-	verdict=PAGE_END	err=redirect_to_p1_301
+2026-10-08T00:32:32+03:00	event=sector_end	sector=T0606	why=redirect_to_p1_301
+2026-10-08T00:32:32+03:00	n=7	sector=T0712	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=56554	total=102	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=8	sector=T0712	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=58263	total=102	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=9	sector=T0712	page=4	kind=ssr	http=200	ms=250	offers=18	bytes=37223	total=102	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	event=sector_end	sector=T0712	why=short_page
+2026-10-08T00:32:32+03:00	n=10	sector=T1205	page=1	kind=ssr	http=200	ms=250	offers=9	bytes=24070	total=9	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	event=sector_end	sector=T1205	why=short_page
+2026-10-08T00:32:32+03:00	n=11	sector=T0707	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=46562	total=101	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=12	sector=T0707	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=55848	total=101	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=13	sector=T0707	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=49753	total=101	verdict=OK	err=-
+2026-10-08T00:32:32+03:00	n=14	sector=T0707	page=4	kind=ssr	http=553	ms=250	offers=0	bytes=18	total=-	verdict=NET_ERROR	err=http_553
+2026-10-08T00:32:32+03:00	event=retry	sector=T0707	page=4	attempt=1	of=3	after_s=89
+2026-10-08T00:32:32+03:00	n=15	sector=T0707	page=4	kind=ssr	http=0	ms=250	offers=0	bytes=0	total=-	verdict=NET_ERROR	err=urlerror:timed out
+2026-10-08T00:32:32+03:00	event=retry	sector=T0707	page=4	attempt=2	of=3	after_s=168
+2026-10-08T00:32:32+03:00	n=16	sector=T0707	page=4	kind=ssr	http=500	ms=250	offers=0	bytes=18	total=-	verdict=NET_ERROR	err=http_500
+2026-10-08T00:32:32+03:00	event=retry	sector=T0707	page=4	attempt=3	of=3	after_s=375
+2026-10-08T00:32:32+03:00	n=17	sector=T0707	page=4	kind=ssr	http=0	ms=250	offers=0	bytes=0	total=-	verdict=NET_ERROR	err=urlerror:timed out
+2026-10-08T00:32:32+03:00	event=STOP	reason=net_error	cls=NET_ERROR	detail=urlerror:timed out	spent=17

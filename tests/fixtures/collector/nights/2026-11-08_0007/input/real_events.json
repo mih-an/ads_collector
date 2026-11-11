@@ -1,0 +1,129 @@
+{
+ "stopped": "queue_empty",
+ "cells": {
+  "T1307": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "26",
+    "total": "26",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T0710": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "57",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "57",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "301",
+    "offers": "0",
+    "total": "-",
+    "verdict": "PAGE_END",
+    "err": "redirect_to_p1_301"
+   },
+   {
+    "event": "sector_end",
+    "why": "redirect_to_p1_301"
+   }
+  ],
+  "T0713cac": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "5",
+    "total": "443",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   },
+   {
+    "event": "split_floor",
+    "level": "3",
+    "total": "443",
+    "note": "дно деления: листаем"
+   }
+  ],
+  "T1210": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "44",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "15",
+    "total": "44",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T0712": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "200",
+    "offers": "3",
+    "total": "87",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ]
+ }
+}

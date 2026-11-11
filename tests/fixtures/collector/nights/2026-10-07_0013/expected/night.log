@@ -1,0 +1,32 @@
+2026-10-07T00:13:20+03:00	event=start	budget=550	sectors=4	window_h=7.0	mean_interval_s=45	ticket=1	cookie_age_h=438.9	order=sectors_shuffled_pages_sequential	dry_run=0
+2026-10-07T00:13:20+03:00	n=1	sector=T0611	page=1	kind=smoke	http=200	ms=250	offers=28	bytes=60280	total=87	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=2	sector=T0713cac	page=1	kind=ssr	http=200	ms=250	offers=6	bytes=14643	total=444	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T0713cac	why=short_page
+2026-10-07T00:13:20+03:00	event=split_floor	sector=T0713cac	level=3	total=444	note=дно деления: листаем
+2026-10-07T00:13:20+03:00	n=3	sector=T0611	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=59527	total=87	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=4	sector=T0611	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=59688	total=87	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=5	sector=T0611	page=4	kind=ssr	http=200	ms=250	offers=3	bytes=7407	total=87	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T0611	why=short_page
+2026-10-07T00:13:20+03:00	n=6	sector=T1307	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=68299	total=33	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=7	sector=T1307	page=2	kind=ssr	http=200	ms=250	offers=5	bytes=12555	total=33	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T1307	why=short_page
+2026-10-07T00:13:20+03:00	n=8	sector=T1112	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=94854	total=425	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=split	sector=T1112	total=425	level=0	children=T1112a,T1112b,T1112c,T1112d
+2026-10-07T00:13:20+03:00	n=9	sector=T1112d	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=78977	total=120	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=10	sector=T1112d	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=82164	total=120	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=11	sector=T1112d	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=74280	total=120	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=12	sector=T1112d	page=4	kind=ssr	http=200	ms=250	offers=28	bytes=68405	total=120	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=13	sector=T1112d	page=5	kind=ssr	http=200	ms=250	offers=8	bytes=22146	total=120	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T1112d	why=short_page
+2026-10-07T00:13:20+03:00	n=14	sector=T1112a	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=68233	total=177	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=15	sector=T1112a	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=70265	total=177	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=16	sector=T1112a	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=71466	total=177	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=17	sector=T1112a	page=4	kind=ssr	http=200	ms=250	offers=26	bytes=60558	total=177	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T1112a	why=short_page
+2026-10-07T00:13:20+03:00	n=18	sector=T1112b	page=1	kind=ssr	http=200	ms=250	offers=3	bytes=271068	total=3	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T1112b	why=short_page
+2026-10-07T00:13:20+03:00	n=19	sector=T1112c	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=86925	total=128	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=20	sector=T1112c	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=68021	total=128	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=21	sector=T1112c	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=82269	total=128	verdict=OK	err=-
+2026-10-07T00:13:20+03:00	n=22	sector=T1112c	page=4	kind=ssr	http=301	ms=250	offers=0	bytes=0	total=-	verdict=PAGE_END	err=redirect_to_p1_301
+2026-10-07T00:13:20+03:00	event=sector_end	sector=T1112c	why=redirect_to_p1_301

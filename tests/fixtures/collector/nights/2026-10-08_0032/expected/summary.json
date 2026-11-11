@@ -1,0 +1,126 @@
+{
+ "night": "2026-10-08",
+ "dry_run": false,
+ "budget": 550,
+ "spent": 17,
+ "stopped": "net_error",
+ "stop_class": "NET_ERROR",
+ "stop_detail": "urlerror:timed out",
+ "smoke": {
+  "sector": "T0712",
+  "verdict": "OK",
+  "offers": 28,
+  "total": 102
+ },
+ "ticket": true,
+ "cookie_age_h": 463.2,
+ "ladder_step_valid": false,
+ "ladder_result": "invalid",
+ "sectors_touched": 5,
+ "sectors_complete": 4,
+ "duplicate_ids_total": 15,
+ "stateless_pagination_ok": true,
+ "served_vs_total_median": 1.0,
+ "collect_file": "tiles.geojson",
+ "tile_mode": true,
+ "split_threshold": 400,
+ "split_events": [],
+ "sectors": {
+  "T1205": {
+   "name": "Сбор T1205",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 9,
+   "pages_planned": 1,
+   "pages_done": [
+    1
+   ],
+   "served_end": true,
+   "unique_ids": 9,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 1.0
+  },
+  "T0606": {
+   "name": "Сбор T0606",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 57,
+   "pages_planned": 3,
+   "pages_done": [
+    1,
+    2
+   ],
+   "served_end": true,
+   "unique_ids": 56,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 0.98
+  },
+  "T0712": {
+   "name": "Сбор T0712",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 102,
+   "pages_planned": 4,
+   "pages_done": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "served_end": true,
+   "unique_ids": 102,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 1.0
+  },
+  "T0803": {
+   "name": "Сбор T0803",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 75,
+   "pages_planned": 3,
+   "pages_done": [
+    1
+   ],
+   "served_end": true,
+   "unique_ids": 16,
+   "duplicate_ids": 0,
+   "complete": true,
+   "served_vs_total": 0.21
+  },
+  "T0707": {
+   "name": "Сбор T0707",
+   "status": "collect",
+   "level": 0,
+   "parent": null,
+   "split": false,
+   "children": [],
+   "total_offers": 101,
+   "pages_planned": 4,
+   "pages_done": [
+    1,
+    2,
+    3
+   ],
+   "served_end": false,
+   "unique_ids": 69,
+   "duplicate_ids": 15,
+   "complete": false,
+   "served_vs_total": null
+  }
+ }
+}

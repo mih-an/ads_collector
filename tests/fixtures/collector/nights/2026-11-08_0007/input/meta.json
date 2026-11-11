@@ -1,0 +1,12 @@
+{
+ "night": "2026-11-08_0007",
+ "started_at": "2026-11-08T00:07:12+03:00",
+ "seed": 20261108,
+ "budget": 550,
+ "real_budget": 550,
+ "window_hours": 7.0,
+ "discovery": false,
+ "cookie_age_h": 1206.8,
+ "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+ "may_skip": []
+}

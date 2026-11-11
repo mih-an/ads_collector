@@ -1,0 +1,191 @@
+{
+ "stopped": "net_error",
+ "cells": {
+  "T1205": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "9",
+    "total": "9",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T0606": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "57",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "57",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "301",
+    "offers": "0",
+    "total": "-",
+    "verdict": "PAGE_END",
+    "err": "redirect_to_p1_301"
+   },
+   {
+    "event": "sector_end",
+    "why": "redirect_to_p1_301"
+   }
+  ],
+  "T0712": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "102",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "102",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "102",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "200",
+    "offers": "18",
+    "total": "102",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T0803": [
+   {
+    "page": "1",
+    "http": "500",
+    "offers": "0",
+    "total": "-",
+    "verdict": "NET_ERROR",
+    "err": "http_500"
+   },
+   {
+    "event": "retry",
+    "page": "1",
+    "attempt": "1",
+    "of": "3"
+   },
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "16",
+    "total": "75",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "event": "sector_end",
+    "why": "short_page"
+   }
+  ],
+  "T0707": [
+   {
+    "page": "1",
+    "http": "200",
+    "offers": "28",
+    "total": "101",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "2",
+    "http": "200",
+    "offers": "28",
+    "total": "101",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "3",
+    "http": "200",
+    "offers": "28",
+    "total": "101",
+    "verdict": "OK",
+    "err": "-"
+   },
+   {
+    "page": "4",
+    "http": "553",
+    "offers": "0",
+    "total": "-",
+    "verdict": "NET_ERROR",
+    "err": "http_553"
+   },
+   {
+    "event": "retry",
+    "page": "4",
+    "attempt": "1",
+    "of": "3"
+   },
+   {
+    "page": "4",
+    "http": "0",
+    "offers": "0",
+    "total": "-",
+    "verdict": "NET_ERROR",
+    "err": "urlerror:timed out"
+   },
+   {
+    "event": "retry",
+    "page": "4",
+    "attempt": "2",
+    "of": "3"
+   },
+   {
+    "page": "4",
+    "http": "500",
+    "offers": "0",
+    "total": "-",
+    "verdict": "NET_ERROR",
+    "err": "http_500"
+   },
+   {
+    "event": "retry",
+    "page": "4",
+    "attempt": "3",
+    "of": "3"
+   },
+   {
+    "page": "4",
+    "http": "0",
+    "offers": "0",
+    "total": "-",
+    "verdict": "NET_ERROR",
+    "err": "urlerror:timed out"
+   }
+  ]
+ }
+}

@@ -1,0 +1,58 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "network": {
+      "allowLocalBinding": true,
+      "allowedDomains": ["api.github.com"]
+    },
+    "excludedCommands": ["git push *", "git pull *", "git fetch *", "gh pr *", "gh run *", "scripts/finish_pr.sh", ".venv/bin/python -m pytest *"]
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read", "Glob", "Grep", "Edit", "Write",
+      "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)", "Bash(git show*)",
+      "Bash(git branch)", "Bash(git branch --show-current)", "Bash(git add *)",
+      "Bash(git commit *)", "Bash(git fetch*)", "Bash(git checkout -b *)",
+      "Bash(git switch -c *)", "Bash(git rev-parse *)", "Bash(git check-ignore *)",
+      "Bash(git push *)", "Bash(git checkout *)", "Bash(git switch *)",
+      "Bash(git pull *)", "Bash(git branch -d *)",
+      "Bash(git stash list)", "Bash(git stash list *)",
+      "Bash(git merge origin/main*)", "Bash(git merge --no-ff origin/main*)",
+      "Bash(git merge --no-ff -m * origin/main)",
+      "Bash(gh pr create *)", "Bash(gh pr view *)", "Bash(gh pr edit *)",
+      "Bash(gh pr list*)", "Bash(gh pr diff *)",
+      "Bash(gh pr checks*)", "Bash(gh run list*)", "Bash(gh run view *)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(env PYTHONPATH=. .venv/bin/python var/scratch/*)",
+      "Bash(.venv/bin/python *)", "Bash(.venv/bin/ruff*)",
+      "Bash(bash -n *)", "Bash(shellcheck *)", "Bash(scripts/finish_pr.sh)",
+      "Bash(ls*)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
+      "Bash(grep *)", "Bash(rg *)", "Bash(git grep *)",
+      "Bash(rm *)", "Bash(mv *)", "Bash(chmod *)", "Bash(mkdir *)"
+    ],
+    "ask": [
+      "Bash(git reset *)", "Bash(git branch -D *)",
+      "Bash(git stash)", "Bash(git stash -*)", "Bash(git stash push*)",
+      "Bash(git stash save*)", "Bash(git stash pop*)", "Bash(git stash apply*)",
+      "Bash(git stash drop*)", "Bash(git stash clear*)", "Bash(git stash branch*)",
+      "Bash(git stash store*)", "Bash(git stash create*)",
+      "Bash(git stash import*)", "Bash(git stash export*)"
+    ],
+    "deny": [
+      "Bash(git push --force*)", "Bash(git push -f *)",
+      "Bash(git rebase *)", "Bash(git push * main)", "Bash(git push * main:*)",
+      "Bash(git push * *:main)", "Bash(git push origin HEAD:main)",
+      "Bash(gh pr merge *)", "Bash(gh pr close *)", "Bash(gh api *)", "Bash(gh repo *)",
+      "Bash(gh run cancel *)", "Bash(gh run delete *)", "Bash(gh run download *)",
+      "Bash(rm -rf *)", "Bash(rm -fr *)",
+      "Bash(sudo *)", "Bash(curl *)", "Bash(wget *)",
+      "Bash(ssh *)", "Bash(scp *)", "Bash(rsync *)", "Bash(pip *)",
+      "Bash(*pip install*)", "Bash(brew *)",
+      "Read(./.env)", "Edit(./.env)", "Read(./.env.local)", "Edit(./.env.local)",
+      "Edit(tests/fixtures/**/*.json)", "Edit(tests/fixtures/**/*.json.gz)",
+      "Edit(tests/fixtures/**/*.tsv)", "Edit(tests/fixtures/**/*.geojson)"
+    ]
+  }
+}
