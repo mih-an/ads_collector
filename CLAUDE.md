@@ -114,7 +114,8 @@
 ```python
 def main() -> None:
     settings = read_settings(sys.argv[1:])
-    crawl = build_crawl(settings)  # вся сборка внешнего мира: часы, rnd, билет, транспорт
+    # вся сборка внешнего мира: часы, rnd, билет, транспорт
+    crawl = build_crawl(settings)
     crawl.collect()
     crawl.print_summary()
 ```
