@@ -443,6 +443,7 @@ class Crawl:
         clock: Clock,
         rnd: random.Random,
     ) -> None:
+        """Только запоминает входы: часы, случайность и диск — в open_run."""
         settings = crawl_input.settings
         self.settings = settings
         self.grid = crawl_input.grid
@@ -458,7 +459,6 @@ class Crawl:
         self.started_at: datetime  # появляется в open_run
         self.paths: run_folder.RunPaths  # появляется в open_run
         self.report: dict  # итог прогона (summary.json), появляется в finish
-        self.open_run()
 
     def open_run(self) -> None:
         """Начало прогона: время старта, папка прогона, клетки в работу,
@@ -492,9 +492,10 @@ class Crawl:
     # ── главный цикл ──────────────────────────────────────────────
 
     def collect(self) -> None:
-        """Прогон целиком; итог (словарь summary.json) — в self.report, папка —
-        self.paths.folder."""
+        """Прогон целиком: открыть прогон → строка start → проба → обход →
+        итог (словарь summary.json) в self.report, папка — self.paths.folder."""
         state = self.state
+        self.open_run()
         self._log_start()
         self.save_plan()
         # проба провалена или режим «только проба» — обхода нет

@@ -296,9 +296,10 @@ def fake_ticket():
 
 
 def make_crawl(env, features, **changes):
-    """Crawl без main(): файл клеток features, билет как в env, сеть —
-    фальшивый транспорт env через PageFetcher, часы и сон — FakeTime env,
-    случайность — Random(1); changes — поля Settings."""
+    """Crawl без main() с уже начатым прогоном (open_run): файл клеток
+    features, билет как в env, сеть — фальшивый транспорт env через
+    PageFetcher, часы и сон — FakeTime env, случайность — Random(1);
+    changes — поля Settings."""
     write_features(env.tiles, features)
     tiles = geometry.load_sectors(str(env.tiles))
     crawl_input = crawl.CrawlInput(
@@ -311,7 +312,9 @@ def make_crawl(env, features, **changes):
         env.transport, USER_AGENT, True, env.clock.monotonic
     )
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
-    return crawl.Crawl(crawl_input, fetcher, clock, random.Random(1))
+    started = crawl.Crawl(crawl_input, fetcher, clock, random.Random(1))
+    started.open_run()
+    return started
 
 
 def read_json(path: Path):
