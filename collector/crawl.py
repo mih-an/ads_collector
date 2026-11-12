@@ -519,9 +519,7 @@ class Crawl:
             if state.stopped:
                 return  # ночь остановлена (блок, сеть, бюджет)
             self.save_plan()
-            if state.pending and state.spent < budget:
-                factor = self.rnd.uniform(*self.settings.inter_tile_pause)
-                self.sleep_between(factor)
+            self.pause_between_tiles()
         state.stopped = state.stopped or "queue_empty"
 
     # ── проба ─────────────────────────────────────────────────────
@@ -808,6 +806,14 @@ class Crawl:
             self.mean_interval_s, factor, self.settings.interval_spread
         )
         self.clock.sleep(self.rnd.uniform(low, high))
+
+    def pause_between_tiles(self) -> None:
+        """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
+        state = self.state
+        if not state.pending or state.spent >= self.settings.budget:
+            return
+        factor = self.rnd.uniform(*self.settings.inter_tile_pause)
+        self.sleep_between(factor)
 
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
