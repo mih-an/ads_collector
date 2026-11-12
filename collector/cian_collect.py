@@ -93,45 +93,51 @@ LADDER_VERDICTS = {
 }
 
 
-def print_summary(report: dict, folder: str) -> None:
-    """Итог ночи в stdout: шапка и клетки по убыванию totalOffers."""
+def summary_text(report: dict, folder: str) -> str:
+    """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
     ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
-    print("\n" + "─" * 64)
-    print(
+    # первая строка пустая: она отделяет итог от строк stdout выше
+    lines = [
+        "",
+        "─" * 64,
         f"ночь {report['night']}   бюджет {report['budget']}   "
-        f"запросов {report['spent']}   билет: {ticket}"
-    )
-    print(
+        f"запросов {report['spent']}   билет: {ticket}",
         f"стоп: {report['stopped']}   класс: {report['stop_class'] or '-'}   "
-        f"{report['stop_detail'] or ''}"
-    )
-    print(f"ИТОГ: {LADDER_VERDICTS[report['ladder_result']]}")
-    print(f"smoke: {report['smoke']}")
+        f"{report['stop_detail'] or ''}",
+        f"ИТОГ: {LADDER_VERDICTS[report['ladder_result']]}",
+        f"smoke: {report['smoke']}",
+    ]
     for ev in report["split_events"]:
-        print(
+        lines.append(
             f"РАЗРЕЗАНА {ev['parent']} (total={ev['total_offers']}) → "
             f"{', '.join(ev['children'])}"
         )
-    print(
+    lines.append(
         f"секторов затронуто {report['sectors_touched']}, "
         f"полностью выкачано {report['sectors_complete']}, "
         f"дублей id {report['duplicate_ids_total']}, "
         f"stateless-пагинация {report['stateless_pagination_ok']}"
     )
-    print(f"файлы: {folder}")
-    print("─" * 64)
+    lines.append(f"файлы: {folder}")
+    lines.append("─" * 64)
     by_total = sorted(
         report["sectors"].items(), key=lambda kv: -(kv[1]["total_offers"] or 0)
     )
     for key, v in by_total:
         svt = f"{v['served_vs_total']:.2f}" if v["served_vs_total"] else "  -  "
-        print(
+        lines.append(
             f"  {key:>4}  total={str(v['total_offers']):>5}  "
             f"стр {len(v['pages_done'])}/{v['pages_planned']}  "
             f"{'полн.' if v['complete'] else 'част.'}  "
             f"uniq={v['unique_ids']:>5}  dup={v['duplicate_ids']:>3}  "
             f"served/total={svt}  {v['name'][:30]}"
         )
+    return "\n".join(lines)
+
+
+def print_summary(report: dict, folder: str) -> None:
+    """Итог прогона в stdout."""
+    print(summary_text(report, folder))
 
 
 # ──────────────────────────── ТРАНСПОРТЫ ────────────────────────────
