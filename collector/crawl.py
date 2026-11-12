@@ -458,6 +458,7 @@ class Crawl:
         )
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
+        self.report: dict  # итог прогона (summary.json), появляется в finish
         # джиттер — один раз на (клетка, ночь), в порядке файла
         for raw_tile in crawl_input.raw_tiles:
             self._register(raw_tile)
@@ -482,14 +483,16 @@ class Crawl:
 
     # ── главный цикл ──────────────────────────────────────────────
 
-    def collect(self) -> dict:
-        """Прогон целиком. → словарь summary.json (папка — self.paths.folder)."""
+    def collect(self) -> None:
+        """Прогон целиком; итог (словарь summary.json) — в self.report, папка —
+        self.paths.folder."""
         state = self.state
         self._log_start()
         self.save_plan()
         # проба провалена или режим «только проба» — обхода нет
         if not self.smoke() or self.settings.smoke_only:
-            return self.finish()
+            self.finish()
+            return
         # пауза после пробы: иначе первая страница обхода уходит через секунду
         # после неё (человек так быстро не листает; мини-тест 15.09). Стоит до
         # try: Ctrl+C в этой паузе — выход без сводки (collector_architecture.md
@@ -505,7 +508,7 @@ class Crawl:
                 self.pause_between_tiles()
         except KeyboardInterrupt:
             state.stopped, state.stop_class = "interrupted", "interrupted"
-        return self.finish()
+        self.finish()
 
     # ── проба ─────────────────────────────────────────────────────
 
@@ -862,8 +865,8 @@ class Crawl:
             ),
         )
 
-    def finish(self) -> dict:
-        """План, снимок охвата и summary.json последним. → словарь итога."""
+    def finish(self) -> None:
+        """План, снимок охвата и summary.json последним; итог — в self.report."""
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
@@ -875,4 +878,4 @@ class Crawl:
         rings = {key: self.tiles[key].ring_canonical for key in report["sectors"]}
         run_folder.write_polygons(self.paths, rings)
         run_folder.write_summary(self.paths, report)
-        return report
+        self.report = report
