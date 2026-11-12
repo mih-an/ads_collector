@@ -487,9 +487,8 @@ class Crawl:
         state = self.state
         self._log_start()
         self.save_plan()
-        if not self.smoke():
-            return self.finish()
-        if self.settings.smoke_only:
+        # проба провалена или режим «только проба» — обхода нет
+        if not self.smoke() or self.settings.smoke_only:
             return self.finish()
         # пауза после пробы: иначе первая страница обхода уходит через секунду
         # после неё (человек так быстро не листает; мини-тест 15.09). Стоит до
