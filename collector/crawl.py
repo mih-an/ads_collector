@@ -234,7 +234,7 @@ def is_complete(tile: TileState) -> bool:
 
 def read_out(tile: TileState, page: int) -> bool:
     """Страница page клетке уже не нужна: конец набора или верхняя оценка
-    totalOffers исчерпана. Потолок выдачи — отдельно, в цикле Crawl._crawl_pages."""
+    totalOffers исчерпана. Потолок выдачи — отдельно, в цикле Crawl.crawl_tile."""
     if tile.served_end:
         return True
     return page > 1 and tile.pages_planned is not None and page > tile.pages_planned
@@ -568,15 +568,11 @@ class Crawl:
     # ── клетка ────────────────────────────────────────────────────
 
     def crawl_tile(self, key: str) -> bool:
-        """Одна клетка подряд: стр. 1 → 2 → … до конца набора. → продолжать ли ночь."""
+        """Одна клетка подряд: стр. 1 → 2 → … до конца набора; между
+        страницами — пауза. → продолжать ли ночь."""
         page = 2 if 1 in self.tiles[key].pages_done else 1  # стр. 1 могла снять проба
         if page == 2 and self.split(key):  # клетку-переросток сняла проба
             return True
-        return self._crawl_pages(key, page)
-
-    def _crawl_pages(self, key: str, page: int) -> bool:
-        """Листание клетки со страницы page до конца набора; после каждой
-        страницы, кроме последней, — пауза. → продолжать ли ночь."""
         tile = self.tiles[key]
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
