@@ -268,6 +268,19 @@ def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]:
     return False, "invalid"
 
 
+def stop_reason(state: CrawlState, smoke_only: bool) -> str:
+    """Причина конца прогона (поле stopped). Записанная раньше остаётся:
+    провал пробы, стоп-вердикт, бюджет посреди клетки, Ctrl+C. Иначе —
+    только проба, бюджет кончился при непустой очереди, очередь пуста."""
+    if state.stopped:
+        return state.stopped
+    if smoke_only:
+        return "smoke_only"
+    if state.pending:
+        return "budget_exhausted"
+    return "queue_empty"
+
+
 def tile_plan_entry(tile: TileState) -> dict:
     """Клетка в plan.json — без колец, ключи в порядке формата."""
     return {
@@ -487,7 +500,6 @@ class Crawl:
         if not self.smoke():
             return self.finish()
         if self.settings.smoke_only:
-            state.stopped = "smoke_only"
             return self.finish()
         # пауза после пробы: иначе первая страница обхода уходит через секунду
         # после неё (человек так быстро не листает; мини-тест 15.09). Стоит до
@@ -503,17 +515,13 @@ class Crawl:
     def _crawl_queue(self) -> None:
         """Клетки очереди по одной, пока есть бюджет и очередь."""
         state, budget = self.state, self.settings.budget
-        while state.pending:
-            if state.spent >= budget:
-                state.stopped = "budget_exhausted"
-                return
+        while state.pending and state.spent < budget:
             key = state.pending.pop(0)
             self.download_tile(key)
             if state.stopped:
                 return  # ночь остановлена (блок, сеть, бюджет)
             self.save_plan()
             self.pause_between_tiles()
-        state.stopped = state.stopped or "queue_empty"
 
     # ── проба ─────────────────────────────────────────────────────
 
@@ -854,6 +862,7 @@ class Crawl:
 
     def finish(self) -> dict:
         """План, снимок охвата и summary.json последним. → словарь итога."""
+        self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
             self.state, self.settings, self.ticket, self.started_at, self.tiles
