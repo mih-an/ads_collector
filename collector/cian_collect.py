@@ -17,6 +17,7 @@ import random
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
@@ -32,8 +33,7 @@ RUNS_DIR = "runs"
 BUDGET = 50
 WINDOW_HOURS = 8.0
 # транспорт по умолчанию — urllib: на сервере сборщик идёт голым python3
-# (решение Андрея 11.11)
-TRANSPORTS = ("urllib", "httpx")
+# (решение Андрея 11.11); список транспортов — TRANSPORTS ниже
 TRANSPORT = "urllib"
 # входной билет без флагов --cookies и --ua — файлы в папке запуска (cron
 # делает cd ~/calib2)
@@ -133,6 +133,42 @@ def print_summary(report: dict, folder: str) -> None:
         )
 
 
+# ──────────────────────────── ТРАНСПОРТЫ ────────────────────────────
+
+
+@dataclass(frozen=True)
+class TransportChoice:
+    """Транспорт флага --transport: library — модуль, который должен быть
+    установлен (None — хватает стандартной библиотеки); make — создание
+    транспорта по строке Cookie билета."""
+
+    library: str | None
+    make: Callable[[str | None], Transport]
+
+
+def make_urllib(cookie_header: str | None) -> Transport:
+    """Транспорт на urllib стандартной библиотеки (по умолчанию)."""
+    return urllib_transport.UrllibTransport(cookie_header)
+
+
+def make_httpx(cookie_header: str | None) -> Transport:
+    """Транспорт на внешней библиотеке httpx."""
+    # импорт только здесь, не на верхнем уровне: без httpx сборщик с urllib
+    # работает (решение Андрея 11.11, страж 21.78)
+    from collector import httpx_transport
+
+    return httpx_transport.HttpxTransport(cookie_header)
+
+
+# Одно место для списка транспортов: из него choices флага --transport,
+# ранняя проверка библиотеки и создание транспорта (решение Андрея 12.11).
+# Читается в момент вызова: так тесты добавляют в него свой транспорт (21.81).
+TRANSPORTS: dict[str, TransportChoice] = {
+    "urllib": TransportChoice(library=None, make=make_urllib),
+    "httpx": TransportChoice(library="httpx", make=make_httpx),
+}
+
+
 # ─────────────────────────────── CLI ────────────────────────────────
 
 
@@ -152,7 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-start-delay", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument(
-        "--transport", choices=TRANSPORTS, default=TRANSPORT, help="сетевой транспорт"
+        "--transport",
+        choices=list(TRANSPORTS),
+        default=TRANSPORT,
+        help="сетевой транспорт",
     )
     ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
     ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
@@ -162,9 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
     паузы старта (21.81, 21.82)."""
-    if args.transport == "httpx" and importlib.util.find_spec("httpx") is None:
+    library = TRANSPORTS[args.transport].library
+    if library is not None and importlib.util.find_spec(library) is None:
         ap.error(
-            "--transport httpx: не установлена библиотека httpx; "
+            f"--transport {args.transport}: не установлена библиотека {library}; "
             "установка: pip install -r requirements.txt"
         )
     for flag, path in (("--cookies", args.cookies), ("--ua", args.ua)):
@@ -221,17 +261,12 @@ def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
 
 
 def make_transport(name: str, cookie_header: str | None) -> Transport:
-    """Транспорт по имени флага --transport (urllib или httpx); незнакомое
-    имя — ValueError (21.81)."""
-    if name == "urllib":
-        return urllib_transport.UrllibTransport(cookie_header)
-    if name == "httpx":
-        # httpx — внешняя библиотека: импорт только здесь, без неё сборщик с
-        # urllib работает (решение Андрея 11.11, страж 21.78)
-        from collector import httpx_transport
-
-        return httpx_transport.HttpxTransport(cookie_header)
-    raise ValueError(f"make_transport: незнакомый транспорт name={name!r}")
+    """Транспорт по имени флага --transport из TRANSPORTS; незнакомое имя —
+    ValueError (21.81)."""
+    choice = TRANSPORTS.get(name)
+    if choice is None:
+        raise ValueError(f"make_transport: незнакомый транспорт name={name!r}")
+    return choice.make(cookie_header)
 
 
 def main(

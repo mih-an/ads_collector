@@ -136,10 +136,10 @@ sequenceDiagram
 
 | Файл | Что делает | Чего не делает | Внешний мир |
 |---|---|---|---|
-| `cian_collect.py` — запуск и края (271 строка) | разбирает argv в `Settings` (флаги `--transport`, `--cookies`, `--ua`; нет `--seed` — случайный seed); ошибки запуска, которых argparse не видит (`check_args`: нет httpx при `--transport httpx`, названный флагом файл билета отсутствует, пуст или это папка), — код 2 до паузы старта; создаёт `random.Random(seed)`; проверяет, что файл клеток есть, читает его и восстанавливает сетку (`geometry`); часы `Clock`; пауза старта; читает билет `Ticket` (нет UA — случайный из `USER_AGENTS`); транспорт по имени (`make_transport`), запрос страницы `PageFetcher`, запускает `Crawl`; печатает сетку и итог | HTTP (это транспорт); правил обхода, разбора ответа, записи файлов прогона; ничего не переэкспортирует — тесты импортируют имена из их модулей | argv, `time.time/sleep/monotonic`, `datetime.now`, `random`, файлы билета, наличие файла клеток, поиск httpx в окружении (`importlib.util.find_spec`), stdout |
+| `cian_collect.py` — запуск и края (271 строка) | разбирает argv в `Settings` (флаги `--transport`, `--cookies`, `--ua`; нет `--seed` — случайный seed); ошибки запуска, которых argparse не видит (`check_args`: не установлена библиотека выбранного транспорта, например httpx при `--transport httpx`, названный флагом файл билета отсутствует, пуст или это папка), — код 2 до паузы старта; создаёт `random.Random(seed)`; проверяет, что файл клеток есть, читает его и восстанавливает сетку (`geometry`); часы `Clock`; пауза старта; читает билет `Ticket` (нет UA — случайный из `USER_AGENTS`); транспорт по имени (`make_transport`; список транспортов — словарь `TRANSPORTS`, одно место для choices, проверки библиотеки и создания), запрос страницы `PageFetcher`, запускает `Crawl`; печатает сетку и итог | HTTP (это транспорт); правил обхода, разбора ответа, записи файлов прогона; ничего не переэкспортирует — тесты импортируют имена из их модулей | argv, `time.time/sleep/monotonic`, `datetime.now`, `random`, файлы билета, наличие файла клеток, поиск библиотеки транспорта в окружении (`importlib.util.find_spec`), stdout |
 | `transport.py` — интерфейс сети (73) | `Transport` (Protocol, один метод `get(url, headers) → HttpReply`); `HttpReply` — ответ как с провода (код, заголовки в нижнем регистре, тело байтами); `NetworkFailure` — ответа нет, текст — деталь; помощники обеих реализаций: `parse_cookie_header`, `lower_headers`; `HTTP_TIMEOUT_S` (45 с), `COOKIE_DOMAIN` (`.cian.ru`) | сети, распаковки, своих заголовков; не импортирует никого из пакета | — |
 | `urllib_transport.py` — транспорт по умолчанию (113) | `UrllibTransport(cookie_header)`: банк кук из билета (`seed_jar`) с ротацией из `Set-Cookie`, без перехода по редиректу (`NoRedirect`), тайм-аут; заголовков opener по умолчанию не шлёт. Ответ-ошибка (3xx, 4xx, 5xx) — тоже `HttpReply`; сбой — `NetworkFailure` (`urlerror:…`, `timeout`, `oserror:…`, в том числе обрыв протокола `http.client.HTTPException`) | не распаковывает тело и не добавляет заголовков; не повторяет; не пишет на диск, не печатает, не берёт часы | сеть (stdlib) |
-| `httpx_transport.py` — транспорт на httpx (62) | `HttpxTransport(cookie_header, network=None)` — то же поведение на внешней библиотеке httpx: куки клиента на `COOKIE_DOMAIN`, без редиректов, заголовки клиента по умолчанию очищены, тело — `iter_raw` без распаковки; те же слова детали сбоя, что у urllib на том же событии | то же, что urllib; импортируется только из `make_transport` при `--transport httpx` | сеть (httpx) |
+| `httpx_transport.py` — транспорт на httpx (62) | `HttpxTransport(cookie_header, network=None)` — то же поведение на внешней библиотеке httpx: куки клиента на `COOKIE_DOMAIN`, без редиректов, заголовки клиента по умолчанию очищены, тело — `iter_raw` без распаковки; те же слова детали сбоя, что у urllib на том же событии | то же, что urllib; импортируется только из `make_httpx` (создатель транспорта `httpx` в `TRANSPORTS`) при `--transport httpx` | сеть (httpx) |
 | `page_fetch.py` — запрос страницы (125) | `PageFetcher(transport, user_agent, has_ticket, monotonic).fetch(url, referer)` → `FetchedPage`: заголовки браузера и Referer (`browser_headers`), один вызов транспорта, распаковка тела (`decode_body`: gzip/deflate, битый UTF-8 — знак замены), длительность по переданному `monotonic`. Сбой сети и битое сжатие ответа 2xx (`decode:…`) — `FetchedPage` с кодом 0, пустым телом и деталью `neterr`; битое сжатие у прочих кодов — сырые байты как текст | не повторяет (повторы — `Crawl`); не классифицирует ответ (`search_page`); не выбирает транспорт и UA; не импортирует `time`, не пишет на диск: gzip и zlib — только в памяти | — (часы приходят аргументом) |
 | `crawl.py` — обход (852) | данные: `Settings`, `Ticket`, `Clock`, `CrawlInput`, `TileState`, `PageTask`, `CrawlState`. Сверху правила обхода без внешнего мира: средний интервал и границы паузы, пул пробы, решение о делении, пометка «билет сгорел», учёт страницы, дочитанность, правило повторов, ступень, словари `plan.json` и `summary.json`. Ниже класс `Crawl` — дирижёр: проба, очередь, листание, деление, бюджет, повторы, стоп, Ctrl+C | не делает HTTP и не знает транспорта (зовёт `fetcher.fetch`); не импортирует `time`, `urllib`, не зовёт `datetime.now` и функции модуля `random`; не знает имён и кодировок файлов (`run_folder`); не разбирает HTML (`search_page`); не считает геометрию (`geometry`) | только через `fetcher`, `clock`, `rnd`, `run_folder` и `geometry.update_tiles_file` |
 | `search_page.py` — контракт ЦИАН (296) | ссылка на страницу поиска (`page_url`); разбор `initialState`; обязательные поля; классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`) — `classify_page` → `Classified`; id объявлений; число страниц; константы контракта (28 на страницу, потолок 54, маркеры капчи и Servicepipe, обязательные поля, `CIAN_BASE_URL`) | сети, диска, решений «что дальше» | — (чистый) |
@@ -150,8 +150,8 @@ sequenceDiagram
 
 Правило импорта (держит страж — кейс 21.78, 2.4):
 - `cian_collect` никто в пакете не импортирует: это вершина;
-- слои без циклов: `crawl` → `page_fetch` → `transport`, `search_page`; `crawl` берёт ещё `geometry`, `run_folder` (`page_fetch` — только ради типа `PageFetcher`). Страж держит нижние слои (что берут `page_fetch` и реализации транспорта); что берёт сам `crawl`, он не проверяет — так устроен код;
-- реализации транспорта (`urllib_transport`, `httpx_transport`) импортирует только `cian_collect`; сами они берут из пакета только `transport`. `httpx_transport` импортируется внутри `make_transport`, не на верхнем уровне: без httpx сборщик с urllib запускается голым `python3`;
+- слои без циклов: `crawl` → `page_fetch` → `transport`, `search_page`; `crawl` берёт ещё `geometry`, `run_folder` (`page_fetch` — только ради типа `PageFetcher`). Страж держит все три слоя: `crawl` берёт из пакета только `page_fetch`, `search_page`, `geometry`, `run_folder` — до транспорта только через `page_fetch` (решение Андрея 12.11); что берут `page_fetch` и реализации транспорта — ниже;
+- реализации транспорта (`urllib_transport`, `httpx_transport`) импортирует только `cian_collect`; сами они берут из пакета только `transport`. `httpx_transport` импортируется внутри функции `make_httpx`, не на верхнем уровне: без httpx сборщик с urllib запускается голым `python3`;
 - сеть stdlib (`socket`, `urllib.request`, `urllib.error`, `http*`) — только в `urllib_transport`; `httpx` — только в `httpx_transport`;
 - `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого из пакета — листья;
 - импорты абсолютные (`from collector import search_page`), относительных нет. Причина — читаемость: одна форма записи на весь пакет, и по импорту сразу видно полное имя модуля, то же, что подменяют тесты (`collector.page_fetch`). Запуск модулем работал бы и с относительными импортами, поэтому правило держит страж, а не способ запуска.
@@ -190,7 +190,7 @@ flowchart LR
     cc -->|"PageFetcher(transport, ua, has_ticket, monotonic)"| page_fetch
     cc -->|"тип Transport"| transport
     cc -->|"UrllibTransport(cookie_header)"| urllib_t
-    cc -.->|"только при --transport httpx, внутри make_transport"| httpx_t
+    cc -.->|"только при --transport httpx, внутри make_httpx"| httpx_t
     cc -->|"load_sectors, infer_tile_grid"| geometry
     crawl -->|"тип PageFetcher"| page_fetch
     crawl -->|"page_url, classify_page, вердикты"| search_page
@@ -243,7 +243,7 @@ flowchart LR
 - `page_fetch` не зовёт `open` и `os.*`, не импортирует `io`, `pathlib`, `shutil` и имён из `os`, не печатает; `gzip` и `zlib` — только распаковка в памяти;
 - реализации транспорта не зовут `open` (HTTP-запрос `<…>.opener.open` — не диск) и `os.*`, не импортируют `gzip`, `io`, `pathlib`, `shutil` и имён из `os`, не печатают: тело приносят байтами;
 - `cian_collect` никем в пакете не импортируется; реализации транспорта — никем, кроме `cian_collect`; сеть stdlib — только в `urllib_transport`, `httpx` — только в `httpx_transport`; `httpx_transport` в `cian_collect` — только внутри функции;
-- порядок слоёв: `page_fetch` берёт из пакета только `transport` и `search_page`, реализации транспорта — только `transport`;
+- порядок слоёв: `crawl` берёт из пакета только `page_fetch`, `search_page`, `geometry`, `run_folder` (`transport` и реализации транспорта — нет); `page_fetch` — только `transport` и `search_page`, реализации транспорта — только `transport`;
 - в пакете нет относительных импортов; `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого из пакета;
 - проба стража на образцах: каждое нарушение находится, образец разрешённого — нет.
 
@@ -275,7 +275,9 @@ def main(transport_factory: Callable[[str, str | None], Transport] = make_transp
 def parse_settings(argv: list[str]) -> Settings          # seed — random.randrange(2**31), если нет --seed
 def build_parser() -> argparse.ArgumentParser
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None   # код 2 до паузы старта (21.81, 21.82)
-def make_transport(name: str, cookie_header: str | None) -> Transport   # "urllib" / "httpx"; иное — ValueError
+def make_transport(name: str, cookie_header: str | None) -> Transport   # TRANSPORTS[name].make(cookie_header); незнакомое имя — ValueError
+def make_urllib(cookie_header: str | None) -> Transport  # UrllibTransport
+def make_httpx(cookie_header: str | None) -> Transport   # HttpxTransport; импорт httpx_transport внутри функции
 def read_ticket(settings: Settings, now_ts: float, rnd: random.Random) -> Ticket
 def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None
 def now_local() -> datetime
@@ -283,7 +285,8 @@ def print_grid(grid: dict, settings: Settings) -> None
 def print_summary(report: dict, folder: str) -> None            # report — словарь summary.json
 USER_AGENTS: list[str]                                   # запасной UA билета: нет ua.txt — случайный из трёх
 RUNS_DIR, BUDGET, WINDOW_HOURS, TRANSPORT, COOKIES_FILE, UA_FILE   # умолчания аргументов запуска
-TRANSPORTS = ("urllib", "httpx")                         # choices флага --transport
+class TransportChoice                                    # library: str | None (None — stdlib), make: Callable[[str | None], Transport]
+TRANSPORTS: dict[str, TransportChoice]                   # urllib, httpx: choices --transport, проверка библиотеки, создание (решение Андрея 12.11)
 
 # transport.py — интерфейс сети
 HTTP_TIMEOUT_S = 45
