@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
-from collector.crawl import Clock, Crawl, CrawlInput, Settings, Ticket, summary_text
+from collector.crawl import Clock, Crawl, CrawlInput, Settings, Ticket
 from collector.geometry import infer_tile_grid, load_sectors
 from collector.page_fetch import PageFetcher
 from collector.transport import Transport
@@ -81,14 +81,6 @@ def read_ticket(settings: Settings, now_ts: float, rnd: random.Random) -> Ticket
     # клеток (порядок важен для --seed)
     ua = _file_text(settings.ua_file) or rnd.choice(USER_AGENTS)
     return Ticket(cookie_header=cookie_header, ua=ua, age_h=age_h)
-
-
-# ─────────────────────────────── ИТОГ ───────────────────────────────
-
-
-def print_summary(report: dict, folder: str) -> None:
-    """Итог прогона в stdout."""
-    print(summary_text(report, folder))
 
 
 # ──────────────────────────── ТРАНСПОРТЫ ────────────────────────────
@@ -266,7 +258,7 @@ def main(transport_factory: TransportFactory = make_transport) -> None:
     settings = read_settings(sys.argv[1:])
     crawl = build_crawl(settings, transport_factory)
     crawl.collect()
-    print_summary(crawl.report, crawl.paths.folder)
+    crawl.print_summary()
 
 
 if __name__ == "__main__":

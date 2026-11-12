@@ -953,3 +953,7 @@ class Crawl:
         run_folder.write_polygons(self.paths, rings)
         run_folder.write_summary(self.paths, report)
         self.report = report
+
+    def print_summary(self) -> None:
+        """Итог прогона в stdout."""
+        run_folder.say(summary_text(self.report, self.paths.folder))
