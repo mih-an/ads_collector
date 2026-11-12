@@ -1,7 +1,7 @@
 ---
 name: planner
 description: План блока — кейсы, функции с сигнатурами, оценка кода и тестов отдельно, вопросы уровня 2 списком. Вызывать в начале каждого блока.
-model: opus
+model: fable
 effort: high
 tools: Read, Grep, Glob, Bash
 ---
