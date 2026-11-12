@@ -452,20 +452,28 @@ class Crawl:
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
         self.state = CrawlState()
-        self.started_at = clock.now()
-        self.paths = run_folder.create_folder(
-            settings.runs_dir, self.started_at, settings.smoke_only
-        )
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
+        self.raw_tiles = crawl_input.raw_tiles
         self.tiles: dict[str, TileState] = {}
+        self.started_at: datetime  # появляется в open_run
+        self.paths: run_folder.RunPaths  # появляется в open_run
         self.report: dict  # итог прогона (summary.json), появляется в finish
+        self.open_run()
+
+    def open_run(self) -> None:
+        """Начало прогона: время старта, папка прогона, клетки в работу,
+        очередь вперемешку."""
+        self.started_at = self.clock.now()
+        self.paths = run_folder.create_folder(
+            self.settings.runs_dir, self.started_at, self.settings.smoke_only
+        )
         # джиттер — один раз на (клетка, ночь), в порядке файла
-        for raw_tile in crawl_input.raw_tiles:
+        for raw_tile in self.raw_tiles:
             self._register(raw_tile)
         # клетки вперемешку, страницы внутри клетки — подряд (решение Андрея
         # 15.09: листание подряд — единственный человеческий паттерн)
         order = list(self.tiles)
-        rnd.shuffle(order)
+        self.rnd.shuffle(order)
         self.state.pending = order
 
     def _register(self, raw_tile: dict) -> None:
