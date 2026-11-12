@@ -482,8 +482,8 @@ class Crawl:
 
     # ── главный цикл ──────────────────────────────────────────────
 
-    def run(self) -> dict:
-        """Ночь целиком. → словарь summary.json (папка — self.paths.folder)."""
+    def collect(self) -> dict:
+        """Прогон целиком. → словарь summary.json (папка — self.paths.folder)."""
         state = self.state
         self._log_start()
         self.save_plan()

@@ -301,7 +301,7 @@ def main(
         settings=settings, ticket=ticket, raw_tiles=tiles, grid=grid
     )
     crawl = Crawl(crawl_input, fetcher, clock, rnd)
-    print_summary(crawl.run(), crawl.paths.folder)
+    print_summary(crawl.collect(), crawl.paths.folder)
 
 
 if __name__ == "__main__":
