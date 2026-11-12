@@ -110,7 +110,6 @@ class PageFetcher:
         вызова monotonic — до запроса и после разбора тела: на них стоит ms=
         в night.log эталонных ночей (21.30)."""
         headers = browser_headers(self.user_agent, referer, self.has_ticket)
-        neterr: str | None = None
         started = self.monotonic()
         try:
             reply = self.transport.get(url, headers)
@@ -118,8 +117,7 @@ class PageFetcher:
         # сбой сети и битое сжатие 2xx — код 0, тело пусто, заголовков нет,
         # деталь — текст сбоя (21.29)
         except NetworkFailure as failure:
-            reply = HttpReply(status=0, headers={}, body=b"")
-            body, neterr = "", str(failure)
+            ms = (self.monotonic() - started) * 1000
+            return FetchedPage(0, "", 0, ms, str(failure), {})
         ms = (self.monotonic() - started) * 1000
-        size = len(reply.body)
-        return FetchedPage(reply.status, body, size, ms, neterr, reply.headers)
+        return FetchedPage(reply.status, body, len(reply.body), ms, None, reply.headers)
