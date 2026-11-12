@@ -1,7 +1,7 @@
 """
 run_folder.py — папка прогона сборщика ЦИАН: имена, кодировки, порядок записи.
 
-Получает пути (RunPaths), готовые словари и ответ на запрос (PageAnswer);
+Получает папку прогона (RunFolder), готовые словари и ответ на запрос (PageAnswer);
 пишет папку <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log с эхом в stdout (say),
 plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
 _broken_* с .note.txt, _block_*.txt, снимок охвата polygons.geojson.gz и
@@ -20,8 +20,8 @@ from datetime import datetime
 
 
 @dataclass(frozen=True)
-class RunPaths:
-    """Пути папки прогона."""
+class RunFolder:
+    """Папка прогона: её пути; создаётся через RunFolder.create."""
 
     folder: str
     raw: str
@@ -29,6 +29,21 @@ class RunPaths:
     plan: str
     summary: str
     polygons: str
+
+    @classmethod
+    def create(cls, runs_dir: str, started_at: datetime, smoke_only: bool) -> RunFolder:
+        """Папка прогона и raw/ в ней; уже есть — пишем в неё же (exist_ok)."""
+        folder = os.path.join(runs_dir, folder_label(started_at, smoke_only))
+        raw = os.path.join(folder, "raw")
+        os.makedirs(raw, exist_ok=True)
+        return cls(
+            folder=folder,
+            raw=raw,
+            log=os.path.join(folder, "night.log"),
+            plan=os.path.join(folder, "plan.json"),
+            summary=os.path.join(folder, "summary.json"),
+            polygons=os.path.join(folder, "polygons.geojson.gz"),
+        )
 
 
 @dataclass(frozen=True)
@@ -60,21 +75,6 @@ def folder_label(started_at: datetime, smoke_only: bool) -> str:
     return stamp + suffix
 
 
-def create_folder(runs_dir: str, started_at: datetime, smoke_only: bool) -> RunPaths:
-    """Папка прогона и raw/ в ней; уже есть — пишем в неё же (exist_ok)."""
-    folder = os.path.join(runs_dir, folder_label(started_at, smoke_only))
-    raw = os.path.join(folder, "raw")
-    os.makedirs(raw, exist_ok=True)
-    return RunPaths(
-        folder=folder,
-        raw=raw,
-        log=os.path.join(folder, "night.log"),
-        plan=os.path.join(folder, "plan.json"),
-        summary=os.path.join(folder, "summary.json"),
-        polygons=os.path.join(folder, "polygons.geojson.gz"),
-    )
-
-
 def _fields_text(fields: dict) -> str:
     """Поля строки night.log: ключ=значение через таб."""
     return "\t".join(f"{k}={v}" for k, v in fields.items())
@@ -86,7 +86,7 @@ def say(text: str) -> None:
     print(text, flush=True)
 
 
-def append_log(paths: RunPaths, stamp: str, fields: dict) -> None:
+def append_log(paths: RunFolder, stamp: str, fields: dict) -> None:
     """Дописывает строку в night.log сразу (открыть, дописать, закрыть): время,
     таб, поля. Печатает её эхом: время, два пробела, поля."""
     text = _fields_text(fields)
@@ -95,7 +95,7 @@ def append_log(paths: RunPaths, stamp: str, fields: dict) -> None:
     say(f"{stamp}  {text}")
 
 
-def write_plan(paths: RunPaths, payload: dict) -> None:
+def write_plan(paths: RunFolder, payload: dict) -> None:
     """plan.json атомарно через plan.json.tmp."""
     tmp = paths.plan + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -103,7 +103,7 @@ def write_plan(paths: RunPaths, payload: dict) -> None:
     os.replace(tmp, paths.plan)
 
 
-def write_page(paths: RunPaths, key: str, page: int, data: dict, html: str) -> None:
+def write_page(paths: RunFolder, key: str, page: int, data: dict, html: str) -> None:
     """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
     объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
     ответа целиком (страховка от тихой поломки вырезки). Прогоны до 18.09 —
@@ -125,7 +125,7 @@ def broken_note(answer: PageAnswer, ua: str) -> str:
     )
 
 
-def write_broken(paths: RunPaths, answer: PageAnswer, ua: str, hms: str) -> str:
+def write_broken(paths: RunFolder, answer: PageAnswer, ua: str, hms: str) -> str:
     """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
     hms — время ЧЧММСС. → имя файла с телом (без пути)."""
     name = f"_broken_{answer.key}_p{answer.page}_{answer.kind}_{answer.code}_{hms}"
@@ -159,14 +159,14 @@ def block_text(answer: PageAnswer, ua: str) -> str:
     return text + "\n" + (body[:100_000] if body else "<пустое тело>") + "\n"
 
 
-def write_block(paths: RunPaths, answer: PageAnswer, ua: str, hms: str) -> None:
+def write_block(paths: RunFolder, answer: PageAnswer, ua: str, hms: str) -> None:
     """BLOCK: raw/_block_<клетка>_p<N>_<код>_<ЧЧММСС>.txt; hms — ЧЧММСС."""
     name = f"_block_{answer.key}_p{answer.page}_{answer.code}_{hms}"
     with open(os.path.join(paths.raw, name + ".txt"), "w", encoding="utf-8") as fh:
         fh.write(block_text(answer, ua))
 
 
-def write_polygons(paths: RunPaths, rings: dict[str, list]) -> None:
+def write_polygons(paths: RunFolder, rings: dict[str, list]) -> None:
     """Снимок охвата: канонические кольца клеток (7 знаков), gzip без имени
     файла, mtime=0, атомарно через .tmp."""
     feats = []
@@ -189,7 +189,7 @@ def write_polygons(paths: RunPaths, rings: dict[str, list]) -> None:
     os.replace(tmp, paths.polygons)
 
 
-def write_summary(paths: RunPaths, report: dict) -> None:
+def write_summary(paths: RunFolder, report: dict) -> None:
     """summary.json — последним и не атомарно: его наличие = прогон закончен."""
     with open(paths.summary, "w", encoding="utf-8") as fh:
         json.dump(report, fh, ensure_ascii=False, indent=1)

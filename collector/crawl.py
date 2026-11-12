@@ -495,7 +495,7 @@ class Crawl:
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         self.started_at: datetime  # появляется в open_run
-        self.paths: run_folder.RunPaths  # появляется в open_run
+        self.paths: run_folder.RunFolder  # появляется в open_run
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
@@ -504,7 +504,7 @@ class Crawl:
         # билет — после паузы старта: возраст кук и UA (порядок случайности)
         self.ticket, self.fetcher = self.enter_cian()
         self.started_at = self.clock.now()
-        self.paths = run_folder.create_folder(
+        self.paths = run_folder.RunFolder.create(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only
         )
         # джиттер — один раз на (клетка, ночь), в порядке файла
