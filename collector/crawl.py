@@ -507,7 +507,7 @@ class Crawl:
         # 3.2, тест 21.51)
         self.sleep_between()
         try:
-            while state.pending and state.spent < self.settings.budget:
+            while state.pending and self.budget_left():
                 key = state.pending.pop(0)
                 self.download_tile(key)
                 if state.stopped:
@@ -591,7 +591,7 @@ class Crawl:
         night.log, задача plan.json и единица бюджета."""
         attempts = 0  # повторов этой страницы уже было
         while True:
-            if self.state.spent >= self.settings.budget:
+            if not self.budget_left():
                 self.state.stopped = "budget_exhausted"
                 return
             # с 11.09 все страницы — GET cat.php (вид ssr)
@@ -796,10 +796,14 @@ class Crawl:
 
     # ── паузы, журнал, план, итог ─────────────────────────────────
 
+    def budget_left(self) -> bool:
+        """Остался ли бюджет запросов прогона."""
+        return self.state.spent < self.settings.budget
+
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
         случайности (точка подмены теста 21.36)."""
-        if self.state.spent >= self.settings.budget:
+        if not self.budget_left():
             return
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
@@ -809,7 +813,7 @@ class Crawl:
     def pause_between_tiles(self) -> None:
         """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
         state = self.state
-        if not state.pending or state.spent >= self.settings.budget:
+        if not state.pending or not self.budget_left():
             return
         factor = self.rnd.uniform(*self.settings.inter_tile_pause)
         self.sleep_between(factor)
