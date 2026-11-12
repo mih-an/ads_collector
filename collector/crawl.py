@@ -4,9 +4,10 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 Данные: Settings, Ticket, Clock (часы и сон), CrawlInput, TileState, PageTask,
 CrawlState. Правила — функции без внешнего мира: интервал и паузы, пул пробы,
 деление [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень,
-повторы, словари plan.json и summary.json. Crawl ведёт ночь: проба, очередь,
-листание, деление, бюджет, стоп; внешний мир — только запрос страницы
-(page_fetch.PageFetcher), Clock, rnd, run_folder и geometry.update_tiles_file.
+повторы, словари plan.json и summary.json, текст итога. Crawl ведёт ночь:
+проба, очередь, листание, деление, бюджет, стоп; внешний мир — только запрос
+страницы (page_fetch.PageFetcher), Clock, rnd, run_folder и
+geometry.update_tiles_file.
 """
 
 from __future__ import annotations
@@ -253,7 +254,7 @@ def task_state(verdict: str, attempts: int, retries: int) -> str:
 
 
 # «Ступень» — наследие калибровки ЦИАН-контура: ступень бюджета пройдена —
-# можно поднимать бюджет (тексты итога — cian_collect.LADDER_VERDICTS).
+# можно поднимать бюджет (тексты итога — LADDER_VERDICTS ниже).
 def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]:
     """Ступень засчитана, только если ночь дошла до конца бюджета или очереди
     (чисто) или упёрлась в блок (порог найден); поломка контракта, сбой сети
@@ -425,6 +426,56 @@ def summary_report(
         "split_events": state.split_events,
         "sectors": sectors,
     }
+
+
+LADDER_VERDICTS = {
+    "passed": "ступень ПРОЙДЕНА — можно поднимать бюджет",
+    "blocked": "ступень ПРОВАЛЕНА — порог IP найден, сутки паузы",
+    "smoke_only": "smoke-проверка, обход не запускался",
+    "invalid": "ступень НЕ ЗАСЧИТАНА — повторить после починки",
+}
+
+
+def summary_text(report: dict, folder: str) -> str:
+    """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
+    ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
+    # первая строка пустая: она отделяет итог от строк stdout выше
+    lines = [
+        "",
+        "─" * 64,
+        f"ночь {report['night']}   бюджет {report['budget']}   "
+        f"запросов {report['spent']}   билет: {ticket}",
+        f"стоп: {report['stopped']}   класс: {report['stop_class'] or '-'}   "
+        f"{report['stop_detail'] or ''}",
+        f"ИТОГ: {LADDER_VERDICTS[report['ladder_result']]}",
+        f"smoke: {report['smoke']}",
+    ]
+    for ev in report["split_events"]:
+        lines.append(
+            f"РАЗРЕЗАНА {ev['parent']} (total={ev['total_offers']}) → "
+            f"{', '.join(ev['children'])}"
+        )
+    lines.append(
+        f"секторов затронуто {report['sectors_touched']}, "
+        f"полностью выкачано {report['sectors_complete']}, "
+        f"дублей id {report['duplicate_ids_total']}, "
+        f"stateless-пагинация {report['stateless_pagination_ok']}"
+    )
+    lines.append(f"файлы: {folder}")
+    lines.append("─" * 64)
+    by_total = sorted(
+        report["sectors"].items(), key=lambda kv: -(kv[1]["total_offers"] or 0)
+    )
+    for key, v in by_total:
+        svt = f"{v['served_vs_total']:.2f}" if v["served_vs_total"] else "  -  "
+        lines.append(
+            f"  {key:>4}  total={str(v['total_offers']):>5}  "
+            f"стр {len(v['pages_done'])}/{v['pages_planned']}  "
+            f"{'полн.' if v['complete'] else 'част.'}  "
+            f"uniq={v['unique_ids']:>5}  dup={v['duplicate_ids']:>3}  "
+            f"served/total={svt}  {v['name'][:30]}"
+        )
+    return "\n".join(lines)
 
 
 # ─────────────────────────────── дирижёр ───────────────────────────────
