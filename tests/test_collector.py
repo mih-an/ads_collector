@@ -25,7 +25,7 @@
   теста одним FakeTime;
 - crawl.Crawl(CrawlInput, enter_cian, Clock(now, sleep), rnd) — так обход
   собирается без main (make_crawl);
-- cc.parse_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
+- cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
   читают build_parser, check_args и make_transport в момент вызова: 21.81
@@ -3328,11 +3328,11 @@ def test_21_59_seed_random(env, monkeypatch):
 
 
 def test_21_59_parse_settings_defaults():
-    """21.59 Умолчания parse_settings: --budget 50, --runs-dir runs,
+    """21.59 Умолчания read_settings: --budget 50, --runs-dir runs,
     --window-hours 8.0, без --smoke-only, с паузой старта (З158);
     --transport urllib, --cookies cookies.txt и --ua ua.txt — в папке
     запуска. Модуль 21."""
-    settings = cc.parse_settings(["--geojson", "клетки.geojson", "--seed", "1"])
+    settings = cc.read_settings(["--geojson", "клетки.geojson", "--seed", "1"])
     assert (
         settings.budget,
         settings.runs_dir,
@@ -3357,10 +3357,10 @@ def test_21_59_parse_settings_defaults():
 
 
 def test_21_59_parse_settings_requires_geojson(capsys):
-    """21.59 Без --geojson parse_settings выходит с кодом 2 (argparse), в
+    """21.59 Без --geojson read_settings выходит с кодом 2 (argparse), в
     сообщении назван флаг --geojson (З158). Модуль 21."""
     with pytest.raises(SystemExit) as stop:
-        cc.parse_settings(["--seed", "1"])
+        cc.read_settings(["--seed", "1"])
     assert (stop.value.code, "--geojson" in capsys.readouterr().err) == (2, True)
 
 
@@ -3444,7 +3444,7 @@ def test_21_81_unknown_transport_exits(capsys):
     """21.81 --transport не из {urllib, httpx} — выход argparse с кодом 2,
     в строке ошибки назван флаг --transport. Модуль 21."""
     with pytest.raises(SystemExit) as stop:
-        cc.parse_settings(["--geojson", "x.geojson", "--transport", "curl"])
+        cc.read_settings(["--geojson", "x.geojson", "--transport", "curl"])
     error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о значении, а не о незнакомом флаге
     assert (stop.value.code, "--transport" in error, "unrecognized" in error) == (
@@ -3503,7 +3503,7 @@ def test_21_81_urllib_without_httpx(monkeypatch):
     # зовёт cc.main.
     monkeypatch.setattr(collector, "cian_collect", cc)
     fresh = importlib.import_module("collector.cian_collect")
-    settings = fresh.parse_settings(["--geojson", "x.geojson", "--seed", "1"])
+    settings = fresh.read_settings(["--geojson", "x.geojson", "--seed", "1"])
     made = fresh.make_transport(settings.transport, FAKE_COOKIE)
     assert (type(made), "collector.httpx_transport" in sys.modules) == (
         urllib_transport.UrllibTransport,
@@ -3563,7 +3563,7 @@ def test_21_81_choices_from_transports(monkeypatch):
     транспорт, добавленный в словарь, парсер принимает. Модуль 21."""
     add_fake_transport(monkeypatch, library=None)
     argv = ["--geojson", "x.geojson", "--seed", "1", "--transport", "fake"]
-    assert cc.parse_settings(argv).transport == "fake"
+    assert cc.read_settings(argv).transport == "fake"
 
 
 def test_21_81_make_transport_from_transports(monkeypatch):
@@ -3651,12 +3651,12 @@ def test_21_82_ticket_flag_missing_file_exits(tmp_path, capsys, flag):
 
 
 def ticket_flag_exit(capsys, flag: str, path: Path) -> tuple:
-    """parse_settings с флагом билета flag на путь path, который обязан
+    """read_settings с флагом билета flag на путь path, который обязан
     выйти. → (код выхода, назван ли флаг, назван ли путь, «unrecognized») —
     слова только из строки ошибки (error_line)."""
     argv = ["--geojson", "x.geojson", "--seed", "1", flag, str(path)]
     with pytest.raises(SystemExit) as stop:
-        cc.parse_settings(argv)
+        cc.read_settings(argv)
     error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о файле, а не о незнакомом флаге
     return (stop.value.code, flag in error, str(path) in error, "unrecognized" in error)
@@ -3692,7 +3692,7 @@ def test_21_82_ticket_flags_parsed(tmp_path):
     cookies.write_text(FAKE_COOKIE, encoding="utf-8")
     ua.write_text(USER_AGENT, encoding="utf-8")
     argv = ["--geojson", "x.geojson", "--cookies", str(cookies), "--ua", str(ua)]
-    settings = cc.parse_settings(argv)
+    settings = cc.read_settings(argv)
     assert (settings.cookies_file, settings.ua_file) == (str(cookies), str(ua))
 
 

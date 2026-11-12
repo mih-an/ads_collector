@@ -1,7 +1,7 @@
 """
 cian_collect.py — запуск боевого сборщика ЦИАН и его края (часы, сон, билет).
 
-Получает argv (parse_settings → Settings), файл клеток сбора [E-42], входной
+Получает argv (read_settings → Settings), файл клеток сбора [E-42], входной
 билет (read_ticket → Ticket). build_crawl собирает транспорт (make_transport),
 запрос страницы page_fetch.PageFetcher, часы crawl.Clock, случайность в обход
 crawl.Crawl; main его запускает и печатает итог; сетка — тоже в stdout. Сети
@@ -235,7 +235,7 @@ def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             ap.error(f"{flag}: пустой файл {path}")
 
 
-def parse_settings(argv: list[str]) -> Settings:
+def read_settings(argv: list[str]) -> Settings:
     """Аргументы запуска → Settings; нет --seed — случайный seed (первый вызов
     случайности ночи, записывается в plan.json для повтора)."""
     ap = build_parser()
@@ -306,7 +306,7 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
     """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
-    settings = parse_settings(sys.argv[1:])
+    settings = read_settings(sys.argv[1:])
     crawl = build_crawl(settings, transport_factory)
     crawl.collect()
     print_summary(crawl.report, crawl.paths.folder)
