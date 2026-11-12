@@ -2,10 +2,11 @@
 cian_collect.py — запуск боевого сборщика ЦИАН и его края (часы, сон, билет).
 
 Получает argv (parse_settings → Settings), файл клеток сбора [E-42], входной
-билет (read_ticket → Ticket). Собирает транспорт (make_transport), запрос
-страницы page_fetch.PageFetcher, часы crawl.Clock, случайность — и отдаёт
-ночь crawl.Crawl; печатает сетку и итог ночи в stdout. Сети здесь нет: она в
-реализациях транспорта. Python 3.12; сервер и запуск — collector/README.md.
+билет (read_ticket → Ticket). build_crawl собирает транспорт (make_transport),
+запрос страницы page_fetch.PageFetcher, часы crawl.Clock, случайность в обход
+crawl.Crawl; main его запускает и печатает итог; сетка — тоже в stdout. Сети
+здесь нет: она в реализациях транспорта. Python 3.12; сервер и запуск —
+collector/README.md.
 """
 
 from __future__ import annotations
@@ -180,6 +181,11 @@ def make_transport(name: str, cookie_header: str | None) -> Transport:
     return choice.make(cookie_header)
 
 
+# транспорт по имени флага --transport и строке Cookie: make_transport или
+# подмена в тестах
+TransportFactory = Callable[[str, str | None], Transport]
+
+
 # ─────────────────────────────── CLI ────────────────────────────────
 
 
@@ -271,14 +277,10 @@ def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
     clock.sleep(delay)
 
 
-def main(
-    transport_factory: Callable[[str, str | None], Transport] = make_transport,
-) -> None:
-    """Запуск ночи: настройки, клетки и сетка, пауза старта, билет, транспорт,
-    запрос страницы, прогон и печать итога. Порядок вызовов случайности —
-    часть поведения: seed → пауза старта → UA → джиттер клеток →
-    перемешивание. transport_factory — точка подмены транспорта в тестах."""
-    settings = parse_settings(sys.argv[1:])
+def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
+    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
+    пауза старта, билет, транспорт. Порядок вызовов случайности — часть
+    поведения: seed → пауза старта → UA → джиттер клеток → перемешивание."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -300,7 +302,13 @@ def main(
     crawl_input = CrawlInput(
         settings=settings, ticket=ticket, raw_tiles=tiles, grid=grid
     )
-    crawl = Crawl(crawl_input, fetcher, clock, rnd)
+    return Crawl(crawl_input, fetcher, clock, rnd)
+
+
+def main(transport_factory: TransportFactory = make_transport) -> None:
+    """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
+    settings = parse_settings(sys.argv[1:])
+    crawl = build_crawl(settings, transport_factory)
     crawl.collect()
     print_summary(crawl.report, crawl.paths.folder)
 
