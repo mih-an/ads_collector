@@ -515,7 +515,8 @@ class Crawl:
                 state.stopped = "budget_exhausted"
                 return
             key = state.pending.pop(0)
-            if not self.crawl_tile(key):
+            self.crawl_tile(key)
+            if state.stopped:
                 return  # ночь остановлена (блок, сеть, бюджет)
             self.save_plan()
             if state.pending and state.spent < budget:
@@ -567,26 +568,25 @@ class Crawl:
 
     # ── клетка ────────────────────────────────────────────────────
 
-    def crawl_tile(self, key: str) -> bool:
+    def crawl_tile(self, key: str) -> None:
         """Одна клетка подряд: стр. 1 → 2 → … до конца набора; между
-        страницами — пауза. → продолжать ли ночь."""
+        страницами — пауза. Стоп ночи — в state.stopped."""
         page = 2 if 1 in self.tiles[key].pages_done else 1  # стр. 1 могла снять проба
         if page == 2 and self.split(key):  # клетку-переросток сняла проба
-            return True
+            return
         tile = self.tiles[key]
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
             self.download_page(key, page)
             if self.state.stopped:
-                return False  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
+                return  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
             if page == 1 and self.split(key):
-                return True  # родитель выбыл, дети в очереди
+                return  # родитель выбыл, дети в очереди
             page += 1
             # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
             if not read_out(tile, page):
                 self.sleep_between()
-        return True
 
     def download_page(self, key: str, page: int) -> None:
         """Одна страница клетки; сбой сети — повторы с растущей паузой, сколько
