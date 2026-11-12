@@ -323,16 +323,18 @@ def make_children(
 
 
 class TilesFile:
-    """Файл клеток сбора: клетки из него, сетка по ним, запись деления."""
+    """Файл клеток сбора: клетки из него, сетка по ним, запись деления.
+    tiles — клетки на момент чтения (старт прогона); record_split их не
+    обновляет."""
 
     def __init__(self, path: str) -> None:
         self.path = path
         self.tiles = self._read_tiles()
-        self.grid: dict  # появляется в restore_grid
 
-    def restore_grid(self) -> None:
-        """Сетка клеток по файлу; без целых клеток — ValueError (21.60)."""
-        self.grid = infer_tile_grid(self.tiles)
+    def grid(self) -> dict:
+        """Сетка клеток по файлу (считается заново, функция чистая); без целых
+        клеток — ValueError (21.60)."""
+        return infer_tile_grid(self.tiles)
 
     def _read_tiles(self) -> list[dict]:
         """Клетки сбора из файла; выбывшие (collect=false) пропускаются."""

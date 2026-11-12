@@ -20,7 +20,7 @@
 - page_fetch.PageFetcher(transport, user_agent, has_ticket, monotonic) и
   page_fetch.decode_body(raw, content_encoding) — PageFetcher зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
-- cc.time (time, sleep, monotonic — main передаёт его в PageFetcher) и
+- cc.time (time, sleep, monotonic — enter_cian передаёт его в PageFetcher) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
 - crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
@@ -297,13 +297,11 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile с восстановленной сеткой, restore_grid);
-    enter_cian отдаёт билет как в env и PageFetcher над фальшивым
-    транспортом env; часы и сон — FakeTime env, случайность — Random(1);
-    changes — поля Settings."""
+    features (TilesFile); enter_cian отдаёт билет как в env и PageFetcher
+    над фальшивым транспортом env; часы и сон — FakeTime env,
+    случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
-    tiles_file.restore_grid()
     settings = settings_of(env.folder, **changes)
     fetcher = page_fetch.PageFetcher(
         env.transport, USER_AGENT, True, env.clock.monotonic
@@ -4068,7 +4066,8 @@ def is_stdout_use(node: ast.expr, sys_names: dict[str, str]) -> bool:
 
 def stdout_use(source: str) -> list[str]:
     """Печать в stdout: print и sys.stdout (таблица 2.4 документа: stdout —
-    только run_folder.say и cian_collect)."""
+    только run_folder.say — эхо night.log, строка паузы старта и итог — и
+    cian_collect)."""
     tree = ast.parse(source)
     sys_names = module_bindings(tree, "sys")
     found = []
@@ -4211,7 +4210,8 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не печатают в stdout (print,
     sys.stdout): по таблице 2.4 документа stdout — только run_folder.say
-    (через него обход печатает эхо строк night.log и итог) и cian_collect
+    (через него обход печатает эхо строк night.log, строку паузы старта и
+    итог) и cian_collect
     (печать сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 

@@ -784,7 +784,7 @@ class Crawl:
         # split_decision отдаёт "split" только клетке с level — подсказка для mypy
         assert tile.level is not None
         children = geometry.make_children(
-            key, tile.ring_canonical, tile.level, self.tiles_file.grid, base=tile.base
+            key, tile.ring_canonical, tile.level, self.tiles_file.grid(), base=tile.base
         )
         if not children:
             self.log(event="split_skip", sector=key, note="нет непустых четвертей")

@@ -240,10 +240,10 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # сетка — всегда: по файлу без целых клеток её не восстановить — выход с
     # путём и причиной, без трассировки (З160)
     try:
-        tiles_file.restore_grid()
+        grid = tiles_file.grid()
     except ValueError as error:
         sys.exit(f"файл клеток {settings.tiles_path}: {error}")
-    print_grid(tiles_file.grid, settings)
+    print_grid(grid, settings)
     # time берётся по имени модуля в момент вызова: так часы подменяют тесты
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
