@@ -485,13 +485,7 @@ class Crawl:
         )
         self.save_plan()
         if not self.smoke():
-            self.log(
-                event="STOP",
-                reason=state.stopped,
-                cls=state.stop_class or "-",
-                detail=state.stop_detail,
-                spent=state.spent,
-            )
+            self._log_stop()
             return self.finish()
         if self.settings.smoke_only:
             state.stopped = "smoke_only"
@@ -819,6 +813,17 @@ class Crawl:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
         stamp = self.clock.now().isoformat(timespec="seconds")
         run_folder.append_log(self.paths, stamp, fields)
+
+    def _log_stop(self) -> None:
+        """Строка STOP в night.log по причине остановки, записанной в состоянии."""
+        state = self.state
+        self.log(
+            event="STOP",
+            reason=state.stopped,
+            cls=state.stop_class or "-",
+            detail=state.stop_detail,
+            spent=state.spent,
+        )
 
     def _log_request(self, answer: run_folder.PageAnswer) -> None:
         """Строка запроса в night.log; err — деталь до пометки «билет сгорел»."""
