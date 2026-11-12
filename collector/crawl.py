@@ -752,22 +752,17 @@ class Crawl:
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
         if answer.verdict == search_page.OK:
             # HTML каждой страницы [E-22]
-            run_folder.write_page(
-                self.paths,
+            self.paths.write_page(
                 answer.key,
                 answer.page,
                 {"totalOffers": answer.total, "offers": offers},
                 answer.body,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
-            name = run_folder.write_broken(
-                self.paths, answer, self.ticket.ua, self._stamp_hms()
-            )
+            name = self.paths.write_broken(answer, self.ticket.ua, self._stamp_hms())
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            run_folder.write_block(
-                self.paths, answer, self.ticket.ua, self._stamp_hms()
-            )
+            self.paths.write_block(answer, self.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -879,7 +874,7 @@ class Crawl:
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
         stamp = self.clock.now().isoformat(timespec="seconds")
-        run_folder.append_log(self.paths, stamp, fields)
+        self.paths.append_log(stamp, fields)
 
     def _log_start(self) -> None:
         """Первая строка night.log: с чем прогон стартует."""
@@ -924,8 +919,7 @@ class Crawl:
         )
 
     def save_plan(self) -> None:
-        run_folder.write_plan(
-            self.paths,
+        self.paths.write_plan(
             plan_payload(
                 self.state, self.settings, self.ticket, self.started_at, self.tiles
             ),
@@ -942,8 +936,8 @@ class Crawl:
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
         # sectors сводки; перед summary.json, всегда (и у пробы)
         rings = {key: self.tiles[key].ring_canonical for key in report["sectors"]}
-        run_folder.write_polygons(self.paths, rings)
-        run_folder.write_summary(self.paths, report)
+        self.paths.write_polygons(rings)
+        self.paths.write_summary(report)
         self.report = report
 
     def print_summary(self) -> None:

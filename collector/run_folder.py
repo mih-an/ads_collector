@@ -20,33 +20,6 @@ from datetime import datetime
 
 
 @dataclass(frozen=True)
-class RunFolder:
-    """Папка прогона: её пути; создаётся через RunFolder.create."""
-
-    folder: str
-    raw: str
-    log: str
-    plan: str
-    summary: str
-    polygons: str
-
-    @classmethod
-    def create(cls, runs_dir: str, started_at: datetime, smoke_only: bool) -> RunFolder:
-        """Папка прогона и raw/ в ней; уже есть — пишем в неё же (exist_ok)."""
-        folder = os.path.join(runs_dir, folder_label(started_at, smoke_only))
-        raw = os.path.join(folder, "raw")
-        os.makedirs(raw, exist_ok=True)
-        return cls(
-            folder=folder,
-            raw=raw,
-            log=os.path.join(folder, "night.log"),
-            plan=os.path.join(folder, "plan.json"),
-            summary=os.path.join(folder, "summary.json"),
-            polygons=os.path.join(folder, "polygons.geojson.gz"),
-        )
-
-
-@dataclass(frozen=True)
 class PageAnswer:
     """Ответ на один запрос выдачи: строка лога, учёт страницы и вход записи
     _broken_* и _block_*. На входе записи detail — деталь разбора ответа, без
@@ -86,35 +59,6 @@ def say(text: str) -> None:
     print(text, flush=True)
 
 
-def append_log(paths: RunFolder, stamp: str, fields: dict) -> None:
-    """Дописывает строку в night.log сразу (открыть, дописать, закрыть): время,
-    таб, поля. Печатает её эхом: время, два пробела, поля."""
-    text = _fields_text(fields)
-    with open(paths.log, "a", encoding="utf-8") as fh:
-        fh.write(f"{stamp}\t{text}\n")
-    say(f"{stamp}  {text}")
-
-
-def write_plan(paths: RunFolder, payload: dict) -> None:
-    """plan.json атомарно через plan.json.tmp."""
-    tmp = paths.plan + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=1)
-    os.replace(tmp, paths.plan)
-
-
-def write_page(paths: RunFolder, key: str, page: int, data: dict, html: str) -> None:
-    """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
-    объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
-    ответа целиком (страховка от тихой поломки вырезки). Прогоны до 18.09 —
-    исторический формат (.json, HTML только у p1)."""
-    base = os.path.join(paths.raw, f"{key}_p{page}")
-    with gzip.open(base + ".json.gz", "wt", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False)
-    with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as fh:
-        fh.write(html)
-
-
 def broken_note(answer: PageAnswer, ua: str) -> str:
     """Текст _broken_*.note.txt: две строки; detail — без хвоста «|saved:» и
     без пометки «|cookie_expired_or_burned» (их добавляет ночь после записи)."""
@@ -123,18 +67,6 @@ def broken_note(answer: PageAnswer, ua: str) -> str:
         f"kind={answer.kind}\n"
         f"sector={answer.key} page={answer.page} ua={ua}\n"
     )
-
-
-def write_broken(paths: RunFolder, answer: PageAnswer, ua: str, hms: str) -> str:
-    """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
-    hms — время ЧЧММСС. → имя файла с телом (без пути)."""
-    name = f"_broken_{answer.key}_p{answer.page}_{answer.kind}_{answer.code}_{hms}"
-    path = os.path.join(paths.raw, name + ".html.gz")
-    with gzip.open(path, "wt", encoding="utf-8") as fh:
-        fh.write(answer.body)
-    with open(os.path.join(paths.raw, name + ".note.txt"), "w", encoding="utf-8") as fh:
-        fh.write(broken_note(answer, ua))
-    return os.path.basename(path)
 
 
 def block_text(answer: PageAnswer, ua: str) -> str:
@@ -159,37 +91,101 @@ def block_text(answer: PageAnswer, ua: str) -> str:
     return text + "\n" + (body[:100_000] if body else "<пустое тело>") + "\n"
 
 
-def write_block(paths: RunFolder, answer: PageAnswer, ua: str, hms: str) -> None:
-    """BLOCK: raw/_block_<клетка>_p<N>_<код>_<ЧЧММСС>.txt; hms — ЧЧММСС."""
-    name = f"_block_{answer.key}_p{answer.page}_{answer.code}_{hms}"
-    with open(os.path.join(paths.raw, name + ".txt"), "w", encoding="utf-8") as fh:
-        fh.write(block_text(answer, ua))
+@dataclass(frozen=True)
+class RunFolder:
+    """Папка прогона: её пути и запись файлов в неё; создаётся через
+    RunFolder.create."""
 
+    folder: str
+    raw: str
+    log: str
+    plan: str
+    summary: str
+    polygons: str
 
-def write_polygons(paths: RunFolder, rings: dict[str, list]) -> None:
-    """Снимок охвата: канонические кольца клеток (7 знаков), gzip без имени
-    файла, mtime=0, атомарно через .tmp."""
-    feats = []
-    for sid, ring_canonical in rings.items():
-        ring = [[round(x, 7), round(y, 7)] for x, y in ring_canonical]
-        feats.append(
-            {
-                "type": "Feature",
-                "properties": {"sector": sid},
-                "geometry": {"type": "Polygon", "coordinates": [ring]},
-            }
+    @classmethod
+    def create(cls, runs_dir: str, started_at: datetime, smoke_only: bool) -> RunFolder:
+        """Папка прогона и raw/ в ней; уже есть — пишем в неё же (exist_ok)."""
+        folder = os.path.join(runs_dir, folder_label(started_at, smoke_only))
+        raw = os.path.join(folder, "raw")
+        os.makedirs(raw, exist_ok=True)
+        return cls(
+            folder=folder,
+            raw=raw,
+            log=os.path.join(folder, "night.log"),
+            plan=os.path.join(folder, "plan.json"),
+            summary=os.path.join(folder, "summary.json"),
+            polygons=os.path.join(folder, "polygons.geojson.gz"),
         )
-    fc = {"type": "FeatureCollection", "features": feats}
-    buf = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", fileobj=buf, mtime=0) as gz:
-        gz.write(json.dumps(fc, ensure_ascii=False).encode("utf-8"))
-    tmp = paths.polygons + ".tmp"
-    with open(tmp, "wb") as fh:
-        fh.write(buf.getvalue())
-    os.replace(tmp, paths.polygons)
 
+    def append_log(self, stamp: str, fields: dict) -> None:
+        """Дописывает строку в night.log сразу (открыть, дописать, закрыть): время,
+        таб, поля. Печатает её эхом: время, два пробела, поля."""
+        text = _fields_text(fields)
+        with open(self.log, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp}\t{text}\n")
+        say(f"{stamp}  {text}")
 
-def write_summary(paths: RunFolder, report: dict) -> None:
-    """summary.json — последним и не атомарно: его наличие = прогон закончен."""
-    with open(paths.summary, "w", encoding="utf-8") as fh:
-        json.dump(report, fh, ensure_ascii=False, indent=1)
+    def write_plan(self, payload: dict) -> None:
+        """plan.json атомарно через plan.json.tmp."""
+        tmp = self.plan + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, self.plan)
+
+    def write_page(self, key: str, page: int, data: dict, html: str) -> None:
+        """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
+        объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
+        ответа целиком (страховка от тихой поломки вырезки). Прогоны до 18.09 —
+        исторический формат (.json, HTML только у p1)."""
+        base = os.path.join(self.raw, f"{key}_p{page}")
+        with gzip.open(base + ".json.gz", "wt", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as fh:
+            fh.write(html)
+
+    def write_broken(self, answer: PageAnswer, ua: str, hms: str) -> str:
+        """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
+        hms — время ЧЧММСС. → имя файла с телом (без пути)."""
+        name = f"_broken_{answer.key}_p{answer.page}_{answer.kind}_{answer.code}_{hms}"
+        path = os.path.join(self.raw, name + ".html.gz")
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            fh.write(answer.body)
+        with open(
+            os.path.join(self.raw, name + ".note.txt"), "w", encoding="utf-8"
+        ) as fh:
+            fh.write(broken_note(answer, ua))
+        return os.path.basename(path)
+
+    def write_block(self, answer: PageAnswer, ua: str, hms: str) -> None:
+        """BLOCK: raw/_block_<клетка>_p<N>_<код>_<ЧЧММСС>.txt; hms — ЧЧММСС."""
+        name = f"_block_{answer.key}_p{answer.page}_{answer.code}_{hms}"
+        with open(os.path.join(self.raw, name + ".txt"), "w", encoding="utf-8") as fh:
+            fh.write(block_text(answer, ua))
+
+    def write_polygons(self, rings: dict[str, list]) -> None:
+        """Снимок охвата: канонические кольца клеток (7 знаков), gzip без имени
+        файла, mtime=0, атомарно через .tmp."""
+        feats = []
+        for sid, ring_canonical in rings.items():
+            ring = [[round(x, 7), round(y, 7)] for x, y in ring_canonical]
+            feats.append(
+                {
+                    "type": "Feature",
+                    "properties": {"sector": sid},
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                }
+            )
+        fc = {"type": "FeatureCollection", "features": feats}
+        buf = io.BytesIO()
+        with gzip.GzipFile(filename="", mode="wb", fileobj=buf, mtime=0) as gz:
+            gz.write(json.dumps(fc, ensure_ascii=False).encode("utf-8"))
+        tmp = self.polygons + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(buf.getvalue())
+        os.replace(tmp, self.polygons)
+
+    def write_summary(self, report: dict) -> None:
+        """summary.json — последним и не атомарно: его наличие = прогон закончен."""
+        with open(self.summary, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, ensure_ascii=False, indent=1)
