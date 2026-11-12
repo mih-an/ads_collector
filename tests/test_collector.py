@@ -27,6 +27,9 @@
   собирается без main (make_crawl);
 - cc.parse_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
+- cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
+  читают build_parser, check_args и make_transport в момент вызова: 21.81
+  добавляет в него выдуманный транспорт;
 - чистые функции search_page и geometry — с теми же сигнатурами; файлы
   прогона — в том же формате.
 Тесты с пометкой «Внутреннее» держат поведение через внутренний интерфейс
@@ -3504,6 +3507,99 @@ def test_21_81_urllib_without_httpx(monkeypatch):
     )
 
 
+# Список транспортов — в одном месте, словаре cc.TRANSPORTS «имя →
+# TransportChoice(library, make)» (решение Андрея 12.11, DECISIONS): из него
+# choices флага --transport, ранняя проверка библиотеки и make_transport.
+# Тесты ниже добавляют в словарь выдуманный транспорт и смотрят, что все три
+# места его видят. Имя TransportChoice берётся через cc внутри тестов: пока
+# его нет, красные только эти тесты, а не сбор всего файла.
+
+# Библиотека, которой заведомо нет: find_spec вернёт None.
+MISSING_LIBRARY = "no_such_library_21_81"
+# То, что отдаёт make выдуманного транспорта: make_transport обязан вернуть
+# именно его.
+FAKE_MADE = SimpleNamespace(name="транспорт fake")
+
+
+def add_fake_transport(monkeypatch, library: str | None) -> list:
+    """Выдуманный транспорт «fake» в cc.TRANSPORTS на время теста; его make
+    записывает строку Cookie в возвращаемый список и отдаёт маркер
+    FAKE_MADE."""
+    calls: list = []
+
+    def make(cookie_header):
+        calls.append(cookie_header)
+        return FAKE_MADE
+
+    choice = cc.TransportChoice(library=library, make=make)
+    monkeypatch.setitem(cc.TRANSPORTS, "fake", choice)
+    return calls
+
+
+def test_21_81_transports_dict_keys():
+    """21.81 Список транспортов — словарь cc.TRANSPORTS с ключами urllib и
+    httpx (одно место: из него choices, проверка библиотеки и создание).
+    Модуль 21."""
+    assert (isinstance(cc.TRANSPORTS, dict), sorted(cc.TRANSPORTS)) == (
+        True,
+        ["httpx", "urllib"],
+    )
+
+
+def test_21_81_transports_libraries():
+    """21.81 У транспорта urllib нужной библиотеки нет (library None —
+    стандартная библиотека), у httpx — библиотека httpx. Модуль 21."""
+    libraries = {name: choice.library for name, choice in cc.TRANSPORTS.items()}
+    assert libraries == {"urllib": None, "httpx": "httpx"}
+
+
+def test_21_81_choices_from_transports(monkeypatch):
+    """21.81 choices флага --transport берутся из словаря TRANSPORTS при
+    сборке парсера (build_parser), а не один раз при импорте модуля:
+    транспорт, добавленный в словарь, парсер принимает. Модуль 21."""
+    add_fake_transport(monkeypatch, library=None)
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--transport", "fake"]
+    assert cc.parse_settings(argv).transport == "fake"
+
+
+def test_21_81_make_transport_from_transports(monkeypatch):
+    """21.81 make_transport(имя, строка Cookie) зовёт make выбранного
+    транспорта из словаря TRANSPORTS со строкой Cookie и возвращает то, что
+    он создал. Модуль 21."""
+    calls = add_fake_transport(monkeypatch, library=None)
+    made = cc.make_transport("fake", "a=b")
+    assert (made, calls) == (FAKE_MADE, ["a=b"])
+
+
+def test_21_81_library_check_from_transports(env, monkeypatch, capsys):
+    """21.81 Ранняя проверка библиотеки — по полю library транспорта из
+    словаря TRANSPORTS: библиотеки нет — выход с кодом 2, в строке ошибки
+    флаг --transport и имя библиотеки. Модуль 21."""
+    add_fake_transport(monkeypatch, library=MISSING_LIBRARY)
+    stop = main_exit(env, monkeypatch, "--transport", "fake")
+    error = error_line(capsys.readouterr().err)
+    words = ("--transport", MISSING_LIBRARY)
+    assert (stop.code, [word for word in words if word not in error]) == (2, [])
+
+
+def test_21_81_library_check_from_transports_before_start_pause(env, monkeypatch):
+    """21.81 Нет библиотеки транспорта из словаря TRANSPORTS — выход до
+    паузы старта (её нет даже без --no-start-delay) и до транспорта: фабрику
+    не зовут. Модуль 21."""
+    add_fake_transport(monkeypatch, library=MISSING_LIBRARY)
+    main_exit(env, monkeypatch, "--transport", "fake")
+    assert (env.clock.pauses, env.transport.made) == ([], [])
+
+
+def test_21_81_no_library_no_check(env, monkeypatch):
+    """21.81 Транспорт из словаря TRANSPORTS с library None ранней проверки
+    библиотеки не проходит: main доходит до фабрики транспорта с его именем
+    и строкой Cookie билета. Модуль 21."""
+    add_fake_transport(monkeypatch, library=None)
+    run_main(env, monkeypatch, CELLS, FAILED_SMOKE, "--transport", "fake")
+    assert env.transport.made == [("fake", FAKE_COOKIE)]
+
+
 def test_21_82_ticket_flags_paths(env, monkeypatch):
     """21.82 --cookies и --ua — пути к файлам билета вне папки запуска: куки
     доходят до фабрики транспорта, UA — до запроса, возраст кук — по mtime
@@ -3659,8 +3755,11 @@ LEAF_MODULES = ("search_page.py", "geometry.py", "run_folder.py", "transport.py"
 # Все модули пакета, кроме файла запуска cian_collect.py.
 PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, *TRANSPORT_MODULES, "status.py")
 # Порядок слоёв (crawl → page_fetch → transport, search_page; циклов нет):
-# что модуль может взять из пакета.
+# что модуль может взять из пакета. crawl до транспорта доходит только через
+# page_fetch: transport и реализации транспорта ему напрямую нельзя (решение
+# Андрея 12.11, DECISIONS).
 LAYER_IMPORTS = {
+    "crawl.py": frozenset({"page_fetch", "search_page", "geometry", "run_folder"}),
     "page_fetch.py": frozenset({"transport", "search_page"}),
     "urllib_transport.py": frozenset({"transport"}),
     "httpx_transport.py": frozenset({"transport"}),
@@ -4039,9 +4138,13 @@ def foreign_package_imports(source: str, allowed: frozenset[str]) -> list[str]:
     ]
 
 
-# Образцы слоёв: реализациям транспорта из пакета можно только transport.
+# Образцы слоёв: реализациям транспорта из пакета можно только transport;
+# crawl — только page_fetch, search_page, geometry, run_folder.
 transport_layer_imports = functools.partial(
     foreign_package_imports, allowed=LAYER_IMPORTS["urllib_transport.py"]
+)
+crawl_layer_imports = functools.partial(
+    foreign_package_imports, allowed=LAYER_IMPORTS["crawl.py"]
 )
 
 
@@ -4173,8 +4276,10 @@ def test_21_78_httpx_transport_imported_lazily():
 @pytest.mark.parametrize("name", list(LAYER_IMPORTS))
 def test_21_78_layer_order(name):
     """21.78 Порядок слоёв без циклов (crawl → page_fetch → transport,
-    search_page): page_fetch берёт из пакета только transport и
-    search_page, реализации транспорта — только transport. Модуль 21."""
+    search_page): crawl берёт из пакета только page_fetch, search_page,
+    geometry и run_folder — transport и реализации транспорта напрямую не
+    импортирует, только через page_fetch; page_fetch берёт только transport
+    и search_page, реализации транспорта — только transport. Модуль 21."""
     source = collector_source(name)
     assert foreign_package_imports(source, LAYER_IMPORTS[name]) == []
 
@@ -4270,6 +4375,11 @@ GUARD_SAMPLES = [
     (transport_layer_imports, "from collector import crawl"),
     (transport_layer_imports, "from collector.page_fetch import PageFetcher"),
     (transport_layer_imports, "import search_page"),
+    # crawl импортирует transport или реализацию транспорта напрямую
+    (crawl_layer_imports, "from collector.transport import HttpReply"),
+    (crawl_layer_imports, "from collector import page_fetch, transport"),
+    (crawl_layer_imports, "import collector.urllib_transport as ut"),
+    (crawl_layer_imports, "from collector.httpx_transport import HttpxTransport as H"),
     (package_imports, "from collector import transport"),
     (package_imports, "from collector import crawl"),
     (package_imports, "import collector.search_page"),
@@ -4356,17 +4466,29 @@ def get(self, request) -> HttpReply:
         return HttpReply(response.status, {}, response.read())
 """
 
-# Образец разрешённого cian_collect: httpx_transport — только внутри функции.
+# Образец разрешённого crawl: из пакета — page_fetch (до транспорта — только
+# через него), search_page, geometry, run_folder.
+CRAWL_CLEAN_SAMPLE = """
+from collector import geometry, page_fetch, run_folder, search_page
+from collector.page_fetch import PageFetcher
+"""
+
+# Образец разрешённого cian_collect: httpx_transport — только внутри функции
+# создания транспорта из словаря TRANSPORTS.
 LAZY_CLEAN_SAMPLE = """
 from collector import urllib_transport
 
 
-def make_transport(name, cookie_header):
-    if name == "httpx":
-        from collector import httpx_transport
+def make_httpx(cookie_header):
+    from collector import httpx_transport
 
-        return httpx_transport.HttpxTransport(cookie_header)
-    return urllib_transport.UrllibTransport(cookie_header)
+    return httpx_transport.HttpxTransport(cookie_header)
+
+
+TRANSPORTS = {
+    "urllib": TransportChoice(None, urllib_transport.UrllibTransport),
+    "httpx": TransportChoice("httpx", make_httpx),
+}
 """
 
 
@@ -4397,6 +4519,7 @@ def make_transport(name, cookie_header):
         (httpx_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (transport_layer_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (clock_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
+        (crawl_layer_imports, CRAWL_CLEAN_SAMPLE),
         (eager_httpx_transport_imports, LAZY_CLEAN_SAMPLE),
         (httpx_imports, LAZY_CLEAN_SAMPLE),
     ],
@@ -4420,6 +4543,7 @@ def make_transport(name, cookie_header):
         "urllib_transport: без httpx",
         "urllib_transport: только transport",
         "urllib_transport: без time",
+        "crawl: page_fetch, search_page, geometry, run_folder",
         "cian_collect: httpx_transport внутри функции",
         "cian_collect: без httpx",
     ],
@@ -4431,6 +4555,7 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     соседних модулей, без печати в stdout; у листа — импорты стандартной
     библиотеки; у page_fetch — переданный monotonic, gzip и zlib в памяти,
     импорт transport и search_page; у urllib_transport — сеть stdlib,
-    self.opener.open, импорт transport; у cian_collect — импорт
+    self.opener.open, импорт transport; у crawl — импорт page_fetch,
+    search_page, geometry, run_folder; у cian_collect — импорт
     httpx_transport внутри функции. Модуль 21."""
     assert check(sample) == []
