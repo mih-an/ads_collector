@@ -1,14 +1,16 @@
 # ads_collector — сборщик ЦИАН
 
 Отдельная программа: обходит выдачу ЦИАН по клеткам сбора и пишет папку
-прогона (`runs/<метка>/`). Только стандартная библиотека Python 3.12.
+прогона (`runs/<метка>/`). Стандартная библиотека Python 3.12; внешняя
+httpx нужна только для `--transport httpx` (`requirements.txt`), с
+транспортом по умолчанию (urllib) сборщик работает голым python3.
 Переехал из репозитория land-monitor (коммит 881658d, после PR #122).
 
 ## Состав
 
 | Что | Где |
 |---|---|
-| пакет сборщика | `collector/`: `cian_collect.py` (запуск), `net.py` (сеть), `night.py` (правила и дирижёр ночи), `serp.py`, `geometry.py`, `run_folder.py`, `status.py`; описание и запуск — `collector/README.md` |
+| пакет сборщика | `collector/`: `cian_collect.py` (запуск), `transport.py`, `urllib_transport.py`, `httpx_transport.py` (сеть), `page_fetch.py` (запрос страницы), `crawl.py` (правила и дирижёр обхода), `search_page.py`, `geometry.py`, `run_folder.py`, `status.py`; описание и запуск — `collector/README.md` |
 | инструменты разработчика | `scripts/` |
 | тесты и фикстуры | `tests/`, `tests/fixtures/collector/` |
 | документы | `docs/` |
@@ -16,8 +18,9 @@
 
 ## Тесты
 
-Тесты не ходят в сеть: ответы ЦИАН проигрываются из фикстур. Зависимости
-для проверок — `requirements-dev.txt`.
+Тесты не ходят в сеть: ответы ЦИАН проигрываются из фикстур. Окружение —
+своё `.venv` в корне репозитория: `scripts/setup_env.sh` создаёт его и
+ставит `requirements-dev.txt` (он подключает `requirements.txt` с httpx).
 
 ```
 python -m pytest -q -n 4 --cov --cov-report=term-missing
@@ -26,9 +29,8 @@ ruff format --check .
 python -m mypy
 ```
 
-На Mac Андрея своего окружения пока нет — команды идут абсолютным путём из
-окружения land-monitor (`CLAUDE.md`, раздел 8). Сборщик локально не
-запускается: только тесты.
+Команды идут через `.venv/bin/…` (`CLAUDE.md`, раздел 8). Сборщик локально
+не запускается: только тесты (проба с Mac своим билетом — `collector/README.md`).
 
 ## Запуск на сервере
 

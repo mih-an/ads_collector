@@ -8,19 +8,19 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 
 Поиск по файлам — только инструментами Grep и Glob, не grep / git grep / rg через Bash (CLAUDE.md §8); если Grep недоступен — `git grep` (разрешён в настройках).
 
-Окружение (CLAUDE.md §8): своего `.venv` в репозитории пока нет, Python и
-ruff — абсолютным путём из готового окружения:
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q …`,
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff check .`,
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff format --check .`,
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m mypy`.
+Окружение (CLAUDE.md §8): своё окружение `.venv` в корне репозитория, Python и
+ruff — абсолютным путём:
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q …`,
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff check .`,
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff format --check .`,
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m mypy`.
 Полный набор перед push:
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q -n 4 --cov --cov-report=term-missing`.
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q -n 4 --cov --cov-report=term-missing`.
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров (`| grep`, `| tail`).
 
 Разовые опыты на Python — файлом в `var/scratch/` (Write), запуск
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python var/scratch/<имя>.py`
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python var/scratch/<имя>.py`
 из корня; без приставок (`env PYTHONPATH=.`) и `python -c` с многострочным
 кодом. Путь к проекту ставит сам скрипт:
 `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов
@@ -54,16 +54,19 @@ docs/DECISIONS.md — решения уровня 1 и решения Андре
 исполнению.
 
 Правила кода — CLAUDE.md §6, из них главные:
-- в collector/ — только стандартная библиотека;
-- правило импортов: никто в пакете не импортирует `cian_collect`; `serp`,
-  `geometry`, `run_folder` не импортируют никого из пакета (страж — 21.78);
-- правила обхода и разбора — чистыми функциями; сеть (collector/net.py),
-  часы, сон, случайность, argv — только по краям;
-- числа сборщика — в `Settings` (collector/night.py) и константах контракта
-  в collector/serp.py; два исключения: `HTTP_TIMEOUT_S` — в
-  collector/net.py, умолчания аргументов запуска (`BUDGET`, `WINDOW_HOURS`,
-  `RUNS_DIR`) — в collector/cian_collect.py; никаких магических чисел
-  россыпью;
+- в collector/ — только стандартная библиотека, кроме httpx в
+  collector/httpx_transport.py;
+- правило импортов: никто в пакете не импортирует `cian_collect`;
+  `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого
+  из пакета; реализации транспорта импортирует только `cian_collect`
+  (страж — 21.78);
+- правила обхода и разбора — чистыми функциями; сеть (collector/urllib_transport.py,
+  collector/httpx_transport.py), часы, сон, случайность, argv — только по краям;
+- числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
+  в collector/search_page.py; исключения: `HTTP_TIMEOUT_S` и
+  `COOKIE_DOMAIN` — в collector/transport.py, умолчания аргументов запуска (`BUDGET`,
+  `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `COOKIES_FILE`, `UA_FILE`) — в
+  collector/cian_collect.py; никаких магических чисел россыпью;
 - формат папки прогона (docs/CIAN_DATA_FORMAT.md) не меняется без решения
   Андрея: порядок ключей, имена файлов, кодировки — как есть;
 - ошибки громко, с именем файла/ключа/параметра; пустых except нет;

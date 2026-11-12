@@ -1,12 +1,12 @@
 """
-night.py — ночь сборщика ЦИАН: данные, правила обхода и дирижёр Night.
+crawl.py — обход выдачи ЦИАН: данные, правила обхода и дирижёр Crawl.
 
-Данные: Settings, Ticket, Edges (связь с внешним миром), TileState, PageTask,
-NightState. Правила — функции без внешнего мира: интервал и паузы, пул пробы,
+Данные: Settings, Ticket, Clock (часы и сон), CrawlInput, TileState, PageTask,
+CrawlState. Правила — функции без внешнего мира: интервал и паузы, пул пробы,
 деление [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень,
-повторы, словари plan.json и summary.json. Night ведёт ночь: проба, очередь,
-листание, деление, бюджет, стоп; внешний мир — только Edges, run_folder и
-geometry.update_tiles_file.
+повторы, словари plan.json и summary.json. Crawl ведёт ночь: проба, очередь,
+листание, деление, бюджет, стоп; внешний мир — только запрос страницы
+(page_fetch.PageFetcher), Clock, rnd, run_folder и geometry.update_tiles_file.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from collector import geometry, run_folder, serp
+from collector import geometry, page_fetch, run_folder, search_page
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -34,6 +34,12 @@ class Settings:
     smoke_only: bool
     start_delay: bool
     seed: int
+    # сетевой транспорт: urllib или httpx (флаг --transport)
+    transport: str
+    # «входной билет»: куки и UA браузера, прошедшего проверку WAF (флаги
+    # --cookies и --ua; умолчания — в cian_collect)
+    cookies_file: str
+    ua_file: str
     # [E-42] totalOffers стр. 1 больше порога — клетка делится (0 — деления нет)
     split_threshold: int = 400
     # дно деления (10 км → 1,25 км): на дне клетка листается — защита от
@@ -58,9 +64,6 @@ class Settings:
     # мельче в пул пробы не берём: крохи после нарезок легитимно пусты
     # (T0713caa: 0 лотов), а пустая выдача — провал пробы; ложная тревога 22.09
     smoke_min_area_km2: float = 15
-    # «входной билет»: куки и UA браузера, прошедшего проверку WAF, — в папке запуска
-    cookies_file: str = "cookies.txt"
-    ua_file: str = "ua.txt"
 
     @property
     def tile_mode(self) -> bool:
@@ -83,13 +86,24 @@ class Ticket:
 
 
 @dataclass(frozen=True)
-class Edges:
-    """Связь ночи с внешним миром: запрос выдачи, случайность, часы, сон."""
+class Clock:
+    """Часы ночи: который час (стена машины с поясом) и подождать, с."""
 
-    get_serp: Callable[[str, str | None], serp.Response]
-    rnd: random.Random
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
+
+
+@dataclass(frozen=True)
+class CrawlInput:
+    """Входы, которые обход не заменяет: настройки, билет, клетки, сетка.
+    Собраны вместе из-за предела 5 аргументов (CLAUDE.md §6); fetcher,
+    clock и rnd идут в Crawl отдельно — это внешний мир (DECISIONS,
+    block/transport)."""
+
+    settings: Settings
+    ticket: Ticket
+    raw_tiles: list[dict]
+    grid: dict
 
 
 @dataclass
@@ -129,7 +143,7 @@ class PageTask:
 
 
 @dataclass
-class NightState:
+class CrawlState:
     """Изменяемое состояние ночи; pending — очередь ключей клеток."""
 
     spent: int = 0
@@ -189,7 +203,7 @@ def burned_mark(verdict: str, detail: str, has_ticket: bool) -> str:
     """BLOCK с билетом и деталью 403 или капча — билет сгорел: к детали
     хвост «|cookie_expired_or_burned» (только настоящий отвод)."""
     refused = "403" in detail or "captcha" in detail
-    if verdict == serp.BLOCK and has_ticket and refused:
+    if verdict == search_page.BLOCK and has_ticket and refused:
         return detail + "|cookie_expired_or_burned"
     return detail
 
@@ -205,9 +219,9 @@ def absorb_page(tile: TileState, page: int, total: int | None, ids: list[int]) -
     if total is not None:
         tile.total_offers = total
         # верхняя оценка: конец набора может прийти раньше
-        tile.pages_planned = serp.pages_for(total)
+        tile.pages_planned = search_page.pages_for(total)
     # короткая страница — последняя реально отдаваемая
-    return 0 < len(ids) < serp.OFFERS_PER_PAGE
+    return 0 < len(ids) < search_page.OFFERS_PER_PAGE
 
 
 def is_complete(tile: TileState) -> bool:
@@ -220,7 +234,7 @@ def is_complete(tile: TileState) -> bool:
 
 def read_out(tile: TileState, page: int) -> bool:
     """Страница page клетке уже не нужна: конец набора или верхняя оценка
-    totalOffers исчерпана. Потолок выдачи — отдельно, в цикле Night._crawl_pages."""
+    totalOffers исчерпана. Потолок выдачи — отдельно, в цикле Crawl._crawl_pages."""
     if tile.served_end:
         return True
     return page > 1 and tile.pages_planned is not None and page > tile.pages_planned
@@ -230,11 +244,11 @@ def task_state(verdict: str, attempts: int, retries: int) -> str:
     """Итог задачи после попытки номер attempts (с 1). Единственное правило
     повторов: сбой сети на попытках 1…retries — net_error (будет повтор),
     на попытке retries + 1 — failed и стоп ночи."""
-    if verdict == serp.OK:
+    if verdict == search_page.OK:
         return "done"
-    if verdict == serp.PAGE_END:
+    if verdict == search_page.PAGE_END:
         return "page_end"
-    if verdict == serp.NET_ERROR and attempts <= retries:
+    if verdict == search_page.NET_ERROR and attempts <= retries:
         return "net_error"
     return "failed"
 
@@ -247,7 +261,7 @@ def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]:
     и провал пробы ступень не засчитывают — её повторяют."""
     if stopped in ("budget_exhausted", "queue_empty"):
         return True, "passed"
-    if stop_class == serp.BLOCK:
+    if stop_class == search_page.BLOCK:
         return True, "blocked"
     if stopped == "smoke_only":
         return True, "smoke_only"
@@ -315,7 +329,7 @@ def task_entry(task: PageTask) -> dict:
 
 
 def plan_payload(
-    state: NightState,
+    state: CrawlState,
     settings: Settings,
     ticket: Ticket,
     started_at: datetime,
@@ -361,7 +375,7 @@ def _stateless_ok(full: list[dict]) -> bool | None:
 
 
 def summary_report(
-    state: NightState,
+    state: CrawlState,
     settings: Settings,
     ticket: Ticket,
     started_at: datetime,
@@ -404,38 +418,40 @@ def summary_report(
 # ─────────────────────────────── дирижёр ───────────────────────────────
 
 
-class Night:
+class Crawl:
     """Дирижёр ночи: проба, очередь клеток, листание, деление, бюджет, повторы,
-    стоп, Ctrl+C. Правила — функции выше, запись файлов — run_folder; сеть,
-    часы, сон и случайность — только через edges."""
+    стоп, Ctrl+C. Правила — функции выше, запись файлов — run_folder; сеть —
+    только через fetcher, часы и сон — через clock, случайность — rnd."""
 
     def __init__(
         self,
-        settings: Settings,
-        raw_tiles: list[dict],
-        grid: dict,
-        ticket: Ticket,
-        edges: Edges,
+        crawl_input: CrawlInput,
+        fetcher: page_fetch.PageFetcher,
+        clock: Clock,
+        rnd: random.Random,
     ) -> None:
+        settings = crawl_input.settings
         self.settings = settings
-        self.grid = grid
-        self.ticket = ticket
-        self.edges = edges
+        self.grid = crawl_input.grid
+        self.ticket = crawl_input.ticket
+        self.fetcher = fetcher
+        self.clock = clock
+        self.rnd = rnd
         self.tile_mode = settings.tile_mode
-        self.state = NightState()
-        self.started_at = edges.now()
+        self.state = CrawlState()
+        self.started_at = clock.now()
         self.paths = run_folder.create_folder(
             settings.runs_dir, self.started_at, settings.smoke_only
         )
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # джиттер — один раз на (клетка, ночь), в порядке файла
-        for raw_tile in raw_tiles:
+        for raw_tile in crawl_input.raw_tiles:
             self._register(raw_tile)
         # клетки вперемешку, страницы внутри клетки — подряд (решение Андрея
         # 15.09: листание подряд — единственный человеческий паттерн)
         order = list(self.tiles)
-        edges.rnd.shuffle(order)
+        rnd.shuffle(order)
         self.state.pending = order
 
     def _register(self, raw_tile: dict) -> None:
@@ -444,7 +460,7 @@ class Night:
             name=raw_tile["name"],
             status=raw_tile.get("status", ""),
             area_km2=raw_tile.get("area_km2") or 0.0,
-            ring=geometry.jitter_ring(raw_tile["ring"], self.edges.rnd),
+            ring=geometry.jitter_ring(raw_tile["ring"], self.rnd),
             ring_canonical=[(float(a), float(b)) for a, b in raw_tile["ring"]],
             level=raw_tile.get("level"),
             parent=raw_tile.get("parent"),
@@ -503,7 +519,7 @@ class Night:
                 return  # ночь остановлена (блок, сеть, бюджет)
             self.save_plan()
             if state.pending and state.spent < budget:
-                factor = self.edges.rnd.uniform(*self.settings.inter_tile_pause)
+                factor = self.rnd.uniform(*self.settings.inter_tile_pause)
                 self.sleep_between(factor)
         state.stopped = state.stopped or "queue_empty"
 
@@ -517,18 +533,18 @@ class Night:
         candidates = smoke_pool(
             self.tiles, settings.smoke_min_area_km2, settings.smoke_pool_size
         )
-        self.edges.rnd.shuffle(candidates)
+        self.rnd.shuffle(candidates)
         for key in candidates[: settings.smoke_max_tries]:
             answer = self.request(key, 1, "smoke")
             state.spent += 1
             self._log_request(answer)
-            if answer.verdict != serp.OK:
+            if answer.verdict != search_page.OK:
                 self._smoke_failed(key, answer)
                 return False
             # пустая выдача — тот же словарь с вердиктом EMPTY и offers = 0
             state.smoke = {
                 "sector": key,
-                "verdict": serp.OK if answer.ids else "EMPTY",
+                "verdict": search_page.OK if answer.ids else "EMPTY",
                 "offers": len(answer.ids),
                 "total": answer.total,
             }
@@ -565,7 +581,7 @@ class Night:
         attempts = 0  # повторов этой страницы уже было
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
-        while not read_out(tile, page) and page <= serp.MAX_PAGES:
+        while not read_out(tile, page) and page <= search_page.MAX_PAGES:
             if self.state.spent >= self.settings.budget:
                 self.state.stopped = "budget_exhausted"
                 return False
@@ -575,10 +591,10 @@ class Night:
                 sector=key, page=page, kind="ssr", origin=origin, attempts=attempts
             )
             verdict = self.step(task)
-            if verdict == serp.PAGE_END:
+            if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
                 return True
-            if verdict == serp.OK:
+            if verdict == search_page.OK:
                 if page == 1 and self.split(key):
                     return True  # родитель выбыл, дети в очереди
                 attempts = 0
@@ -595,7 +611,7 @@ class Night:
     def _retry_pause(self, key: str, page: int, attempts: int) -> None:
         """Пауза перед повтором номер attempts + 1 после сбоя сети."""
         retry_pauses = self.settings.net_retry_pauses
-        pause = self.edges.rnd.uniform(*retry_pauses[attempts])
+        pause = self.rnd.uniform(*retry_pauses[attempts])
         self.log(
             event="retry",
             sector=key,
@@ -604,7 +620,7 @@ class Night:
             of=len(retry_pauses),
             after_s=int(pause),
         )
-        self.edges.sleep(pause)
+        self.clock.sleep(pause)
 
     def step(self, task: PageTask) -> str:
         """Один запрос обхода. → вердикт; стоп-вердикты попутно ставят stopped."""
@@ -657,10 +673,10 @@ class Night:
         """Один запрос выдачи; пишет страницу, _broken_* или _block_*."""
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
-        referer = serp.build_serp_url(ring, page - 1) if page > 1 else None
-        response = self.edges.get_serp(serp.build_serp_url(ring, page), referer)
+        referer = search_page.page_url(ring, page - 1) if page > 1 else None
+        response = self.fetcher.fetch(search_page.page_url(ring, page), referer)
         headers = response.headers
-        verdict, detail, total, offers = serp.classify_serp(
+        verdict, detail, total, offers = search_page.classify_page(
             response.code,
             response.body,
             response.neterr,
@@ -685,14 +701,14 @@ class Night:
         answer = self._write_answer(answer, offers)
         # id считаются после записи: сбой разбора id не отменяет уже
         # записанный файл (тест 21.36)
-        return replace(answer, ids=serp.offer_ids(offers))
+        return replace(answer, ids=search_page.offer_ids(offers))
 
     def _write_answer(
         self, answer: run_folder.PageAnswer, offers: list
     ) -> run_folder.PageAnswer:
         """Файл ответа: страница у OK, _broken_* у API_CHANGED с телом (к детали —
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
-        if answer.verdict == serp.OK:
+        if answer.verdict == search_page.OK:
             # HTML каждой страницы [E-22]
             run_folder.write_page(
                 self.paths,
@@ -701,12 +717,12 @@ class Night:
                 {"totalOffers": answer.total, "offers": offers},
                 answer.body,
             )
-        elif answer.verdict == serp.API_CHANGED and answer.body:
+        elif answer.verdict == search_page.API_CHANGED and answer.body:
             name = run_folder.write_broken(
                 self.paths, answer, self.ticket.ua, self._stamp_hms()
             )
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
-        elif answer.verdict == serp.BLOCK:
+        elif answer.verdict == search_page.BLOCK:
             run_folder.write_block(
                 self.paths, answer, self.ticket.ua, self._stamp_hms()
             )
@@ -714,7 +730,7 @@ class Night:
 
     def _stamp_hms(self) -> str:
         """Время ЧЧММСС в именах служебных файлов (часы машины)."""
-        return self.edges.now().strftime("%H%M%S")
+        return self.clock.now().strftime("%H%M%S")
 
     # ── деление (E-42) ────────────────────────────────────────────
 
@@ -749,7 +765,7 @@ class Night:
             self.log(event="split_skip", sector=key, note="нет непустых четвертей")
             return False
         self._queue_children(key, children)
-        split_at = self.edges.now().isoformat(timespec="seconds")
+        split_at = self.clock.now().isoformat(timespec="seconds")
         geometry.update_tiles_file(self.settings.tiles_path, key, children, split_at)
         self.save_plan()
         return True
@@ -763,7 +779,7 @@ class Night:
         tile.children = [child["sector"] for child in children]
         for child in children:
             self._register(child)  # джиттер ребёнка, затем его место в очереди
-            position = self.edges.rnd.randint(0, len(self.state.pending))
+            position = self.rnd.randint(0, len(self.state.pending))
             self.state.pending.insert(position, child["sector"])
         event = {
             "parent": key,
@@ -789,11 +805,11 @@ class Night:
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
-        self.edges.sleep(self.edges.rnd.uniform(low, high))
+        self.clock.sleep(self.rnd.uniform(low, high))
 
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
-        stamp = self.edges.now().isoformat(timespec="seconds")
+        stamp = self.clock.now().isoformat(timespec="seconds")
         run_folder.append_log(self.paths, stamp, fields)
 
     def _log_request(self, answer: run_folder.PageAnswer) -> None:

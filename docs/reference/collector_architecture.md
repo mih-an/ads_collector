@@ -3,8 +3,8 @@
 **Что это.** Как устроен сборщик ЦИАН (`collector/`) сейчас — раздел 2 — и как к этому пришли: рефакторинг, починка и переезд из land-monitor без изменения поведения и формата папки прогона (остальные разделы).
 
 **Статус.** Справка, не нормативно. Документ живёт в репозитории ads_collector.
-- **Раздел 2** — нынешнее устройство пакета; ведёт `architect`, имена сверены с кодом на PR #1 ads_collector (ветка block/move-from-land-monitor).
-- **Разделы 1, 3–6, 8–9 и строка «Задание» ниже** — история рефакторинга (PR #121) и починки (PR #122) в репозитории land-monitor. Номера PR, коммиты, номера строк и файлы, которых здесь нет (`land_monitor/`, `watchdog/`, `docs/REQUIREMENTS_V1.md`, `docs/TEST_PLAN_STAGE2.md`, `docs/ROADMAP.md`, `docs/STAGE1_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/GLOSSARY.md`), относятся к land-monitor; в этих разделах они не правятся. Где история расходится с кодом (сеть — в `net.py`, переэкспорта `__all__` нет, 21.61 запускает модулем, `Fetcher._decode` стал функцией `decode_body`, `clip_ring_rect` без `noqa: C901`, страница Servicepipe — `BLOCK`, `_broken_*` пробы — `.html.gz`, ночь 09-18 удалена), правы код и раздел 2.
+- **Раздел 2** — нынешнее устройство пакета; ведёт `architect`, имена сверены с кодом на PR #2 ads_collector (ветка block/transport).
+- **Разделы 1, 3–6, 8–9 и строка «Задание» ниже** — история рефакторинга (PR #121) и починки (PR #122) в репозитории land-monitor. Номера PR, коммиты, номера строк и файлы, которых здесь нет (`land_monitor/`, `watchdog/`, `docs/REQUIREMENTS_V1.md`, `docs/TEST_PLAN_STAGE2.md`, `docs/ROADMAP.md`, `docs/STAGE1_HANDOFF.md`, `docs/ARCHITECTURE.md`, `docs/GLOSSARY.md`), относятся к land-monitor; в этих разделах они не правятся. Где история расходится с кодом (переэкспорта `__all__` нет, 21.61 запускает модулем, `clip_ring_rect` без `noqa: C901`, страница Servicepipe — `BLOCK`, `_broken_*` пробы — `.html.gz`, ночь 09-18 удалена), правы код и раздел 2. Имена `night.py`, `Night`, `NightState`, `Edges`, `serp.py`, `build_serp_url`, `classify_serp`, `net.py`, `Fetcher`, `get_serp`, `Response` в этих разделах — прежние, до PR #2; нынешние — словарь 2.8.
 - **Раздел 7** — переезд в свой репозиторий: сделан (PR #1 ads_collector).
 
 Нормативны `docs/TEST_PLAN.md` (модуль 21) и `docs/CIAN_DATA_FORMAT.md` (формат папки прогона). При расхождении документа с кодом сборщика прав код.
@@ -128,138 +128,208 @@ sequenceDiagram
 
 Нынешнее устройство пакета `collector/`. Раздел 1 — исходный сборщик одним файлом до рефакторинга, это история.
 
+Коротко: `cian_collect` разбирает запуск и собирает внешний мир (транспорт, часы, случайность); `crawl` ведёт обход по клеткам и решает, что запросить дальше; за одной страницей он идёт в `page_fetch`, тот — в транспорт (`urllib_transport` или `httpx_transport`); ответ разбирает `search_page`, на диск пишет `run_folder`, клетки режет `geometry`.
+
 ### 2.1. Модули
 
-Пакет `collector/`: шесть файлов кода (2122 строки) и пустой `__init__.py`. `status.py` — отдельный скрипт, пакет его не импортирует.
+Пакет `collector/`: девять файлов кода (2429 строк) и пустой `__init__.py`. `status.py` — отдельный скрипт, пакет его не импортирует.
 
 | Файл | Что делает | Чего не делает | Внешний мир |
 |---|---|---|---|
-| `cian_collect.py` — запуск и края (204 строки) | разбирает argv в `Settings` (нет `--seed` — случайный seed); создаёт `random.Random(seed)`; проверяет, что файл клеток есть, читает его и восстанавливает сетку (зовёт `geometry`); пауза старта; читает билет `Ticket` (нет `ua.txt` — UA из `USER_AGENTS`); создаёт `net.Fetcher`, собирает края ночи `Edges`, запускает `Night`; печатает сетку и итог | HTTP (это `net`); правил обхода, разбора ответа, записи файлов прогона; ничего не переэкспортирует — тесты импортируют имена из их модулей | argv, `time.time/sleep`, `datetime.now`, `random`, файлы билета, наличие файла клеток, stdout |
-| `net.py` — сеть (175) | `Fetcher(user_agent, cookie_header).get_serp(url, referer)` → `serp.Response`: банк кук из билета с ротацией из `Set-Cookie`, заголовки браузера и Referer, без редиректов (`NoRedirect`), раскодирование тела (`decode_body`), заголовки в нижнем регистре, длительность запроса, тайм-аут `HTTP_TIMEOUT_S` (45 с). Сбой сети и битое сжатие ответа 200 — `Response` с кодом 0 и деталью (`urlerror:…`, `timeout`, `oserror:…`, `decode:…`) | не классифицирует ответ (`serp`) и не решает о повторах (`night`); UA не выбирает — он приходит из билета; не пишет на диск, не печатает; не берёт время стены и случайность | сеть, `time.monotonic` |
-| `night.py` — ночь (836) | `Settings`, `Ticket`, `Edges`, `TileState`, `PageTask`, `NightState`. Сверху правила обхода без внешнего мира: пул пробы, решение о делении, границы паузы, пометка «билет сгорел», учёт страницы, дочитанность, ступень, словари `plan.json` и `summary.json`. Ниже класс `Night` — дирижёр: проба, очередь, листание, деление, бюджет, повторы, стоп, Ctrl+C | не делает HTTP (зовёт `edges.get_serp`); не импортирует `time`, `urllib`, не зовёт `datetime.now` и функции модуля `random`; не знает имён и кодировок файлов (это `run_folder`); не разбирает HTML (`serp`); не считает геометрию (`geometry`) | только через `Edges`, `run_folder` и `geometry.update_tiles_file` |
-| `serp.py` — контракт ЦИАН (307) | типы `Response` (ответ на запрос выдачи) и `Classified` (итог разбора); ссылка на выдачу; разбор `initialState`; обязательные поля; классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`); id объявлений; число страниц; константы контракта (28 на страницу, потолок 54, маркеры капчи, обязательные поля, адрес) | сети, диска, решений «что дальше» | — (чистый) |
-| `geometry.py` — геометрия и файл клеток (411) | чистые функции: джиттер, сетка, базовый квадрат, четверти, отсечение, площадь, уплотнение, дети деления. Внизу края: чтение (`load_sectors`) и атомарная перезапись (`update_tiles_file`) файла клеток | решения «делить ли» (это ночь); записи в папку прогона | файл клеток; случайность приходит аргументом `rnd` |
-| `run_folder.py` — папка прогона (189) | тип `PageAnswer` (ответ на один запрос); всё об именах, кодировках и порядке записи: папка и её метка, строка night.log с эхом в stdout, plan.json атомарно, страница `.json.gz` + `.html.gz`, `_broken_*` + `.note.txt`, `_block_*.txt`, снимок охвата (gzip mtime=0, атомарно), summary.json последним. Тексты служебных файлов — чистыми функциями сверху | не решает, что писать (словари приходят из ночи); не берёт время сам (метка приходит аргументом); в сеть не ходит | диск, stdout (эхо строк лога) |
+| `cian_collect.py` — запуск и края (308 строк) | разбирает argv в `Settings` (флаги `--transport`, `--cookies`, `--ua`; нет `--seed` — случайный seed); ошибки запуска, которых argparse не видит (`check_args`: не установлена библиотека выбранного транспорта, например httpx при `--transport httpx`, названный флагом файл билета отсутствует, пуст или это папка), — код 2 до паузы старта; создаёт `random.Random(seed)`; проверяет, что файл клеток есть, читает его и восстанавливает сетку (`geometry`); часы `Clock`; пауза старта; читает билет `Ticket` (нет UA — случайный из `USER_AGENTS`); транспорт по имени (`make_transport`; список транспортов — словарь `TRANSPORTS`, одно место для choices, проверки библиотеки и создания), запрос страницы `PageFetcher`, запускает `Crawl`; печатает сетку и итог | HTTP (это транспорт); правил обхода, разбора ответа, записи файлов прогона; ничего не переэкспортирует — тесты импортируют имена из их модулей | argv, `time.time/sleep/monotonic`, `datetime.now`, `random`, файлы билета, наличие файла клеток, поиск библиотеки транспорта в окружении (`importlib.util.find_spec`), stdout |
+| `transport.py` — интерфейс сети (73) | `Transport` (Protocol, один метод `get(url, headers) → HttpReply`); `HttpReply` — ответ как с провода (код, заголовки в нижнем регистре, тело байтами); `NetworkFailure` — ответа нет, текст — деталь; помощники обеих реализаций: `parse_cookie_header`, `lower_headers`; `HTTP_TIMEOUT_S` (45 с), `COOKIE_DOMAIN` (`.cian.ru`) | сети, распаковки, своих заголовков; не импортирует никого из пакета | — |
+| `urllib_transport.py` — транспорт по умолчанию (113) | `UrllibTransport(cookie_header)`: банк кук из билета (`seed_jar`) с ротацией из `Set-Cookie`, без перехода по редиректу (`NoRedirect`), тайм-аут; заголовков opener по умолчанию не шлёт. Ответ-ошибка (3xx, 4xx, 5xx) — тоже `HttpReply`; сбой — `NetworkFailure` (`urlerror:…`, `timeout`, `oserror:…`, в том числе обрыв протокола `http.client.HTTPException`) | не распаковывает тело и не добавляет заголовков; не повторяет; не пишет на диск, не печатает, не берёт часы | сеть (stdlib) |
+| `httpx_transport.py` — транспорт на httpx (62) | `HttpxTransport(cookie_header, network=None)` — то же поведение на внешней библиотеке httpx: куки клиента на `COOKIE_DOMAIN`, без редиректов, заголовки клиента по умолчанию очищены, тело — `iter_raw` без распаковки; те же слова детали сбоя, что у urllib на том же событии | то же, что urllib; импортируется только из `make_httpx` (создатель транспорта `httpx` в `TRANSPORTS`) при `--transport httpx` | сеть (httpx) |
+| `page_fetch.py` — запрос страницы (125) | `PageFetcher(transport, user_agent, has_ticket, monotonic).fetch(url, referer)` → `FetchedPage`: заголовки браузера и Referer (`browser_headers`), один вызов транспорта, распаковка тела (`decode_body`: gzip/deflate, битый UTF-8 — знак замены), длительность по переданному `monotonic`. Сбой сети и битое сжатие ответа 2xx (`decode:…`) — `FetchedPage` с кодом 0, пустым телом и деталью `neterr`; битое сжатие у прочих кодов — сырые байты как текст | не повторяет (повторы — `Crawl`); не классифицирует ответ (`search_page`); не выбирает транспорт и UA; не импортирует `time`, не пишет на диск: gzip и zlib — только в памяти | — (часы приходят аргументом) |
+| `crawl.py` — обход (852) | данные: `Settings`, `Ticket`, `Clock`, `CrawlInput`, `TileState`, `PageTask`, `CrawlState`. Сверху правила обхода без внешнего мира: средний интервал и границы паузы, пул пробы, решение о делении, пометка «билет сгорел», учёт страницы, дочитанность, правило повторов, ступень, словари `plan.json` и `summary.json`. Ниже класс `Crawl` — дирижёр: проба, очередь, листание, деление, бюджет, повторы, стоп, Ctrl+C | не делает HTTP и не знает транспорта (зовёт `fetcher.fetch`); не импортирует `time`, `urllib`, не зовёт `datetime.now` и функции модуля `random`; не знает имён и кодировок файлов (`run_folder`); не разбирает HTML (`search_page`); не считает геометрию (`geometry`) | только через `fetcher`, `clock`, `rnd`, `run_folder` и `geometry.update_tiles_file` |
+| `search_page.py` — контракт ЦИАН (296) | ссылка на страницу поиска (`page_url`); разбор `initialState`; обязательные поля; классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`) — `classify_page` → `Classified`; id объявлений; число страниц; константы контракта (28 на страницу, потолок 54, маркеры капчи и Servicepipe, обязательные поля, `CIAN_BASE_URL`) | сети, диска, решений «что дальше» | — (чистый) |
+| `geometry.py` — геометрия и файл клеток (411) | чистые функции: джиттер, сетка, базовый квадрат, четверти, отсечение, площадь, уплотнение, дети деления. Внизу края: чтение (`load_sectors`) и атомарная перезапись (`update_tiles_file`) файла клеток | решения «делить ли» (это обход); записи в папку прогона | файл клеток; случайность приходит аргументом `rnd` |
+| `run_folder.py` — папка прогона (189) | тип `PageAnswer` (ответ на один запрос); всё об именах, кодировках и порядке записи: папка и её метка, строка night.log с эхом в stdout, plan.json атомарно, страница `.json.gz` + `.html.gz`, `_broken_*` + `.note.txt`, `_block_*.txt`, снимок охвата (gzip mtime=0, атомарно), summary.json последним. Тексты служебных файлов — чистыми функциями сверху | не решает, что писать (словари приходят из обхода); не берёт время сам (метка приходит аргументом); в сеть не ходит | диск, stdout (эхо строк лога) |
 | `__init__.py` | пустой | — | — |
 | `status.py` (65) | отдельный скрипт «идёт ли сбор»: процесс сборщика и итоги трёх последних прогонов | пакет не импортирует | диск (`runs/`), `pgrep` |
 
 Правило импорта (держит страж — кейс 21.78, 2.4):
 - `cian_collect` никто в пакете не импортирует: это вершина;
-- `net` импортирует только `cian_collect`; сам `net` берёт из пакета только `serp` (`Response`, `SERP_HOST`) — так устроен код, отдельной проверки стража на это нет;
-- `night` берёт `serp`, `geometry`, `run_folder`;
-- `serp`, `geometry`, `run_folder` не импортируют никого из пакета — листья;
-- импорты абсолютные (`from collector import serp`), относительных нет. Причина — читаемость: одна форма записи на весь пакет, и по импорту сразу видно полное имя модуля, то же, что подменяют тесты (`collector.net`). Запуск модулем работал бы и с относительными импортами, поэтому правило держит страж, а не способ запуска.
+- слои без циклов: `crawl` → `page_fetch` → `transport`, `search_page`; `crawl` берёт ещё `geometry`, `run_folder` (`page_fetch` — только ради типа `PageFetcher`). Страж держит все три слоя: `crawl` берёт из пакета только `page_fetch`, `search_page`, `geometry`, `run_folder` — до транспорта только через `page_fetch` (решение Андрея 12.11); что берут `page_fetch` и реализации транспорта — ниже;
+- реализации транспорта (`urllib_transport`, `httpx_transport`) импортирует только `cian_collect`; сами они берут из пакета только `transport`. `httpx_transport` импортируется внутри функции `make_httpx`, не на верхнем уровне: без httpx сборщик с urllib запускается голым `python3`;
+- сеть stdlib (`socket`, `urllib.request`, `urllib.error`, `http*`) — только в `urllib_transport`; `httpx` — только в `httpx_transport`;
+- `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого из пакета — листья;
+- импорты абсолютные (`from collector import search_page`), относительных нет. Причина — читаемость: одна форма записи на весь пакет, и по импорту сразу видно полное имя модуля, то же, что подменяют тесты (`collector.page_fetch`). Запуск модулем работал бы и с относительными импортами, поэтому правило держит страж, а не способ запуска.
 
-Запуск — только модулем, из папки, где лежит `collector/`: `python3 -m collector.cian_collect …` (2.7, `collector/README.md`). Запуск файлом (`python3 collector/cian_collect.py`) не работает: он кладёт в `sys.path` саму папку `collector/`, и `import collector` не найдётся. Тест 21.61 запускает так же, модулем: `runpy.run_module("collector.cian_collect", run_name="__main__")` зовёт `main()`.
+Запуск — только модулем, из папки, где лежит `collector/`: `python3 -m collector.cian_collect --geojson <файл клеток> […] [--transport urllib|httpx] [--cookies <файл>] [--ua <файл>]` (2.7, `collector/README.md`). Без `--cookies` и `--ua` билет — `cookies.txt` и `ua.txt` из папки запуска, как раньше. Запуск файлом (`python3 collector/cian_collect.py`) не работает: он кладёт в `sys.path` саму папку `collector/`, и `import collector` не найдётся. Тест 21.61 запускает так же, модулем: `runpy.run_module("collector.cian_collect", run_name="__main__")` зовёт `main()`.
+
+Зависимости: только стандартная библиотека, кроме httpx в `httpx_transport.py` (решение Андрея 11.11; `httpx==0.28.1` в `requirements.txt`, в окружении разработки обязательна).
 
 ### 2.2. Отличие от отправной точки
 
 | Отправная точка (PM, 10.11) | Итог | Почему |
 |---|---|---|
-| запуск; сеть — отдельно | `cian_collect.py` и `net.py` | как в отправной точке, но не сразу. В рефакторинге (PR #121 land-monitor) сеть временно жила в `cian_collect.py`: тесты подменяли `cc.Fetcher` и `cc.time`, а менять тесты было нельзя. При переезде (PR #1 ads_collector, раздел 7) тесты перешли на подмену `net.Fetcher` и `net.time`, сеть ушла в свой модуль |
-| прогон (дирижёр); правила обхода — отдельно | `night.py`: правила сверху, дирижёр ниже | правил ~10 коротких функций (~120 строк), отдельный файл — лишний переход для читателя; так устроены модули land_monitor (`backup.py`: правила сверху, края внизу) |
+| запуск; сеть — отдельно | `cian_collect.py`; сеть — `transport.py`, `urllib_transport.py`, `httpx_transport.py`, `page_fetch.py` | в рефакторинге (PR #121 land-monitor) сеть временно жила в `cian_collect.py` — менять тесты было нельзя; при переезде (PR #1) ушла в `net.py`. В PR #2 (block/transport, задание PM: второй транспорт) `net.py` разложен: реализации только доставляют запрос и приносят байты, наша логика над ними (заголовки, распаковка, длительность, сбой → код 0) — одна, в `page_fetch.py`. Отдельный `page_fetch.py` — допущение в разделе 6 описания PR #2 |
+| прогон (дирижёр); правила обхода — отдельно | `crawl.py`: правила сверху, дирижёр ниже | правил ~15 коротких функций, отдельный файл — лишний переход для читателя; так устроены модули land_monitor (`backup.py`: правила сверху, края внизу) |
 | геометрия; файл клеток — отдельно | `geometry.py`, край внизу | тест-план держит их в одной части Б (кейсы 21.14 и 21.22); файл клеток — данные геометрии |
-| настройки — один dataclass | `Settings` в `night.py` | его читают только ночь и запуск. Константы контракта ЦИАН (28, 54, маркеры) — не настройки, остаются в `serp.py`. Допуск площади ребёнка 0,001 км² — в `geometry.py`: сигнатура `make_children` закреплена тестами |
+| настройки — один dataclass | `Settings` в `crawl.py` | его читают только обход и запуск. Константы контракта ЦИАН (28, 54, маркеры) — не настройки, остаются в `search_page.py`. Исключения из правила чисел (CLAUDE.md §6): `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в `transport.py` (нужны обеим реализациям, а `search_page` они не импортируют); умолчания аргументов запуска — в `cian_collect.py`; допуск площади ребёнка 0,001 км² — в `geometry.py` (сигнатура `make_children` закреплена тестами) |
+| края ночи одним объектом (`Edges`, PR #121) | `Crawl(crawl_input, fetcher, clock, rnd)` | в PR #2 `Edges` убран: каждый кусок внешнего мира идёт своим аргументом, неизменяемые входы собраны в `CrawlInput` (предел 5 аргументов) |
 | контракт ЦИАН, папка прогона | как в отправной точке | — |
 
-Итого 6 файлов кода вместо 8. Структура повторяет разделы `tests/test_collector.py`: А (разбор ответа) → `serp`, Б (геометрия) → `geometry`, В (сеть) → `net`, Г (сценарии прогона) → `night`, Д (`main`) → `cian_collect`; формат папки прогона (эталонные ночи и контракт формата 21.79 в `tests/test_collector_nights.py`) → `run_folder`.
+Итого 9 файлов кода. Структура повторяет тесты: в `tests/test_collector.py` А (разбор ответа) → `search_page`, Б (геометрия и ссылка) → `geometry`, В (запрос страницы над транспортом) → `page_fetch`, Г (сценарии прогона) → `crawl`, Д (`main`) → `cian_collect`, Е — страж 21.78; сами транспорты — `tests/test_collector_transport.py` (один набор «тот же вход → тот же ответ» для urllib и httpx); формат папки прогона (эталонные ночи и контракт формата 21.79 в `tests/test_collector_nights.py`) → `run_folder`.
 
 ### 2.3. Зависимости
 
 ```mermaid
 flowchart LR
     cc["cian_collect.py — запуск и края"]
-    net["net.py — сеть"]
-    night["night.py — ночь"]
-    serp["serp.py — контракт ЦИАН"]
+    crawl["crawl.py — обход"]
+    page_fetch["page_fetch.py — запрос страницы"]
+    transport["transport.py — интерфейс сети"]
+    urllib_t["urllib_transport.py"]
+    httpx_t["httpx_transport.py"]
+    search_page["search_page.py — контракт ЦИАН"]
     geometry["geometry.py — геометрия, файл клеток"]
     run_folder["run_folder.py — папка прогона"]
-    cc -->|"создаёт Fetcher(ua, cookie_header)"| net
-    cc -->|"создаёт Night, передаёт Ticket и Edges: get_serp, sleep, now, rnd"| night
+    cc -->|"Settings, Ticket, Clock, CrawlInput, Crawl"| crawl
+    cc -->|"PageFetcher(transport, ua, has_ticket, monotonic)"| page_fetch
+    cc -->|"тип Transport"| transport
+    cc -->|"UrllibTransport(cookie_header)"| urllib_t
+    cc -.->|"только при --transport httpx, внутри make_httpx"| httpx_t
     cc -->|"load_sectors, infer_tile_grid"| geometry
-    net -->|"Response, SERP_HOST"| serp
-    night -->|"ссылка, classify_serp, Response"| serp
-    night -->|"джиттер, дети деления, update_tiles_file"| geometry
-    night -->|"запись файлов, PageAnswer, RunPaths"| run_folder
+    crawl -->|"тип PageFetcher"| page_fetch
+    crawl -->|"page_url, classify_page, вердикты"| search_page
+    crawl -->|"джиттер, дети деления, update_tiles_file"| geometry
+    crawl -->|"запись файлов, PageAnswer, RunPaths"| run_folder
+    page_fetch -->|"Transport, HttpReply, NetworkFailure"| transport
+    page_fetch -->|"CIAN_BASE_URL (Referer стр. 1)"| search_page
+    urllib_t -->|"HttpReply, NetworkFailure, помощники"| transport
+    httpx_t -->|"HttpReply, NetworkFailure, помощники"| transport
 ```
 
-Стрелка — «импортирует». `night` не знает о `net`: запрос выдачи приходит к нему функцией `edges.get_serp` (это метод `Fetcher.get_serp`).
+Стрелка — «импортирует». `crawl` не знает ни одной реализации транспорта: `PageFetcher` с готовым транспортом ему передаёт `main`.
+
+**Путь одного запроса** (`Crawl.request`):
+1. `search_page.page_url(ring, page)` — ссылка; Referer — ссылка страницы `page − 1` с тем же джиттером.
+2. `PageFetcher.fetch(url, referer)` — заголовки браузера (`browser_headers`), затем `transport.get(url, headers)` → `HttpReply` (код, заголовки, байты) или `NetworkFailure`.
+3. `page_fetch.reply_text` распаковывает тело → `FetchedPage(code, body, size, ms, neterr, headers)`; сбой — код 0 и `neterr`.
+4. `search_page.classify_page(code, body, neterr, page, location, waf)` → `Classified(verdict, detail, total, offers)`.
+5. `run_folder.PageAnswer` → запись: страница при OK, `_broken_*` при API_CHANGED с телом (к детали — `|saved:<имя>`), `_block_*` при BLOCK; затем id объявлений.
+6. Дальше решает `Crawl`: учёт страницы, деление, повтор после сбоя сети (`task_state`, паузы `Settings.net_retry_pauses`) или стоп. Один `fetch` — один вызов транспорта; каждая попытка — строка `night.log`, задача в `plan.json` и единица бюджета.
 
 ### 2.4. Где сеть, диск, время и случайность
 
 | Внешний мир | Где живёт | Как попадает внутрь |
 |---|---|---|
-| сеть | `net.Fetcher` (urllib, тайм-аут 45 с, без редиректов, банк кук) | `main` создаёт `net.Fetcher`; `Night` получает только `edges.get_serp` |
-| длительность запроса | `time.monotonic` в `net` | поле `ms` в `Response` |
-| время стены | `cian_collect.now_local()` = `datetime.now().astimezone()` | `edges.now`: метка папки, первая колонка лога, `split_at`, ЧЧММСС служебных файлов |
-| сон | `time.sleep` в `cian_collect` | `edges.sleep` — паузы между запросами и перед повторами; пауза старта — `wait_start` в `main` |
+| сеть | `UrllibTransport` (по умолчанию) или `HttpxTransport` — тайм-аут 45 с, без редиректов, банк кук | `main` создаёт транспорт через `transport_factory` (по умолчанию `make_transport`) и кладёт его в `PageFetcher`; `Crawl` получает только `fetcher` |
+| длительность запроса | `time.monotonic` в `cian_collect` | аргумент `monotonic` у `PageFetcher`; ровно два вызова на запрос (до и после разбора тела) → поле `ms` в `FetchedPage` |
+| время стены | `cian_collect.now_local()` = `datetime.now().astimezone()` | `clock.now`: метка папки, первая колонка лога, `split_at`, ЧЧММСС служебных файлов |
+| сон | `time.sleep` в `cian_collect` | `clock.sleep` — пауза старта (`wait_start`), паузы между запросами и перед повторами |
 | возраст кук | `time.time()` в `main` | аргумент `now_ts` у `read_ticket` |
-| случайность | `random.Random(seed)` в `main`; seed без `--seed` — `random.randrange` в `parse_settings` | `edges.rnd`; `wait_start`, `read_ticket` и `geometry.jitter_ring` получают `rnd` аргументом |
-| диск | `run_folder.py`; низ `geometry.py`; в `cian_collect` — билет (`read_ticket`) и проверка, что файл клеток есть | `Night` зовёт `run_folder` и `geometry.update_tiles_file` |
+| случайность | `random.Random(seed)` в `main`; seed без `--seed` — `random.randrange` в `parse_settings` | аргумент `rnd` у `Crawl`, `wait_start`, `read_ticket`, `geometry.jitter_ring`; порядок вызовов — как в 1.4 |
+| диск | `run_folder.py`; низ `geometry.py`; в `cian_collect` — билет (`read_ticket`), проверки `check_args` (файлы `--cookies`/`--ua` есть и не пусты) и что файл клеток есть | `Crawl` зовёт `run_folder` и `geometry.update_tiles_file` |
 | stdout | `run_folder.append_log` (эхо строк); `cian_collect` (сетка, пауза старта, итог) | — |
 
-Чистые: `serp.py` целиком, `geometry.py` без двух функций файла, тексты служебных файлов в `run_folder.py`. Без внешнего мира: правила вверху `night.py` (часть из них, например `absorb_page`, меняет переданную клетку).
+Чистые: `search_page.py` целиком, `transport.py`, `geometry.py` без двух функций файла, тексты служебных файлов в `run_folder.py`, `page_fetch.browser_headers` и `decode_body`. Без внешнего мира: правила вверху `crawl.py` (часть из них, например `absorb_page`, меняет переданную клетку) и `PageFetcher` (сеть и часы ему переданы).
 
-Точки подмены в тестах: `net.Fetcher` (сценарии через `main`), `net.time` (длительность), `net.decode_body` (21.27, 21.29), `cian_collect.time` (`time`, `sleep`), `cian_collect.datetime`, `cian_collect.random` (`Random`, `randrange`), `night.Night.sleep_between` (21.36). Поэтому `main` берёт `net.Fetcher` по имени модуля в момент вызова, а `net` зовёт `decode_body` и `time.monotonic` через имена своего модуля: подмена теста доходит до кода.
+Точки подмены в тестах:
+- `cian_collect.main(transport_factory=…)` — сценарии через `main` получают фальшивый транспорт `FakeTransport` (`tests/collector_support.py`); эталонные ночи — настоящий `UrllibTransport` с проигрывателем ЦИАН в атрибуте `opener`;
+- `crawl.Crawl(CrawlInput, fetcher, Clock(now, sleep), rnd)` — обход без `main` (помощник `make_crawl`);
+- `cian_collect.time` (`time`, `sleep`, `monotonic`), `cian_collect.datetime`, `cian_collect.random` (`Random`, `randrange`): `main` берёт их по имени модуля в момент вызова, поэтому подмена теста доходит до `Clock` и `PageFetcher`;
+- `page_fetch.decode_body` (21.27, 21.29): `reply_text` зовёт её по имени модуля;
+- `crawl.Crawl.sleep_between` (подглядывание в 21.36);
+- в `tests/test_collector_transport.py`: `UrllibTransport.opener` (обработчик-«провод» вместо сети) и `HttpxTransport(…, network=httpx.MockTransport(…))`. Автофикстура `no_network` запрещает ещё `socket.create_connection` и `socket.socket.connect` — httpx ходит мимо `http.client`.
 
-Страж (кейс 21.78 тест-плана, `test_21_78_*` в конце `tests/test_collector.py`; разбор исходников модулем `ast`):
-- `night.py`, `serp.py`, `geometry.py`, `run_folder.py` не импортируют `time`, `socket`, `urllib.request`, `urllib.error`, `http`;
-- они же и `net.py` не обращаются к `datetime.now`, `.today`, `.utcnow` и к модулю `random` (тип `random.Random` в подсказках можно);
-- `night.py` и `serp.py` не зовут `open`, не обращаются к `os.*` (кроме `os.path.basename`), не импортируют `gzip`, `io`, `pathlib`, `shutil` и не печатают в stdout — диск только в `run_folder.py` и низу `geometry.py`;
-- `net.py` не зовёт `open` (встроенный, `gzip.open`, `Path.open`; HTTP-запрос `<…>.opener.open` — не диск) и `os.*`, не импортирует `io`, `pathlib`, `shutil` и имён из `os`, не печатает в stdout; `gzip` и `zlib` — только раскодирование тела в памяти;
-- `cian_collect` никем в пакете не импортируется; `net` не импортирует никто, кроме `cian_collect`; `socket`, `urllib.request`, `urllib.error`, `http` не импортирует ни один модуль, кроме `net` (и `cian_collect` тоже нет);
-- в пакете нет относительных импортов; `serp`, `geometry`, `run_folder` не импортируют никого из пакета;
+Страж (кейс 21.78 тест-плана, раздел Е в конце `tests/test_collector.py`; разбор исходников модулем `ast`):
+- модули на диске — ровно перечисленные стражем: лишний (например, оставшийся `net.py`) или неучтённый новый не пройдёт;
+- `crawl`, `search_page`, `geometry`, `run_folder`, `transport`, `page_fetch` не импортируют `time`, `socket`, `urllib.request`, `urllib.error`, `http`; реализации транспорта не импортируют `time`;
+- все они и реализации транспорта не обращаются к `datetime.now`, `.today`, `.utcnow` и к модулю `random` (тип `random.Random` в подсказках можно);
+- `crawl`, `search_page`, `transport` не зовут `open`, не обращаются к `os.*` (кроме `os.path.basename`), не импортируют `gzip`, `io`, `pathlib`, `shutil` и не печатают в stdout — диск только в `run_folder.py` и низу `geometry.py`;
+- `page_fetch` не зовёт `open` и `os.*`, не импортирует `io`, `pathlib`, `shutil` и имён из `os`, не печатает; `gzip` и `zlib` — только распаковка в памяти;
+- реализации транспорта не зовут `open` (HTTP-запрос `<…>.opener.open` — не диск) и `os.*`, не импортируют `gzip`, `io`, `pathlib`, `shutil` и имён из `os`, не печатают: тело приносят байтами;
+- `cian_collect` никем в пакете не импортируется; реализации транспорта — никем, кроме `cian_collect`; сеть stdlib — только в `urllib_transport`, `httpx` — только в `httpx_transport`; `httpx_transport` в `cian_collect` — только внутри функции;
+- порядок слоёв: `crawl` берёт из пакета только `page_fetch`, `search_page`, `geometry`, `run_folder` (`transport` и реализации транспорта — нет); `page_fetch` — только `transport` и `search_page`, реализации транспорта — только `transport`;
+- в пакете нет относительных импортов; `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого из пакета;
 - проба стража на образцах: каждое нарушение находится, образец разрешённого — нет.
 
 ### 2.5. Данные
 
 | Тип | Поля | Где |
 |---|---|---|
-| `Settings` (frozen dataclass) | из argv: `budget`, `window_hours`, `tiles_path`, `runs_dir`, `smoke_only`, `start_delay`, `seed`; умолчания — нынешние константы: `split_threshold=400`, `max_split_level=3`, `start_jitter_max_s=2400`, `interval_spread=0.40`, `inter_tile_pause=(1.5, 3.0)`, `net_retry_pauses=((60,120),(150,240),(300,420))`, `smoke_pool_size=5`, `smoke_max_tries=2`, `smoke_min_area_km2=15`, `cookies_file="cookies.txt"`, `ua_file="ua.txt"`. Свойство `tile_mode` (порог деления больше 0). Поля `fast` нет: `--fast` убран (вопрос 1) | `night.py` |
-| `Ticket` | `cookie_header: str \| None`, `ua: str`, `age_h: float \| None`; свойство `has_ticket` | `night.py` |
-| `Edges` | `get_serp: Callable[[str, str \| None], serp.Response]`, `rnd`, `now`, `sleep` — только связь с внешним миром; билет идёт в `Night` отдельным аргументом | `night.py` |
-| `TileState` (клетка сбора) | `name`, `status`, `area_km2`, `ring` (с джиттером), `ring_canonical`, `level`, `parent`, `base`, `split`, `children`, `total_offers`, `pages_planned`, `pages_done`, `ids`, `dup_ids`, `served_end` — бывший словарь `Night.sectors[key]` | `night.py` |
-| `PageTask` | `sector`, `page`, `kind`, `origin`, `attempts`, `state`, `detail` — в этом порядке, он же порядок ключей в `done` | `night.py` |
-| `NightState` | `spent`, `stopped`, `stop_class`, `stop_detail`, `smoke`, `split_events`, `done`, `pending` | `night.py` |
+| `Settings` (frozen dataclass) | из argv, без умолчаний: `budget`, `window_hours`, `tiles_path`, `runs_dir`, `smoke_only`, `start_delay`, `seed`, `transport` (`"urllib"`/`"httpx"`), `cookies_file`, `ua_file` (умолчания `cookies.txt`, `ua.txt` подставляет `parse_settings`); пороги с умолчаниями: `split_threshold=400`, `max_split_level=3`, `start_jitter_max_s=2400`, `interval_spread=0.40`, `inter_tile_pause=(1.5, 3.0)`, `net_retry_pauses=((60,120),(150,240),(300,420))`, `smoke_pool_size=5`, `smoke_max_tries=2`, `smoke_min_area_km2=15`. Свойство `tile_mode` (порог деления больше 0). Поля `fast` нет: `--fast` убран (вопрос 1) | `crawl.py` |
+| `Ticket` (frozen dataclass) | `cookie_header: str \| None`, `ua: str`, `age_h: float \| None`; свойство `has_ticket` | `crawl.py` |
+| `Clock` (frozen dataclass) | `now: Callable[[], datetime]`, `sleep: Callable[[float], None]` — единственный путь времени стены и сна в обход; в `main` — `Clock(now=now_local, sleep=time.sleep)`. Protocol нет: реализация одна и без состояния | `crawl.py` |
+| `CrawlInput` (frozen dataclass) | `settings`, `ticket`, `raw_tiles: list[dict]`, `grid: dict` — неизменяемые входы обхода, собраны из-за предела 5 аргументов; `Crawl.__init__` сразу раскладывает их в атрибуты. Внешний мир (`fetcher`, `clock`, `rnd`) идёт в `Crawl` отдельно | `crawl.py` |
+| `TileState` (клетка сбора) | `name`, `status`, `area_km2`, `ring` (с джиттером), `ring_canonical`, `level`, `parent`, `base`, `split`, `children`, `total_offers`, `pages_planned`, `pages_done`, `ids`, `dup_ids`, `served_end` | `crawl.py` |
+| `PageTask` | `sector`, `page`, `kind`, `origin`, `attempts`, `state`, `detail` — в этом порядке, он же порядок ключей в `done` | `crawl.py` |
+| `CrawlState` | `spent`, `stopped`, `stop_class`, `stop_detail`, `smoke`, `split_events`, `done`, `pending` | `crawl.py` |
+| `HttpReply` (frozen dataclass) | `status: int`, `headers: dict[str, str]` (имена в нижнем регистре, у повтора — первое значение), `body: bytes` — ответ как с провода, без распаковки; ответ-ошибка (3xx–5xx) — тоже `HttpReply` | `transport.py` |
+| `NetworkFailure` (исключение) | текст — деталь сбоя: `timeout`, `urlerror:<причина>`, `oserror:<текст>`; `page_fetch` бросает его же при битом сжатии ответа 2xx — `decode:<текст>` | `transport.py` |
+| `FetchedPage` (NamedTuple) | `code`, `body: str`, `size` (байт с провода), `ms`, `neterr`, `headers` — ответ `PageFetcher.fetch`; при сбое — код 0, тело пусто, заголовков нет, `neterr` — деталь | `page_fetch.py` |
+| `Classified` (NamedTuple) | `verdict`, `detail`, `total`, `offers` — итог `classify_page` | `search_page.py` |
+| `PageAnswer` (frozen dataclass) | `key`, `page`, `kind`, `verdict`, `detail`, `code`, `total`, `ids`, `size`, `ms`, `body`, `headers` — ответ на один запрос: строка лога, учёт страницы и вход записи `_broken_*` и `_block_*`. Лежит в `run_folder.py`, потому что `run_folder` не импортирует никого из пакета, а `crawl` его импортирует | `run_folder.py` |
 | `RunPaths` | `folder`, `raw`, `log`, `plan`, `summary`, `polygons` | `run_folder.py` |
-| `PageAnswer` (frozen dataclass) | `key`, `page`, `kind`, `verdict`, `detail`, `code`, `total`, `ids`, `size`, `ms`, `body`, `headers` — ответ на один запрос: строка лога, учёт страницы и вход записи `_broken_*` и `_block_*` (бывший кортеж `Night.request` и аргументы `save_broken`/`save_block`). Лежит в `run_folder.py`, потому что `run_folder` не импортирует никого из пакета, а `night` его импортирует | `run_folder.py` |
-| `Response`, `Classified` (NamedTuple) | ответ `net.Fetcher.get_serp` (`code`, `body`, `size`, `ms`, `neterr`, `headers`; при сбое сети и битом сжатии ответа 200 — код 0, тело пусто, `neterr` — деталь) и итог `classify_serp` (`verdict`, `detail`, `total`, `offers`); `Response` из `serp` берут и `net`, и `night` (тип `Edges.get_serp`) — поэтому он в листе `serp`, а не в `net` | оба — `serp.py` |
 
-`Response` и `Classified` — кортежи с именами полей: тесты сравнивают их с обычными кортежами, срезают `[:2]`, распаковывают — всё работает без правок тестов. Файл клеток остаётся списком словарей: `load_sectors` закреплён тестом 21.14. `TileState` строится из него в `Night`. Ключ `sector` в файлах прогона и файле клеток — историческое имя формата, означает клетку сбора, не сектор показа.
+Три типа ответа — три ступени, не путать: `HttpReply` (транспорт: байты с провода) → `FetchedPage` (`page_fetch`: текст, длительность, сбой как код 0) → `PageAnswer` (`crawl`: вердикт разбора, id, вход записи файлов). `FetchedPage` и `Classified` — кортежи с именами полей: тесты сравнивают их с обычными кортежами и распаковывают. Файл клеток остаётся списком словарей: `load_sectors` закреплён тестом 21.14; `TileState` строится из него в `Crawl`. Ключ `sector` в файлах прогона и файле клеток — историческое имя формата, означает клетку сбора, не сектор показа.
 
 ### 2.6. Основные функции
 
 ```python
-# cian_collect.py
-def main() -> None
+# cian_collect.py — запуск и края
+def main(transport_factory: Callable[[str, str | None], Transport] = make_transport) -> None
 def parse_settings(argv: list[str]) -> Settings          # seed — random.randrange(2**31), если нет --seed
+def build_parser() -> argparse.ArgumentParser
+def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None   # код 2 до паузы старта (21.81, 21.82)
+def make_transport(name: str, cookie_header: str | None) -> Transport   # TRANSPORTS[name].make(cookie_header); незнакомое имя — ValueError
+def make_urllib(cookie_header: str | None) -> Transport  # UrllibTransport
+def make_httpx(cookie_header: str | None) -> Transport   # HttpxTransport; импорт httpx_transport внутри функции
 def read_ticket(settings: Settings, now_ts: float, rnd: random.Random) -> Ticket
-def wait_start(settings: Settings, rnd: random.Random) -> None
+def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None
 def now_local() -> datetime
 def print_grid(grid: dict, settings: Settings) -> None
 def print_summary(report: dict, folder: str) -> None            # report — словарь summary.json
 USER_AGENTS: list[str]                                   # запасной UA билета: нет ua.txt — случайный из трёх
-RUNS_DIR, BUDGET, WINDOW_HOURS                           # умолчания аргументов запуска
+RUNS_DIR, BUDGET, WINDOW_HOURS, TRANSPORT, COOKIES_FILE, UA_FILE   # умолчания аргументов запуска
+class TransportChoice                                    # library: str | None (None — stdlib), make: Callable[[str | None], Transport]
+TRANSPORTS: dict[str, TransportChoice]                   # urllib, httpx: choices --transport, проверка библиотеки, создание (решение Андрея 12.11)
 
-# net.py — вся сеть
+# transport.py — интерфейс сети
 HTTP_TIMEOUT_S = 45
-class Fetcher:
-    def __init__(self, user_agent: str, cookie_header: str | None = None) -> None
-    def get_serp(self, url: str, referer: str | None = None) -> Response   # Response — из serp; сбой — код 0 и neterr
-def decode_body(raw: bytes, content_encoding: str | None) -> str          # gzip/deflate; битое сжатие — исключение, его ловит Fetcher
+COOKIE_DOMAIN = ".cian.ru"
+class Transport(Protocol):
+    def get(self, url: str, headers: dict[str, str]) -> HttpReply   # сбой — NetworkFailure
+class HttpReply                     # status, headers, body (bytes)
+class NetworkFailure(Exception)     # str — деталь сбоя
 def parse_cookie_header(header: str) -> list[tuple[str, str]]
-def seed_jar(jar: http.cookiejar.CookieJar, header: str, domain: str = ".cian.ru") -> None
-def lower_headers(headers) -> dict
+def lower_headers(pairs: Iterable[tuple[str, str]]) -> dict[str, str]
+
+# urllib_transport.py
+class UrllibTransport:
+    def __init__(self, cookie_header: str | None) -> None      # атрибут opener — точка подмены в тестах
+    def get(self, url: str, headers: dict[str, str]) -> HttpReply
+def seed_jar(jar: http.cookiejar.CookieJar, header: str, domain: str = COOKIE_DOMAIN) -> None
 class NoRedirect(urllib.request.HTTPRedirectHandler)
 
-# serp.py — сигнатуры как сейчас (закреплены тестами)
-class Response(NamedTuple)          # code, body, size, ms, neterr, headers
+# httpx_transport.py
+class HttpxTransport:
+    def __init__(self, cookie_header: str | None, network: httpx.BaseTransport | None = None) -> None
+    def get(self, url: str, headers: dict[str, str]) -> HttpReply
+
+# page_fetch.py — запрос страницы над транспортом
+class FetchedPage(NamedTuple)       # code, body, size, ms, neterr, headers
+class PageFetcher:
+    def __init__(self, transport: Transport, user_agent: str, has_ticket: bool,
+                 monotonic: Callable[[], float]) -> None
+    def fetch(self, url: str, referer: str | None = None) -> FetchedPage   # сбой — код 0 и neterr
+def browser_headers(user_agent: str, referer: str | None, has_ticket: bool) -> dict[str, str]
+def decode_body(raw: bytes, content_encoding: str | None) -> str          # gzip/deflate; битое сжатие — исключение
+def reply_text(reply: HttpReply) -> str     # битое сжатие 2xx — NetworkFailure("decode:…"), иначе сырые байты
+
+# search_page.py — сигнатуры закреплены тестами
 class Classified(NamedTuple)        # verdict, detail, total, offers
-def build_serp_url(ring, page: int = 1) -> str
+CIAN_BASE_URL = "https://www.cian.ru"
+OFFERS_PER_PAGE = 28
+MAX_PAGES = 54
+def page_url(ring, page: int = 1) -> str
 def extract_initial_state(html: str) -> dict | None
 def get_path(obj, path: str)
 def missing_fields(offers: list) -> list[str]
-def classify_serp(code: int, body: str, neterr: str | None = None, page: int = 1,
+def classify_page(code: int, body: str, neterr: str | None = None, page: int = 1,
                   location: str | None = None, waf: str | None = None) -> Classified
 def offer_ids(offers: list) -> list[int]
 def pages_for(total: int | None) -> int
@@ -276,7 +346,7 @@ def densify_ring(ring, min_unique: int = 12) -> list[tuple[float, float]]
 def make_children(parent_key: str, parent_ring, parent_level: int, grid: dict, base=None) -> list[dict]
 def update_tiles_file(path: str, parent_key: str, children: list[dict], split_at: str) -> None
 
-# night.py — правила (без внешнего мира)
+# crawl.py — правила (без внешнего мира)
 def mean_interval(window_hours: float, budget: int) -> float
 def pause_bounds(mean: float, factor: float, spread: float) -> tuple[float, float]
 def smoke_pool(tiles: dict[str, TileState], min_area_km2: float, size: int) -> list[str]
@@ -290,15 +360,15 @@ def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]
 def tile_plan_entry(tile: TileState) -> dict
 def tile_summary(tile: TileState) -> dict
 def task_entry(task: PageTask) -> dict
-def plan_payload(state: NightState, settings: Settings, ticket: Ticket, started_at: datetime,
+def plan_payload(state: CrawlState, settings: Settings, ticket: Ticket, started_at: datetime,
                  tiles: dict[str, TileState]) -> dict
-def summary_report(state: NightState, settings: Settings, ticket: Ticket, started_at: datetime,
+def summary_report(state: CrawlState, settings: Settings, ticket: Ticket, started_at: datetime,
                    tiles: dict[str, TileState]) -> dict
 
-# night.py — дирижёр
-class Night:
-    def __init__(self, settings: Settings, raw_tiles: list[dict], grid: dict, ticket: Ticket,
-                 edges: Edges) -> None
+# crawl.py — дирижёр
+class Crawl:
+    def __init__(self, crawl_input: CrawlInput, fetcher: page_fetch.PageFetcher,
+                 clock: Clock, rnd: random.Random) -> None
     def run(self) -> dict                                             # словарь summary.json; папка — self.paths.folder
     def smoke(self) -> bool
     def crawl_tile(self, key: str) -> bool
@@ -331,12 +401,13 @@ def write_summary(paths: RunPaths, report: dict) -> None
 
 ```
 ~/calib2/
-    collector/  __init__.py  cian_collect.py  net.py  night.py  serp.py  geometry.py  run_folder.py
+    collector/  __init__.py  cian_collect.py  crawl.py  page_fetch.py  transport.py
+                urllib_transport.py  httpx_transport.py  search_page.py  geometry.py  run_folder.py
     status.py                      — рядом с runs/, как сейчас: он делает chdir в свою папку и ищет runs/2*
     cookies.txt  ua.txt  cian_collect_tiles_v0_3.geojson  runs/  grid_night.out  grid_day.out
 ```
 
-Строки cron — ночная и дневная, обе меняются (данные и билет по-прежнему берутся из текущей папки; аргументы — как сейчас, `collector/README.md`, «Расписание»):
+Строки cron — ночная и дневная, обе меняются (данные и билет по-прежнему берутся из текущей папки: без `--cookies` и `--ua` — `cookies.txt` и `ua.txt`; транспорт — по умолчанию urllib; аргументы — как сейчас, `collector/README.md`, «Расписание»):
 
 ```
 0 0 * * * cd /home/andrew/calib2 && python3 -m collector.cian_collect --budget 550 --window-hours 7 --geojson cian_collect_tiles_v0_3.geojson >> grid_night.out 2>&1
@@ -346,8 +417,26 @@ def write_summary(paths: RunPaths, report: dict) -> None
 - **Что копировать:** только `.py` пакета `collector/` (без тестов) и `status.py`.
 - **Откат:** старый `cian_calib.py` остаётся рядом, переключение — строкой cron.
 - **Поиск процесса:** у `python3 -m collector.cian_collect` другая строка процесса. Поиск в `status.py` (кейс 21.74) и проверку «окна правок» в README (`pgrep -af "^python3 cian_"`) нужно поменять в той же выкатке.
-- **Python:** системный `python3` сервера — 3.12.3 (проверено Андреем 10.11), совпадает с `target-version = "py312"` ruff; только стандартная библиотека.
+- **Python:** системный `python3` сервера — 3.12.3 (проверено Андреем 10.11), совпадает с `target-version = "py312"` ruff. С транспортом по умолчанию (urllib) — только стандартная библиотека, httpx на сервер не ставится; `httpx_transport.py` копируется вместе с пакетом, но без `--transport httpx` не импортируется.
 - **Вариант с клоном репозитория** (вместо копии пакета): код лежит клоном ads_collector (например, `~/projects/ads_collector`), cron — `cd /home/andrew/calib2 && PYTHONPATH=/home/andrew/projects/ads_collector python3 -m collector.cian_collect …`; данные остаются в `~/calib2`. Какой вариант — решается в задаче выкатки.
+
+### 2.8. Словарь имён
+
+Термины — CLAUDE.md §10. Здесь — что есть что в коде и как это называлось до PR #2 (старые имена встречаются в разделах 1, 3–9 и в истории git).
+
+| Сейчас | Что это | До PR #2 |
+|---|---|---|
+| `crawl.py`, `Crawl`, `CrawlState` | обход: дирижёр и его изменяемое состояние | `night.py`, `Night`, `NightState` |
+| `CrawlInput` | неизменяемые входы обхода: настройки, билет, клетки, сетка | аргументы `Night` по одному |
+| `Clock` (`now`, `sleep`) | часы обхода | часть `Edges` |
+| `fetcher`, `rnd` — аргументы `Crawl` | запрос страницы и случайность | часть `Edges` (`get_serp`, `rnd`) |
+| `search_page.py`, `page_url`, `classify_page`, `CIAN_BASE_URL` | контракт страницы поиска ЦИАН | `serp.py`, `build_serp_url`, `classify_serp`, `SERP_HOST` |
+| `transport.py`, `Transport`, `HttpReply`, `NetworkFailure` | интерфейс сети и сырой ответ | — (сеть была одним классом) |
+| `UrllibTransport`, `HttpxTransport` | реализации транспорта | `net.Fetcher` (только urllib) |
+| `page_fetch.PageFetcher.fetch`, `FetchedPage` | запрос страницы над транспортом и его итог | `net.Fetcher.get_serp`, `serp.Response` |
+| `page_fetch.decode_body` | распаковка тела | `net.decode_body` (раньше — `Fetcher._decode`) |
+
+На диске имена не менялись: `night.log`, ключ `"night"` в `plan.json` и `summary.json`, метка папки — формат `docs/CIAN_DATA_FORMAT.md`.
 
 ## 3. Что не меняется
 

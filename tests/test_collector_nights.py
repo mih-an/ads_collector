@@ -9,13 +9,13 @@
 записала про эти клетки. Контракт формата (21.79) проверяет папки
 проигрываний по разделу 7 docs/reference/collector_architecture.md, без
 загрузчика land-monitor; проба контракта портит чистую папку. Сети нет:
-ответы отдаёт CianPlayer через подменённый net.Fetcher; часы net.time и
-cc.time — один FakeTime.
+main получает фабрику player_transport — настоящий UrllibTransport, в opener
+которого вместо сети CianPlayer; часы cc.time (сон, возраст кук и
+monotonic — длительность запроса) — один FakeTime.
 """
 
 import gzip
 import hashlib
-import http.client
 import json
 import lzma
 import re
@@ -31,14 +31,14 @@ from collector_support import (  # noqa: F401 — no_network: автофикст
     CianPlayer,
     FakeTime,
     Reply,
+    forbid_network,
     frozen_datetime,
     no_network,
-    player_fetcher,
+    player_transport,
     write_ticket,
 )
 
 import collector.cian_collect as cc
-from collector import net
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "collector"
@@ -59,7 +59,7 @@ TEXT_FILES = ("night.log", "plan.json", "summary.json")
 RUN_FILES = ["night.log", "plan.json", "polygons.geojson.gz", "raw", "summary.json"]
 
 # Тело синтетических ответов-ошибок. Почему синтетическое (data-checker
-# 10.11): HTML сохраняется только при OK (Night.request); тел
+# 10.11): HTML сохраняется только при OK (Crawl.request); тел
 # 301/500/553 и тайм-аутов в 101 прогоне data/runs нет. Сборщику важен код.
 ERROR_BODY = b"<html>error</html>"
 
@@ -151,16 +151,13 @@ def replay_night(
     replies = night_replies(night) | (replace_replies or {})
     player = CianPlayer(tiles, replies)
     monkeypatch.chdir(work_dir)
-    monkeypatch.setattr(net, "Fetcher", player_fetcher(net.Fetcher, player))
-    # одни часы на оба модуля: monotonic (ms= в night.log) зовёт net, time и
-    # sleep — cc
-    clock = FakeTime(start.timestamp())
-    monkeypatch.setattr(net, "time", clock)
-    monkeypatch.setattr(cc, "time", clock)
+    # одни часы на всё: monotonic (ms= в night.log) main передаёт в
+    # PageFetcher, time и sleep — свои у cc
+    monkeypatch.setattr(cc, "time", FakeTime(start.timestamp()))
     monkeypatch.setattr(cc, "datetime", frozen_datetime(start))
     argv = night_argv(night.meta, tiles, work_dir / "runs")
     monkeypatch.setattr(sys, "argv", argv + list(extra_args))
-    cc.main()
+    cc.main(transport_factory=player_transport(player))
     (run_dir,) = (work_dir / "runs").iterdir()
     return Replayed(run_dir, tiles, night, player)
 
@@ -810,10 +807,6 @@ def test_21_79_run_folder_contract(name, tmp_path, monkeypatch):
     assert (run_folder_violations(run.run_dir), summary["stopped"]) == ([], stopped)
 
 
-def refuse_connect(*args: object, **kwargs: object) -> None:
-    raise AssertionError("сеть в тестах запрещена")
-
-
 @pytest.fixture(scope="module")
 def clean_night_dir(tmp_path_factory) -> Path:
     """Папка прогона чистой ночи 10-07 (деление, дно, 301), проигранной один
@@ -822,8 +815,7 @@ def clean_night_dir(tmp_path_factory) -> Path:
     функцию и сюда не доходит, поэтому запрет сети ставится здесь же."""
     work = tmp_path_factory.mktemp("clean_night")
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(http.client.HTTPConnection, "connect", refuse_connect)
-        mp.setattr(http.client.HTTPSConnection, "connect", refuse_connect)
+        forbid_network(mp)
         return replay_night(NIGHTS_DIR / "2026-10-07_0013", work, mp).run_dir
 
 

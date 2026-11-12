@@ -1,32 +1,49 @@
 """Общие помощники тестов сборщика ЦИАН (модуль 21): без сети, без ожиданий.
 
-Используются tests/test_collector.py, tests/test_collector_nights.py и
-tests/test_collector_status.py. Здесь только то, что нужно двум и больше
-файлам: запрет сети, подставные часы (FakeTime, frozen_datetime), билет во
-временной папке и проигрыватель ответов ЦИАН (Reply, CianPlayer,
-player_fetcher). Кода сборщика не меняет: подмены ставит monkeypatch теста.
+Используются tests/test_collector.py, tests/test_collector_nights.py,
+tests/test_collector_transport.py и tests/test_collector_status.py. Здесь
+две группы. Общее для нескольких файлов: запрет сети, подставные часы
+(FakeTime, frozen_datetime), билет во временной папке, ответ ЦИАН Reply.
+И подмены сети одного файла, собранные рядом с общими: фальшивый
+транспорт FakeTransport — только сценарии обхода test_collector.py;
+проигрыватель ответов ЦИАН CianPlayer с фабрикой player_transport — только
+эталонные ночи test_collector_nights.py (на настоящем UrllibTransport).
+Кода сборщика не меняет.
 
 Что сборщик обязан сохранить, чтобы эти подмены работали (cc —
-collector.cian_collect, net — collector.net): net.Fetcher (класс:
-Fetcher(user_agent, cookie_header) с атрибутом opener — urllib
-OpenerDirector; main создаёт его по имени модуля), net.time (monotonic —
-длительность запроса), cc.time (time, sleep), cc.datetime (now, astimezone,
-strftime, isoformat) и cc.main(). net.time и cc.time тест подменяет одним
-FakeTime.
+collector.cian_collect): cc.main(transport_factory=...) — фабрика зовётся
+как factory(имя транспорта, строка Cookie или None) и отдаёт транспорт с
+методом get(url, headers) → transport.HttpReply; urllib_transport.
+UrllibTransport(cookie_header) с атрибутом opener (urllib OpenerDirector);
+cc.time (time, sleep, monotonic — длительность запроса main передаёт в
+PageFetcher) и cc.datetime (now, astimezone, strftime, isoformat).
+
+Модули сборщика (collector.transport, collector.urllib_transport)
+импортируются внутри функций, а не наверху. Почему: этот файл импортирует и
+test_collector_status.py, а status.py — отдельный скрипт, который пакет не
+импортирует (CLAUDE.md §6); его тесты берут отсюда только запрет сети и
+часы и не должны падать оттого, что пакет collector сломан или не
+собирается. Подсказка типа HttpReply — только для проверки типов
+(TYPE_CHECKING), при запуске тестов не импортируется.
 """
 
 import http.client
 import io
 import json
 import os
+import socket
 import urllib.parse
 import urllib.request
 import urllib.response
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collector.transport import HttpReply
 
 # Допуск сверки вершин ссылки с кольцом клетки. Почему 2e-5: jitter_ring
 # обрезает координату до 5-го знака и добавляет до 9,9e-6
@@ -45,31 +62,62 @@ USER_AGENT = (
 # Строка куки билета в тестах — выдуманная: настоящих кук в репозитории нет.
 FAKE_COOKIE = "a=b"
 
+# Переменные прокси окружения: httpx.Client читает их при создании; тесты
+# настоящего транспорта (test_collector.py, test_collector_transport.py)
+# снимают их, чтобы не зависеть от того, что задано на машине.
+PROXY_ENV = (
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+def refuse(*args: object, **kwargs: object) -> None:
+    raise AssertionError("сеть в тестах запрещена")
+
+
+def forbid_network(patch: pytest.MonkeyPatch) -> None:
+    """Запрет соединений через patch: http.client (urllib) и сокеты (httpx
+    ходит мимо http.client)."""
+    patch.setattr(http.client.HTTPConnection, "connect", refuse)
+    patch.setattr(http.client.HTTPSConnection, "connect", refuse)
+    patch.setattr(socket, "create_connection", refuse)
+    patch.setattr(socket.socket, "connect", refuse)
+
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Любая попытка открыть соединение — падение теста, а не запрос наружу."""
-
-    def refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("сеть в тестах запрещена")
-
-    monkeypatch.setattr(http.client.HTTPConnection, "connect", refuse)
-    monkeypatch.setattr(http.client.HTTPSConnection, "connect", refuse)
+    forbid_network(monkeypatch)
 
 
 class FakeTime:
-    """Подмена модуля time сборщика: часы стоят, сон только записывается."""
+    """Подмена модуля time сборщика и часы обхода: часы стоят, сон только
+    записывается. now() — момент epoch в поясе zone (часы стены машины)."""
 
-    def __init__(self, epoch: float, step: float = 0.25) -> None:
+    def __init__(
+        self, epoch: float, step: float = 0.25, zone: tzinfo = timezone.utc
+    ) -> None:
         self.epoch = epoch
         self.step = step  # на столько секунд идут monotonic за один вызов
+        self.zone = zone
         self.clock = 0.0
+        self.monotonic_calls = 0
         self.pauses: list[float] = []
 
     def time(self) -> float:
         return self.epoch
 
+    def now(self) -> datetime:
+        return datetime.fromtimestamp(self.epoch, self.zone)
+
     def monotonic(self) -> float:
+        self.monotonic_calls += 1
         self.clock += self.step
         return self.clock
 
@@ -107,7 +155,7 @@ def frozen_datetime(moment: datetime) -> type[datetime]:
 def write_ticket(
     folder: Path, epoch: float, age_h: float, cookie: str = FAKE_COOKIE
 ) -> None:
-    """cookies.txt и ua.txt в папке запуска; возраст кук — по mtime файла."""
+    """cookies.txt и ua.txt в папке; возраст кук — по mtime файла."""
     cookies = folder / "cookies.txt"
     cookies.write_text(cookie, encoding="utf-8")
     (folder / "ua.txt").write_text(USER_AGENT, encoding="utf-8")
@@ -123,30 +171,20 @@ class Reply:
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
     error: BaseException | None = None  # исключение вместо ответа
-    read_error: BaseException | None = None  # исключение при чтении тела
     location_page1: bool = False  # Location = та же ссылка с p=1
 
 
 @dataclass
 class Sent:
-    """Запрос, который сборщик отправил: клетка, страница, заголовки."""
+    """Запрос, который сборщик отправил: клетка, страница, заголовки (у
+    CianPlayer — как их хранит urllib, у FakeTransport — как их передал
+    PageFetcher), тайм-аут (только у CianPlayer)."""
 
     cell: str
     page: int
     url: str
     headers: dict[str, str]
-    timeout: float | None
-
-
-class FailingBody(io.BytesIO):
-    """Тело ответа, чтение которого обрывается исключением."""
-
-    def __init__(self, error: BaseException) -> None:
-        super().__init__(b"")
-        self.error = error
-
-    def read(self, size: int | None = -1) -> bytes:
-        raise self.error
+    timeout: float | None = None
 
 
 def ring_of_url(url: str) -> list[tuple[float, float]]:
@@ -185,13 +223,75 @@ def page_one_url(url: str) -> str:
     return parts._replace(query=encoded).geturl()
 
 
+def cell_of_url(tiles_path: Path, url: str) -> str:
+    """Ключ ровно одной клетки файла tiles_path, чьё кольцо совпало с
+    ссылкой. Файл читается на каждый запрос — дети деления, которых сборщик
+    дописал в файл, находятся сами."""
+    vertices = ring_of_url(url)
+    tiles = json.loads(tiles_path.read_text(encoding="utf-8"))
+    found = [
+        f["properties"]["sector"]
+        for f in tiles["features"]
+        if same_ring(f["geometry"]["coordinates"][0], vertices)
+    ]
+    if len(found) != 1:
+        raise AssertionError(f"клеток под ссылкой {found}, нужна одна: {url}")
+    return found[0]
+
+
+def next_reply(
+    replies: dict[tuple[str, int], list[Reply]], cell: str, page: int, url: str
+) -> Reply:
+    """Первый ответ из очереди (клетка, страница); очередь пуста — падение."""
+    queue = replies.get((cell, page))
+    if not queue:
+        raise AssertionError(f"нет ответа на {cell} p{page}: {url}")
+    return queue.pop(0)
+
+
+class FakeTransport:
+    """Фальшивый транспорт сценариев обхода: ответы по (клетка, страница)
+    вместо сети, без urllib.
+
+    get(url, headers) записывает запрос в sent и отдаёт HttpReply (имена
+    заголовков — в нижнем регистре, тело как есть) или бросает Reply.error
+    (NetworkFailure, KeyboardInterrupt). factory — фабрика для
+    cc.main(transport_factory=...): записывает в made, с чем её позвали
+    (имя транспорта, строка Cookie), и отдаёт этот же транспорт.
+    """
+
+    def __init__(
+        self, tiles_path: Path, replies: dict[tuple[str, int], list[Reply]]
+    ) -> None:
+        self.tiles_path = tiles_path
+        self.replies = replies
+        self.sent: list[Sent] = []
+        self.made: list[tuple[str, str | None]] = []
+
+    def factory(self, name: str, cookie_header: str | None) -> "FakeTransport":
+        self.made.append((name, cookie_header))
+        return self
+
+    def get(self, url: str, headers: dict[str, str]) -> "HttpReply":
+        from collector.transport import HttpReply
+
+        cell, page = cell_of_url(self.tiles_path, url), page_of_url(url)
+        self.sent.append(Sent(cell, page, url, dict(headers)))
+        reply = next_reply(self.replies, cell, page, url)
+        if reply.error is not None:
+            raise reply.error
+        lowered = {name.lower(): value for name, value in reply.headers.items()}
+        if reply.location_page1:
+            lowered["location"] = page_one_url(url)
+        return HttpReply(status=reply.status, headers=lowered, body=reply.body)
+
+
 class CianPlayer(urllib.request.BaseHandler):
     """Обработчик urllib вместо сети: отдаёт ответы по (клетка, страница).
 
-    Клетку узнаёт по вершинам in_polygon ссылки против колец файла клеток;
-    файл читается на каждый запрос — дети деления, которых сборщик дописал
-    в файл, находятся сами. Ответ идёт дальше через настоящие обработчики
-    сборщика (cookie jar, NoRedirect, HTTPErrorProcessor).
+    Клетку узнаёт по вершинам in_polygon ссылки против колец файла клеток
+    (cell_of_url). Ответ идёт дальше через настоящие обработчики
+    UrllibTransport (cookie jar, NoRedirect, HTTPErrorProcessor).
     """
 
     handler_order = 0  # раньше настоящего HTTPSHandler
@@ -201,28 +301,12 @@ class CianPlayer(urllib.request.BaseHandler):
         self.replies = replies
         self.sent: list[Sent] = []
 
-    def cell_of(self, url: str) -> str:
-        """Ключ ровно одной клетки файла, чьё кольцо совпало с ссылкой."""
-        vertices = ring_of_url(url)
-        tiles = json.loads(self.tiles_path.read_text(encoding="utf-8"))
-        found = [
-            f["properties"]["sector"]
-            for f in tiles["features"]
-            if same_ring(f["geometry"]["coordinates"][0], vertices)
-        ]
-        if len(found) != 1:
-            raise AssertionError(f"клеток под ссылкой {found}, нужна одна: {url}")
-        return found[0]
-
     def https_open(self, request: urllib.request.Request):
         url = request.full_url
-        cell, page = self.cell_of(url), page_of_url(url)
+        cell, page = cell_of_url(self.tiles_path, url), page_of_url(url)
         headers = dict(request.header_items())
         self.sent.append(Sent(cell, page, url, headers, request.timeout))
-        queue = self.replies.get((cell, page))
-        if not queue:
-            raise AssertionError(f"нет ответа на {cell} p{page}: {url}")
-        return self.respond(url, queue.pop(0))
+        return self.respond(url, next_reply(self.replies, cell, page, url))
 
     def respond(self, url: str, reply: Reply):
         if reply.error is not None:
@@ -233,19 +317,21 @@ class CianPlayer(urllib.request.BaseHandler):
         if reply.location_page1:
             headers["Location"] = page_one_url(url)
         body = io.BytesIO(reply.body)
-        if reply.read_error is not None:
-            body = FailingBody(reply.read_error)
         response = urllib.response.addinfourl(body, headers, url, reply.status)
         response.msg = http.client.responses.get(reply.status, "Unknown")
         return response
 
 
-def player_fetcher(fetcher_class: type, player: CianPlayer) -> type:
-    """Подкласс настоящего Fetcher сборщика: сеть заменена проигрывателем."""
+def player_transport(player: CianPlayer):
+    """Фабрика транспорта для cc.main(transport_factory=...): настоящий
+    UrllibTransport сборщика, сеть заменена проигрывателем в его opener."""
+    from collector.urllib_transport import UrllibTransport
 
-    class PlayerFetcher(fetcher_class):
-        def __init__(self, user_agent: str, cookie_header: str | None = None):
-            super().__init__(user_agent, cookie_header)
-            self.opener.add_handler(player)
+    def factory(name: str, cookie_header: str | None) -> UrllibTransport:
+        if name != "urllib":
+            raise AssertionError(f"эталонные ночи — только на urllib, а не {name}")
+        made = UrllibTransport(cookie_header)
+        made.opener.add_handler(player)
+        return made
 
-    return PlayerFetcher
+    return factory

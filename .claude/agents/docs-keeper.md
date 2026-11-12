@@ -8,14 +8,14 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 
 Поиск по файлам — только инструментами Grep и Glob, не grep / git grep / rg через Bash (CLAUDE.md §8); если Grep недоступен — `git grep` (разрешён в настройках).
 
-Окружение (CLAUDE.md §8): своего `.venv` в репозитории пока нет, Python —
-абсолютным путём из готового окружения:
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python`.
+Окружение (CLAUDE.md §8): своё окружение `.venv` в корне репозитория, Python —
+абсолютным путём:
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python`.
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров.
 
 Разовые опыты на Python — файлом в `var/scratch/` (Write), запуск
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python var/scratch/<имя>.py`
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python var/scratch/<имя>.py`
 из корня; без приставок (`env PYTHONPATH=.`) и `python -c` с многострочным
 кодом. Путь к проекту ставит сам скрипт:
 `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов
@@ -42,7 +42,7 @@ docs/process/TEAMLEAD_REPORT.md (их ведёт только тимлид); к�
    кодом; перечни файлов тестов и диапазоны кейсов в шапке модуля верны.
 2. docs/CIAN_DATA_FORMAT.md: имена файлов, ключи и их порядок, имена
    функций сборщика, на которые документ ссылается, совпадают с кодом
-   `collector/run_folder.py` и `collector/night.py`. Расхождение по
+   `collector/run_folder.py` и `collector/crawl.py`. Расхождение по
    существу формата не правь — это вопрос тимлиду (формат меняется только
    решением Андрея, двумя PR: здесь и в land-monitor).
 3. docs/reference/collector_architecture.md: раздел 2 не правишь — его

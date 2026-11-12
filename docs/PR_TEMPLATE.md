@@ -38,13 +38,13 @@ Claude Code заполняет этот шаблон в конце блока и
 
 Проверки GitHub не работают (кончились минуты Actions, решение Андрея
 11.11): единственная проверка — локальный прогон перед push (CLAUDE.md §7).
-Команды — абсолютным путём из готового окружения (CLAUDE.md §8):
+Команды — абсолютным путём из своего окружения `.venv` (CLAUDE.md §8):
 
 ```
-/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff check .
-/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff format --check .
-/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m mypy
-/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q -n 4 --cov --cov-report=term-missing
+/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff check .
+/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff format --check .
+/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m mypy
+/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q -n 4 --cov --cov-report=term-missing
 ```
 
 Сюда обязательно вставляется вывод последнего локального прогона перед push
@@ -102,10 +102,12 @@ Claude Code заполняет этот шаблон в конце блока и
 - [ ] все тесты зелёные, включая старые; покрытие 100 %; вывод локального
       прогона вставлен в раздел 4
 - [ ] нет сетевых запросов и секретов; тесты не ходят в сеть; числа
-      сборщика — в `Settings` и константах контракта `serp.py` (исключения,
-      CLAUDE.md §6: `HTTP_TIMEOUT_S` — в `net.py`, умолчания аргументов
-      запуска `BUDGET`, `WINDOW_HOURS`, `RUNS_DIR` — в `cian_collect.py`)
-- [ ] в `collector/` только стандартная библиотека; правило импортов
+      сборщика — в `Settings` и константах контракта `search_page.py`
+      (исключения, CLAUDE.md §6: `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в
+      `transport.py`, умолчания аргументов запуска `BUDGET`, `WINDOW_HOURS`,
+      `RUNS_DIR` — в `cian_collect.py`)
+- [ ] в `collector/` только стандартная библиотека, кроме httpx в
+      `httpx_transport.py`; правило импортов
       соблюдено (тест 21.78)
 - [ ] формат папки прогона не изменён (или есть решение Андрея)
 - [ ] имена — по словарю CLAUDE.md §10; комментарии объясняют «почему» и

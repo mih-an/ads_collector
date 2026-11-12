@@ -8,16 +8,16 @@ tools: Read, Grep, Glob, Edit, Write, Bash
 
 Поиск по файлам — только инструментами Grep и Glob, не grep / git grep / rg через Bash (CLAUDE.md §8); если Grep недоступен — `git grep` (разрешён в настройках).
 
-Окружение (CLAUDE.md §8): своего `.venv` в репозитории пока нет, Python и
-ruff — абсолютным путём из готового окружения:
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q …`,
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff check .`,
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/ruff format --check .`.
+Окружение (CLAUDE.md §8): своё окружение `.venv` в корне репозитория, Python и
+ruff — абсолютным путём:
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q …`,
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff check .`,
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/ruff format --check .`.
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров (`| grep`, `| tail`).
 
 Разовые опыты на Python — файлом в `var/scratch/` (Write), запуск
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python var/scratch/<имя>.py`
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python var/scratch/<имя>.py`
 из корня; без приставок (`env PYTHONPATH=.`) и `python -c` с многострочным
 кодом. Путь к проекту ставит сам скрипт:
 `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))` до импортов

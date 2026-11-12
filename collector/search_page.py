@@ -1,11 +1,11 @@
 """
-serp.py — контракт выдачи ЦИАН: ссылка на страницу выдачи и разбор ответа.
+search_page.py — контракт выдачи ЦИАН: ссылка на страницу поиска и разбор ответа.
 
-Получает кольцо полигона и номер страницы (build_serp_url) или код, тело и
-заголовки ответа (classify_serp → Classified). Отдаёт ссылку, класс ответа
+Получает кольцо полигона и номер страницы (page_url) или код, тело и
+заголовки ответа (classify_page → Classified). Отдаёт ссылку, класс ответа
 (OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью, totalOffers и
-объявления, id объявлений и оценку числа страниц. Response — ответ на запрос
-выдачи. Чистые функции: без сети, диска и часов.
+объявления, id объявлений и оценку числа страниц. Чистые функции: без
+сети, диска и часов.
 """
 
 from __future__ import annotations
@@ -15,17 +15,6 @@ import math
 import re
 import urllib.parse
 from typing import NamedTuple
-
-
-class Response(NamedTuple):
-    """Ответ на запрос выдачи; neterr заполнен при сетевом сбое."""
-
-    code: int
-    body: str
-    size: int
-    ms: float
-    neterr: str | None
-    headers: dict
 
 
 class Classified(NamedTuple):
@@ -40,7 +29,7 @@ class Classified(NamedTuple):
 OFFERS_PER_PAGE = 28
 MAX_PAGES = 54
 
-SERP_HOST = "https://www.cian.ru"
+CIAN_BASE_URL = "https://www.cian.ru"
 POLYGON_NAME = "default_name_1"  # канонический вид (301-канонизация ЦИАН, 12.09)
 
 CAPTCHA_MARKERS = (
@@ -83,7 +72,7 @@ OK, BLOCK, API_CHANGED, NET_ERROR, PAGE_END = (
 # поэтому totalOffers — ВЕРХНЯЯ оценка числа страниц, а не точная.
 
 
-def build_serp_url(ring, page: int = 1) -> str:
+def page_url(ring, page: int = 1) -> str:
     """
     Любая страница выдачи: GET cat.php с in_polygon (+ p=N для страниц 2+).
     Фильтр площади (maxsite) НЕ ставим (ТЗ §3).
@@ -107,7 +96,7 @@ def build_serp_url(ring, page: int = 1) -> str:
         params.append(("p", str(page)))
     params.append(("polygon_name[1]", POLYGON_NAME))
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-    return f"{SERP_HOST}/cat.php?" + query
+    return f"{CIAN_BASE_URL}/cat.php?" + query
 
 
 # ──────────────────── РАЗБОР И КЛАССИФИКАЦИЯ ────────────────────────
@@ -257,7 +246,7 @@ def _finish(total, offers, page: int) -> Classified:
 
 # Почему PLR0913 выключено: шесть аргументов — сигнатуру закрепляют тесты
 # модуля 21 (вызовы по имени и по позиции).
-def classify_serp(  # noqa: PLR0913
+def classify_page(  # noqa: PLR0913
     code: int,
     body: str,
     neterr: str | None = None,

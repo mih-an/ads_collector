@@ -8,9 +8,9 @@ tools: Read, Grep, Glob, Bash
 
 Поиск по файлам — только инструментами Grep и Glob, не grep / git grep / rg через Bash (CLAUDE.md §8); если Grep недоступен — `git grep` (разрешён в настройках).
 
-Окружение (CLAUDE.md §8): своего `.venv` в репозитории пока нет, Python —
-абсолютным путём из готового окружения:
-`/Users/andrei/Documents/Projects/PythonProjects/land-monitor-raw/.venv/bin/python -m pytest -q …`.
+Окружение (CLAUDE.md §8): своё окружение `.venv` в корне репозитория, Python —
+абсолютным путём:
+`/Users/andrei/Documents/Projects/PythonProjects/ads_collector/.venv/bin/python -m pytest -q …`.
 Окружение не создавать, ничего не устанавливать. Команды bash — простые, без
 `cd`, `&&`, `;`, `$(…)` и конвейеров.
 
@@ -38,13 +38,16 @@ docs/DECISIONS.md (решения уровня 1 и решения Андрея)
   CLAUDE.md §10 и разделу 2 collector_architecture.md.
 - Оценка размера двумя строками: код и тесты (тесты обычно ×2–2.7 от кода).
   Блок идёт целиком, без разреза по размеру кода.
-- Числа сборщика — в `Settings` (collector/night.py) и константах контракта
-  в collector/serp.py, не россыпью по коду (CLAUDE.md §6); два исключения:
-  `HTTP_TIMEOUT_S` — в collector/net.py, умолчания аргументов запуска
-  (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`) — в collector/cian_collect.py.
-  Правила обхода и разбора — чистыми функциями; сеть (collector/net.py),
-  часы, сон, случайность, argv — по краям.
-- В `collector/` — только стандартная библиотека.
+- Числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
+  в collector/search_page.py, не россыпью по коду (CLAUDE.md §6);
+  исключения: `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в collector/transport.py, умолчания
+  аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`,
+  `COOKIES_FILE`, `UA_FILE`) — в collector/cian_collect.py.
+  Правила обхода и разбора — чистыми функциями; сеть (реализации транспорта
+  collector/urllib_transport.py и collector/httpx_transport.py), часы, сон,
+  случайность, argv — по краям.
+- В `collector/` — только стандартная библиотека, кроме httpx в
+  collector/httpx_transport.py.
 - Общие файлы, которые блок тронет (`pyproject.toml`, `pytest.ini`,
   `tests/collector_support.py`, `.github/`, `CLAUDE.md`), — отдельным списком.
 - Вопросы — только там, где тест-план, описание формата, CLAUDE.md и
