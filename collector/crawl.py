@@ -862,8 +862,8 @@ class Crawl:
     def pause_between_tiles(self) -> None:
         """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
         state = self.state
-        # бюджет — до rnd.uniform: иначе лишний вызов случайности сдвинет её
-        # порядок (эталонные ночи)
+        # проверка бюджета повторяет sleep_between, чтобы не звать случайность
+        # для множителя впустую после последнего запроса
         if not state.pending or not self.budget_left():
             return
         factor = self.rnd.uniform(*self.settings.inter_tile_pause)
