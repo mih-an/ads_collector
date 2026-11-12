@@ -507,21 +507,16 @@ class Crawl:
         # 3.2, тест 21.51)
         self.sleep_between()
         try:
-            self._crawl_queue()
+            while state.pending and state.spent < self.settings.budget:
+                key = state.pending.pop(0)
+                self.download_tile(key)
+                if state.stopped:
+                    break  # прогон остановлен (блок, сеть, бюджет)
+                self.save_plan()
+                self.pause_between_tiles()
         except KeyboardInterrupt:
             state.stopped, state.stop_class = "interrupted", "interrupted"
         return self.finish()
-
-    def _crawl_queue(self) -> None:
-        """Клетки очереди по одной, пока есть бюджет и очередь."""
-        state, budget = self.state, self.settings.budget
-        while state.pending and state.spent < budget:
-            key = state.pending.pop(0)
-            self.download_tile(key)
-            if state.stopped:
-                return  # ночь остановлена (блок, сеть, бюджет)
-            self.save_plan()
-            self.pause_between_tiles()
 
     # ── проба ─────────────────────────────────────────────────────
 
