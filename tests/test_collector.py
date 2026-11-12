@@ -2114,7 +2114,7 @@ def test_21_38_sector_end_logged_once(env):
     run = make_crawl(env, CELLS)
     run.mark_end(B, "short_page")
     run.mark_end(B, "page_end")
-    assert [r for r in log_records(Path(run.paths.folder)) if r.get("event")] == [
+    assert [r for r in log_records(Path(run.run_folder.folder)) if r.get("event")] == [
         {"event": "sector_end", "sector": B, "why": "short_page"}
     ]
 
@@ -4068,7 +4068,7 @@ def is_stdout_use(node: ast.expr, sys_names: dict[str, str]) -> bool:
 
 def stdout_use(source: str) -> list[str]:
     """Печать в stdout: print и sys.stdout (таблица 2.4 документа: stdout —
-    только run_folder.append_log и cian_collect)."""
+    только run_folder.say и cian_collect)."""
     tree = ast.parse(source)
     sys_names = module_bindings(tree, "sys")
     found = []
@@ -4210,8 +4210,9 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не печатают в stdout (print,
-    sys.stdout): по таблице 2.4 документа stdout — только
-    run_folder.append_log (эхо строк night.log) и cian_collect. Модуль 21."""
+    sys.stdout): по таблице 2.4 документа stdout — только run_folder.say
+    (через него обход печатает эхо строк night.log и итог) и cian_collect
+    (печать сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 
