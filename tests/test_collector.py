@@ -23,7 +23,7 @@
 - cc.time (time, sleep, monotonic — main передаёт его в PageFetcher) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(CrawlInput, fetcher, Clock(now, sleep), rnd) — так обход
+- crawl.Crawl(CrawlInput, enter_cian, Clock(now, sleep), rnd) — так обход
   собирается без main (make_crawl);
 - cc.parse_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
@@ -297,14 +297,13 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features, билет как в env, сеть — фальшивый транспорт env через
-    PageFetcher, часы и сон — FakeTime env, случайность — Random(1);
-    changes — поля Settings."""
+    features; enter_cian отдаёт билет как в env и PageFetcher над
+    фальшивым транспортом env; часы и сон — FakeTime env, случайность —
+    Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles = geometry.load_sectors(str(env.tiles))
     crawl_input = crawl.CrawlInput(
         settings=settings_of(env.folder, **changes),
-        ticket=fake_ticket(),
         raw_tiles=tiles,
         grid=geometry.infer_tile_grid(tiles),
     )
@@ -312,7 +311,9 @@ def make_crawl(env, features, **changes):
         env.transport, USER_AGENT, True, env.clock.monotonic
     )
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
-    started = crawl.Crawl(crawl_input, fetcher, clock, random.Random(1))
+    started = crawl.Crawl(
+        crawl_input, lambda: (fake_ticket(), fetcher), clock, random.Random(1)
+    )
     started.open_run()
     return started
 

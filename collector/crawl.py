@@ -95,13 +95,12 @@ class Clock:
 
 @dataclass(frozen=True)
 class CrawlInput:
-    """Входы, которые обход не заменяет: настройки, билет, клетки, сетка.
-    Собраны вместе из-за предела 5 аргументов (CLAUDE.md §6); fetcher,
-    clock и rnd идут в Crawl отдельно — это внешний мир (DECISIONS,
-    block/transport)."""
+    """Входы, которые обход не заменяет: настройки, клетки, сетка.
+    Собраны вместе из-за предела 5 аргументов (CLAUDE.md §6); вход на ЦИАН
+    (enter_cian), clock и rnd идут в Crawl отдельно — это внешний мир
+    (DECISIONS, block/transport)."""
 
     settings: Settings
-    ticket: Ticket
     raw_tiles: list[dict]
     grid: dict
 
@@ -439,7 +438,7 @@ class Crawl:
     def __init__(
         self,
         crawl_input: CrawlInput,
-        fetcher: page_fetch.PageFetcher,
+        enter_cian: Callable[[], tuple[Ticket, page_fetch.PageFetcher]],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
@@ -447,8 +446,9 @@ class Crawl:
         settings = crawl_input.settings
         self.settings = settings
         self.grid = crawl_input.grid
-        self.ticket = crawl_input.ticket
-        self.fetcher = fetcher
+        self.enter_cian = enter_cian
+        self.ticket: Ticket  # появляется в open_run
+        self.fetcher: page_fetch.PageFetcher  # появляется в open_run
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -461,8 +461,10 @@ class Crawl:
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
-        """Начало прогона: время старта, папка прогона, клетки в работу,
-        очередь вперемешку."""
+        """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
+        прогона, клетки в работу, очередь вперемешку."""
+        # билет — после паузы старта: возраст кук и UA (порядок случайности)
+        self.ticket, self.fetcher = self.enter_cian()
         self.started_at = self.clock.now()
         self.paths = run_folder.create_folder(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only

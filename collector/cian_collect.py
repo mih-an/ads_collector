@@ -290,8 +290,9 @@ def enter_cian(
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
-    пауза старта, билет, транспорт. Порядок вызовов случайности — часть
-    поведения: seed → пауза старта → UA → джиттер клеток → перемешивание."""
+    пауза старта; вход на ЦИАН (билет, транспорт) обход вызовет сам в начале
+    прогона. Порядок вызовов случайности — часть поведения: seed → пауза
+    старта → UA → джиттер клеток → перемешивание."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -307,11 +308,10 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
     wait_start(settings, rnd, clock)
-    ticket, fetcher = enter_cian(settings, rnd, transport_factory)
-    crawl_input = CrawlInput(
-        settings=settings, ticket=ticket, raw_tiles=tiles, grid=grid
+    crawl_input = CrawlInput(settings=settings, raw_tiles=tiles, grid=grid)
+    return Crawl(
+        crawl_input, lambda: enter_cian(settings, rnd, transport_factory), clock, rnd
     )
-    return Crawl(crawl_input, fetcher, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
