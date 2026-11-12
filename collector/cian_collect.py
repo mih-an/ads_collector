@@ -277,6 +277,17 @@ def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
     clock.sleep(delay)
 
 
+def enter_cian(
+    settings: Settings, rnd: random.Random, transport_factory: TransportFactory
+) -> tuple[Ticket, PageFetcher]:
+    """Вход на ЦИАН: билет (куки, UA, возраст кук) и запрос страницы на
+    выбранном транспорте."""
+    ticket = read_ticket(settings, time.time(), rnd)
+    transport = transport_factory(settings.transport, ticket.cookie_header)
+    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
+    return ticket, fetcher
+
+
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
     пауза старта, билет, транспорт. Порядок вызовов случайности — часть
@@ -296,9 +307,7 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
     wait_start(settings, rnd, clock)
-    ticket = read_ticket(settings, time.time(), rnd)
-    transport = transport_factory(settings.transport, ticket.cookie_header)
-    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
+    ticket, fetcher = enter_cian(settings, rnd, transport_factory)
     crawl_input = CrawlInput(
         settings=settings, ticket=ticket, raw_tiles=tiles, grid=grid
     )
