@@ -1340,12 +1340,12 @@ def tiles_file(tmp_path) -> Path:
 
 
 def test_21_22_update_tiles_file_parent_and_children(tmp_path):
-    """21.22 update_tiles_file: родитель collect=false, status=split,
+    """21.22 TilesFile.record_split: родитель collect=false, status=split,
     split_at, children; дети — фичами с полями клетки; сосед не тронут.
     Модуль 21."""
     path = tiles_file(tmp_path)
     children = geometry.make_children(A, rect_ring(A), 0, GRID)
-    geometry.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
+    geometry.TilesFile(str(path)).record_split(A, children, "2026-11-10T01:31:40+03:00")
     props = [f["properties"] for f in read_json(path)["features"]]
     assert (props[0], props[1]["collect"], props[2]) == (
         {
@@ -1385,7 +1385,7 @@ def test_21_22_update_tiles_file_format(tmp_path):
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
     children = geometry.make_children(A, rect_ring(A), 0, GRID)
-    geometry.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
+    geometry.TilesFile(str(path)).record_split(A, children, "2026-11-10T01:31:40+03:00")
     text = path.read_text(encoding="utf-8")
     head = '{\n "type": "FeatureCollection",\n "features": [\n  {\n   "type"'
     names = sorted(p.name for p in tmp_path.iterdir())
@@ -1405,7 +1405,7 @@ def test_21_22_update_tiles_file_key_collision(tmp_path):
     with pytest.raises(
         ValueError, match=f"ключ T0508 уже есть в {re.escape(str(path))}"
     ):
-        geometry.update_tiles_file(str(path), A, children, "x")
+        geometry.TilesFile(str(path)).record_split(A, children, "x")
     assert path.read_bytes() == before
 
 
@@ -1417,7 +1417,7 @@ def test_21_22_update_tiles_file_parent_missing(tmp_path):
     with pytest.raises(
         ValueError, match=f"родитель T0999 не найден в {re.escape(str(path))}"
     ):
-        geometry.update_tiles_file(str(path), "T0999", [], "x")
+        geometry.TilesFile(str(path)).record_split("T0999", [], "x")
     assert (path.read_bytes(), sorted(p.name for p in tmp_path.iterdir())) == (
         before,
         ["tiles.geojson"],

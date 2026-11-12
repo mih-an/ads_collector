@@ -7,7 +7,7 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 словари plan.json и summary.json, текст итога. Crawl ведёт ночь: проба,
 очередь, листание, деление, бюджет, стоп; внешний мир — только запрос
 страницы (page_fetch.PageFetcher), Clock, rnd, run_folder и
-geometry.update_tiles_file.
+geometry.TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -808,7 +808,7 @@ class Crawl:
             return False
         self._queue_children(key, children)
         split_at = self.clock.now().isoformat(timespec="seconds")
-        geometry.update_tiles_file(self.settings.tiles_path, key, children, split_at)
+        self.tiles_file.record_split(key, children, split_at)
         self.save_plan()
         return True
 
