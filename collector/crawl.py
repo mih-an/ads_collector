@@ -647,22 +647,8 @@ class Crawl:
                 self.mark_end(key, task.detail)
             if task.state != "net_error":
                 return
-            self._retry_pause(key, page, attempts)
+            self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
-
-    def _retry_pause(self, key: str, page: int, attempts: int) -> None:
-        """Пауза перед повтором номер attempts + 1 после сбоя сети."""
-        retry_pauses = self.settings.net_retry_pauses
-        pause = self.rnd.uniform(*retry_pauses[attempts])
-        self.log(
-            event="retry",
-            sector=key,
-            page=page,
-            attempt=attempts + 1,
-            of=len(retry_pauses),
-            after_s=int(pause),
-        )
-        self.clock.sleep(pause)
 
     def step(self, task: PageTask) -> str:
         """Один запрос обхода. → вердикт; стоп-вердикты попутно ставят stopped."""
@@ -872,6 +858,20 @@ class Crawl:
             return
         factor = self.rnd.uniform(*self.settings.inter_tile_pause)
         self.sleep_between(factor)
+
+    def pause_before_retry(self, key: str, page: int, attempts: int) -> None:
+        """Пауза перед повтором номер attempts + 1 после сбоя сети."""
+        retry_pauses = self.settings.net_retry_pauses
+        pause = self.rnd.uniform(*retry_pauses[attempts])
+        self.log(
+            event="retry",
+            sector=key,
+            page=page,
+            attempt=attempts + 1,
+            of=len(retry_pauses),
+            after_s=int(pause),
+        )
+        self.clock.sleep(pause)
 
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
