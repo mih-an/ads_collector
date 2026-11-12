@@ -485,7 +485,6 @@ class Crawl:
         )
         self.save_plan()
         if not self.smoke():
-            self._log_stop()
             return self.finish()
         if self.settings.smoke_only:
             state.stopped = "smoke_only"
@@ -521,7 +520,8 @@ class Crawl:
     def smoke(self) -> bool:
         """Контрольный запрос по мелкой клетке до обхода. Тратит бюджет: IP его
         видит, измерение должно быть честным. Клетка случайная из самых
-        мелких — постоянная была бы паттерном. → прошла ли проба."""
+        мелких — постоянная была бы паттерном. → прошла ли проба; провал —
+        причина в состоянии и строка STOP."""
         settings, state = self.settings, self.state
         candidates = smoke_pool(
             self.tiles, settings.smoke_min_area_km2, settings.smoke_pool_size
@@ -548,6 +548,7 @@ class Crawl:
             self.log(event="smoke_empty", sector=key, note="сектор пуст, беру другой")
         state.stop_detail = "все smoke-сектора пусты"
         state.stopped = "smoke_failed"
+        self._log_stop()
         return False
 
     def _smoke_failed(self, key: str, answer: run_folder.PageAnswer) -> None:
@@ -557,6 +558,7 @@ class Crawl:
         state.smoke = {"sector": key, "verdict": answer.verdict, "detail": detail}
         state.stop_class, state.stop_detail = answer.verdict, detail
         state.stopped = "smoke_failed"
+        self._log_stop()
 
     # ── клетка ────────────────────────────────────────────────────
 
