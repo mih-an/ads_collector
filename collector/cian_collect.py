@@ -1,12 +1,12 @@
 """
 cian_collect.py — запуск боевого сборщика ЦИАН и его края (часы, сон, билет).
 
-Получает argv (read_settings → Settings), файл клеток сбора [E-42], входной
-билет (read_ticket → Ticket). build_crawl собирает транспорт (make_transport),
-запрос страницы page_fetch.PageFetcher, часы crawl.Clock, случайность в обход
-crawl.Crawl; main его запускает и печатает итог; сетка — тоже в stdout. Сети
-здесь нет: она в реализациях транспорта. Python 3.12; сервер и запуск —
-collector/README.md.
+Получает argv (read_settings → Settings). build_crawl собирает обход
+crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
+в stdout), часы crawl.Clock. enter_cian — билет (read_ticket → Ticket),
+транспорт (make_transport) и page_fetch.PageFetcher; его зовёт сам обход
+после паузы старта. main запускает обход и печатает итог. Сети здесь нет
+(она в транспорте); сервер и запуск — collector/README.md.
 """
 
 from __future__ import annotations
@@ -230,9 +230,7 @@ def enter_cian(
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы;
     случайность и часы здесь не вызываются — паузу старта и вход на ЦИАН
-    (билет, транспорт) обход делает сам в начале прогона. Порядок вызовов
-    случайности — часть поведения: seed → пауза старта → UA → джиттер клеток
-    → перемешивание."""
+    (билет, транспорт) обход делает сам в начале прогона."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")

@@ -1,13 +1,13 @@
 """
-crawl.py — обход выдачи ЦИАН: данные, правила обхода и дирижёр Crawl.
+crawl.py — обход выдачи ЦИАН: данные, правила обхода и класс обхода Crawl.
 
 Данные: Settings, Ticket, Clock (часы и сон), TileState, PageTask, CrawlState.
 Правила — функции без внешнего мира: интервал и паузы, пул пробы, деление
 [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень, повторы,
-словари plan.json и summary.json, текст итога. Crawl ведёт ночь: проба,
-очередь, листание, деление, бюджет, стоп; внешний мир — только запрос
-страницы (page_fetch.PageFetcher), Clock, rnd, run_folder и
-geometry.TilesFile.record_split.
+словари plan.json и summary.json, текст итога. Crawl ведёт прогон: проба,
+очередь, листание, деление, бюджет, стоп; внешний мир — только вход на ЦИАН
+(enter_cian), запрос страницы (page_fetch.PageFetcher), Clock, rnd,
+run_folder (запись и печать run_folder.say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -259,7 +259,10 @@ def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]:
 def stop_reason(state: CrawlState, smoke_only: bool) -> str:
     """Причина конца прогона (поле stopped). Записанная раньше остаётся:
     провал пробы, стоп-вердикт, бюджет посреди клетки, Ctrl+C. Иначе —
-    только проба, бюджет кончился при непустой очереди, очередь пуста."""
+    только проба, бюджет кончился при непустой очереди, очередь пуста.
+    «Непустая очередь → budget_exhausted» верно при условии цикла collect
+    (while pending and budget_left()): с непустой очередью он выходит только
+    по бюджету."""
     if state.stopped:
         return state.stopped
     if smoke_only:
@@ -466,13 +469,14 @@ def summary_text(report: dict, folder: str) -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────── дирижёр ───────────────────────────────
+# ──────────────────────────────── обход ────────────────────────────────
 
 
 class Crawl:
-    """Дирижёр ночи: проба, очередь клеток, листание, деление, бюджет, повторы,
-    стоп, Ctrl+C. Правила — функции выше, запись файлов — run_folder; сеть —
-    только через fetcher, часы и сон — через clock, случайность — rnd."""
+    """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
+    стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
+    (say); вход на ЦИАН — enter_cian, сеть — только через fetcher, часы и сон —
+    через clock, случайность — rnd."""
 
     def __init__(
         self,
@@ -482,20 +486,21 @@ class Crawl:
         clock: Clock,
         rnd: random.Random,
     ) -> None:
-        """Только запоминает входы: часы, случайность и диск — в open_run."""
+        """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
         self.enter_cian = enter_cian
-        self.ticket: Ticket  # появляется в open_run
-        self.fetcher: page_fetch.PageFetcher  # появляется в open_run
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
         self.state = CrawlState()
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
-        self.started_at: datetime  # появляется в open_run
-        self.run_folder: run_folder.RunFolder  # появляется в open_run
+        # появляются в open_run
+        self.ticket: Ticket
+        self.fetcher: page_fetch.PageFetcher
+        self.started_at: datetime
+        self.run_folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
@@ -534,7 +539,9 @@ class Crawl:
     def collect(self) -> None:
         """Прогон целиком: пауза старта → открыть прогон → строка start → проба →
         обход → итог (словарь summary.json) в self.report, папка —
-        self.run_folder.folder."""
+        self.run_folder.folder. Порядок вызовов случайности — часть поведения
+        (его задают collect и open_run): seed → пауза старта → UA → джиттер
+        клеток → перемешивание."""
         state = self.state
         self.pause_before_start()
         self.open_run()
@@ -609,12 +616,13 @@ class Crawl:
     # ── клетка ────────────────────────────────────────────────────
 
     def download_tile(self, key: str) -> None:
-        """Одна клетка подряд: стр. 1 → 2 → … до конца набора; между
-        страницами — пауза. Стоп ночи — в state.stopped."""
-        page = 2 if 1 in self.tiles[key].pages_done else 1  # стр. 1 могла снять проба
-        if page == 2 and self.split_into_quarters(key):  # клетку-переросток сняла проба
-            return
+        """Клетка целиком: стр. 1 → стоп / деление на четверти / стр. 2…N до
+        конца набора; между страницами — пауза. Стоп прогона — в state.stopped."""
         tile = self.tiles[key]
+        smoke_took_page_1 = 1 in tile.pages_done
+        page = 2 if smoke_took_page_1 else 1
+        if smoke_took_page_1 and self.split_into_quarters(key):
+            return  # клетку-переросток сняла проба
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
@@ -854,6 +862,8 @@ class Crawl:
     def pause_between_tiles(self) -> None:
         """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
         state = self.state
+        # бюджет — до rnd.uniform: иначе лишний вызов случайности сдвинет её
+        # порядок (эталонные ночи)
         if not state.pending or not self.budget_left():
             return
         factor = self.rnd.uniform(*self.settings.inter_tile_pause)

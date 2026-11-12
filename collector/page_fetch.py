@@ -118,6 +118,15 @@ class PageFetcher:
         # деталь — текст сбоя (21.29)
         except NetworkFailure as failure:
             ms = (self.monotonic() - started) * 1000
-            return FetchedPage(0, "", 0, ms, str(failure), {})
+            return FetchedPage(
+                code=0, body="", size=0, ms=ms, neterr=str(failure), headers={}
+            )
         ms = (self.monotonic() - started) * 1000
-        return FetchedPage(reply.status, body, len(reply.body), ms, None, reply.headers)
+        return FetchedPage(
+            code=reply.status,
+            body=body,
+            size=len(reply.body),
+            ms=ms,
+            neterr=None,
+            headers=reply.headers,
+        )
