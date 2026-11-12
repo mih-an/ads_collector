@@ -561,7 +561,7 @@ class Crawl:
         # после неё (человек так быстро не листает; мини-тест 15.09). Стоит до
         # try: Ctrl+C в этой паузе — выход без сводки (collector_architecture.md
         # 3.2, тест 21.51)
-        self.sleep_between()
+        self.pause_between_pages()
         try:
             while state.pending and self.budget_left():
                 key = state.pending.pop(0)
@@ -639,7 +639,7 @@ class Crawl:
             page += 1
             # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
             if not read_out(tile, page):
-                self.sleep_between()
+                self.pause_between_pages()
 
     def download_page(self, key: str, page: int) -> None:
         """Одна страница клетки; сбой сети — повторы с растущей паузой, сколько
@@ -868,13 +868,18 @@ class Crawl:
 
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
-        случайности (точка подмены теста 21.36)."""
+        случайности (точка подмены теста 21.36); общий помощник
+        pause_between_pages и pause_between_tiles."""
         if not self.budget_left():
             return
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
         self.clock.sleep(self.rnd.uniform(low, high))
+
+    def pause_between_pages(self) -> None:
+        """Обычная пауза между запросами: средний интервал ± разброс."""
+        self.sleep_between()
 
     def pause_between_tiles(self) -> None:
         """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
