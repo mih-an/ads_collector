@@ -301,7 +301,7 @@ def make_crawl(env, features, **changes):
     фальшивым транспортом env; часы и сон — FakeTime env, случайность —
     Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
-    tiles = geometry.load_sectors(str(env.tiles))
+    tiles = geometry.TilesFile(str(env.tiles)).tiles
     crawl_input = crawl.CrawlInput(
         settings=settings_of(env.folder, **changes),
         raw_tiles=tiles,
@@ -886,7 +886,7 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
 
 
 def test_21_14_load_sectors_fields(tmp_path):
-    """21.14 load_sectors: ключ строкой, поля клетки; у сектора без полей
+    """21.14 TilesFile: ключ строкой, поля клетки; у сектора без полей
     клетки — name "", status "", area 0.0, level/parent/clipped/base None.
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
@@ -898,7 +898,7 @@ def test_21_14_load_sectors_fields(tmp_path):
     }
     write_features(path, [cell, bare])
     ring = [tuple(p) for p in rect_ring(A)]
-    assert geometry.load_sectors(str(path)) == [
+    assert geometry.TilesFile(str(path)).tiles == [
         {
             "sector": A,
             "name": f"Сбор {A}",
@@ -929,7 +929,7 @@ def test_21_14_load_sectors_skips_collect_false(tmp_path):
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
     write_features(path, [tile(A, collect=False), tile(B)])
-    assert [s["sector"] for s in geometry.load_sectors(str(path))] == [B]
+    assert [s["sector"] for s in geometry.TilesFile(str(path)).tiles] == [B]
 
 
 def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
@@ -939,7 +939,7 @@ def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
     feature["geometry"]["type"] = "MultiPolygon"
     write_features(path, [feature])
     with pytest.raises(ValueError, match=f"сектор {A}: MultiPolygon, нужен Polygon"):
-        geometry.load_sectors(str(path))
+        geometry.TilesFile(str(path))
 
 
 def test_21_15_jitter_ring_values():

@@ -23,7 +23,7 @@ from datetime import datetime
 
 from collector import urllib_transport
 from collector.crawl import Clock, Crawl, CrawlInput, Settings, Ticket
-from collector.geometry import infer_tile_grid, load_sectors
+from collector.geometry import TilesFile, infer_tile_grid
 from collector.page_fetch import PageFetcher
 from collector.transport import Transport
 
@@ -236,7 +236,8 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
-    tiles = load_sectors(settings.tiles_path)
+    tiles_file = TilesFile(settings.tiles_path)
+    tiles = tiles_file.tiles
     # сетка — всегда: по файлу без целых клеток её не восстановить — выход с
     # путём и причиной, без трассировки (З160)
     try:
