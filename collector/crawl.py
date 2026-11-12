@@ -1,11 +1,11 @@
 """
 crawl.py — обход выдачи ЦИАН: данные, правила обхода и дирижёр Crawl.
 
-Данные: Settings, Ticket, Clock (часы и сон), CrawlInput, TileState, PageTask,
-CrawlState. Правила — функции без внешнего мира: интервал и паузы, пул пробы,
-деление [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень,
-повторы, словари plan.json и summary.json, текст итога. Crawl ведёт ночь:
-проба, очередь, листание, деление, бюджет, стоп; внешний мир — только запрос
+Данные: Settings, Ticket, Clock (часы и сон), TileState, PageTask, CrawlState.
+Правила — функции без внешнего мира: интервал и паузы, пул пробы, деление
+[E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень, повторы,
+словари plan.json и summary.json, текст итога. Crawl ведёт ночь: проба,
+очередь, листание, деление, бюджет, стоп; внешний мир — только запрос
 страницы (page_fetch.PageFetcher), Clock, rnd, run_folder и
 geometry.update_tiles_file.
 """
@@ -92,18 +92,6 @@ class Clock:
 
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
-
-
-@dataclass(frozen=True)
-class CrawlInput:
-    """Входы, которые обход не заменяет: настройки, клетки, сетка.
-    Собраны вместе из-за предела 5 аргументов (CLAUDE.md §6); вход на ЦИАН
-    (enter_cian), clock и rnd идут в Crawl отдельно — это внешний мир
-    (DECISIONS, block/transport)."""
-
-    settings: Settings
-    raw_tiles: list[dict]
-    grid: dict
 
 
 @dataclass
@@ -488,15 +476,15 @@ class Crawl:
 
     def __init__(
         self,
-        crawl_input: CrawlInput,
+        settings: Settings,
+        tiles_file: geometry.TilesFile,
         enter_cian: Callable[[], tuple[Ticket, page_fetch.PageFetcher]],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в open_run."""
-        settings = crawl_input.settings
         self.settings = settings
-        self.grid = crawl_input.grid
+        self.tiles_file = tiles_file
         self.enter_cian = enter_cian
         self.ticket: Ticket  # появляется в open_run
         self.fetcher: page_fetch.PageFetcher  # появляется в open_run
@@ -505,7 +493,6 @@ class Crawl:
         self.tile_mode = settings.tile_mode
         self.state = CrawlState()
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
-        self.raw_tiles = crawl_input.raw_tiles
         self.tiles: dict[str, TileState] = {}
         self.started_at: datetime  # появляется в open_run
         self.paths: run_folder.RunPaths  # появляется в open_run
@@ -521,7 +508,7 @@ class Crawl:
             self.settings.runs_dir, self.started_at, self.settings.smoke_only
         )
         # джиттер — один раз на (клетка, ночь), в порядке файла
-        for raw_tile in self.raw_tiles:
+        for raw_tile in self.tiles_file.tiles:
             self._register(raw_tile)
         # клетки вперемешку, страницы внутри клетки — подряд (решение Андрея
         # 15.09: листание подряд — единственный человеческий паттерн)
@@ -814,7 +801,7 @@ class Crawl:
         # split_decision отдаёт "split" только клетке с level — подсказка для mypy
         assert tile.level is not None
         children = geometry.make_children(
-            key, tile.ring_canonical, tile.level, self.grid, base=tile.base
+            key, tile.ring_canonical, tile.level, self.tiles_file.grid, base=tile.base
         )
         if not children:
             self.log(event="split_skip", sector=key, note="нет непустых четвертей")

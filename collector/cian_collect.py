@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
-from collector.crawl import Clock, Crawl, CrawlInput, Settings, Ticket
+from collector.crawl import Clock, Crawl, Settings, Ticket
 from collector.geometry import TilesFile
 from collector.page_fetch import PageFetcher
 from collector.transport import Transport
@@ -247,11 +247,12 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # time берётся по имени модуля в момент вызова: так часы подменяют тесты
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
-    crawl_input = CrawlInput(
-        settings=settings, raw_tiles=tiles_file.tiles, grid=tiles_file.grid
-    )
     return Crawl(
-        crawl_input, lambda: enter_cian(settings, rnd, transport_factory), clock, rnd
+        settings,
+        tiles_file,
+        lambda: enter_cian(settings, rnd, transport_factory),
+        clock,
+        rnd,
     )
 
 

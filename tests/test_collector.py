@@ -23,8 +23,8 @@
 - cc.time (time, sleep, monotonic — main передаёт его в PageFetcher) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(CrawlInput, enter_cian, Clock(now, sleep), rnd) — так обход
-  собирается без main (make_crawl);
+- crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
+  так обход собирается без main (make_crawl);
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -297,22 +297,24 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features; enter_cian отдаёт билет как в env и PageFetcher над
-    фальшивым транспортом env; часы и сон — FakeTime env, случайность —
-    Random(1); changes — поля Settings."""
+    features (TilesFile с восстановленной сеткой, restore_grid);
+    enter_cian отдаёт билет как в env и PageFetcher над фальшивым
+    транспортом env; часы и сон — FakeTime env, случайность — Random(1);
+    changes — поля Settings."""
     write_features(env.tiles, features)
-    tiles = geometry.TilesFile(str(env.tiles)).tiles
-    crawl_input = crawl.CrawlInput(
-        settings=settings_of(env.folder, **changes),
-        raw_tiles=tiles,
-        grid=geometry.infer_tile_grid(tiles),
-    )
+    tiles_file = geometry.TilesFile(str(env.tiles))
+    tiles_file.restore_grid()
+    settings = settings_of(env.folder, **changes)
     fetcher = page_fetch.PageFetcher(
         env.transport, USER_AGENT, True, env.clock.monotonic
     )
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
-        crawl_input, lambda: (fake_ticket(), fetcher), clock, random.Random(1)
+        settings,
+        tiles_file,
+        lambda: (fake_ticket(), fetcher),
+        clock,
+        random.Random(1),
     )
     started.open_run()
     return started
