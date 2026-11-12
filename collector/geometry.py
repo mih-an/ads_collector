@@ -328,6 +328,11 @@ class TilesFile:
     def __init__(self, path: str) -> None:
         self.path = path
         self.tiles = self._read_tiles()
+        self.grid: dict  # появляется в restore_grid
+
+    def restore_grid(self) -> None:
+        """Сетка клеток по файлу; без целых клеток — ValueError (21.60)."""
+        self.grid = infer_tile_grid(self.tiles)
 
     def _read_tiles(self) -> list[dict]:
         """Клетки сбора из файла; выбывшие (collect=false) пропускаются."""
