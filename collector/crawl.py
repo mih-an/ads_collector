@@ -494,9 +494,11 @@ class Crawl:
     # ── главный цикл ──────────────────────────────────────────────
 
     def collect(self) -> None:
-        """Прогон целиком: открыть прогон → строка start → проба → обход →
-        итог (словарь summary.json) в self.report, папка — self.paths.folder."""
+        """Прогон целиком: пауза старта → открыть прогон → строка start → проба →
+        обход → итог (словарь summary.json) в self.report, папка —
+        self.paths.folder."""
         state = self.state
+        self.pause_before_start()
         self.open_run()
         self._log_start()
         self.save_plan()
@@ -802,6 +804,16 @@ class Crawl:
     def budget_left(self) -> bool:
         """Остался ли бюджет запросов прогона."""
         return self.state.spent < self.settings.budget
+
+    def pause_before_start(self) -> None:
+        """Случайное смещение старта U(0; start_jitter_max_s); нет у --smoke-only
+        и --no-start-delay (21.58)."""
+        settings = self.settings
+        if settings.smoke_only or not settings.start_delay:
+            return
+        delay = self.rnd.uniform(0, settings.start_jitter_max_s)
+        run_folder.say(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …")
+        self.clock.sleep(delay)
 
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова

@@ -267,16 +267,6 @@ def print_grid(grid: dict, settings: Settings) -> None:
     )
 
 
-def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
-    """Случайное смещение старта ночи U(0; start_jitter_max_s) перед прогоном;
-    нет у --smoke-only и --no-start-delay (кейс 21.58)."""
-    if settings.smoke_only or not settings.start_delay:
-        return
-    delay = rnd.uniform(0, settings.start_jitter_max_s)
-    print(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …", flush=True)
-    clock.sleep(delay)
-
-
 def enter_cian(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
 ) -> tuple[Ticket, PageFetcher]:
@@ -289,10 +279,11 @@ def enter_cian(
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
-    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
-    пауза старта; вход на ЦИАН (билет, транспорт) обход вызовет сам в начале
-    прогона. Порядок вызовов случайности — часть поведения: seed → пауза
-    старта → UA → джиттер клеток → перемешивание."""
+    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы;
+    случайность и часы здесь не вызываются — паузу старта и вход на ЦИАН
+    (билет, транспорт) обход делает сам в начале прогона. Порядок вызовов
+    случайности — часть поведения: seed → пауза старта → UA → джиттер клеток
+    → перемешивание."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -307,7 +298,6 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # time берётся по имени модуля в момент вызова: так часы подменяют тесты
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
-    wait_start(settings, rnd, clock)
     crawl_input = CrawlInput(settings=settings, raw_tiles=tiles, grid=grid)
     return Crawl(
         crawl_input, lambda: enter_cian(settings, rnd, transport_factory), clock, rnd
