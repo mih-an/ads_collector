@@ -485,17 +485,7 @@ class Crawl:
     def run(self) -> dict:
         """Ночь целиком. → словарь summary.json (папка — self.paths.folder)."""
         state = self.state
-        self.log(
-            event="start",
-            budget=self.settings.budget,
-            sectors=len(self.tiles),
-            window_h=self.settings.window_hours,
-            mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.ticket.has_ticket),
-            cookie_age_h=self.ticket.age_h,
-            order="sectors_shuffled_pages_sequential",
-            dry_run=0,  # режим убран, поле осталось в формате
-        )
+        self._log_start()
         self.save_plan()
         if not self.smoke():
             return self.finish()
@@ -822,6 +812,20 @@ class Crawl:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
         stamp = self.clock.now().isoformat(timespec="seconds")
         run_folder.append_log(self.paths, stamp, fields)
+
+    def _log_start(self) -> None:
+        """Первая строка night.log: с чем прогон стартует."""
+        self.log(
+            event="start",
+            budget=self.settings.budget,
+            sectors=len(self.tiles),
+            window_h=self.settings.window_hours,
+            mean_interval_s=int(self.mean_interval_s),
+            ticket=int(self.ticket.has_ticket),
+            cookie_age_h=self.ticket.age_h,
+            order="sectors_shuffled_pages_sequential",
+            dry_run=0,  # режим убран, поле осталось в формате
+        )
 
     def _log_stop(self) -> None:
         """Строка STOP в night.log по причине остановки, записанной в состоянии."""
