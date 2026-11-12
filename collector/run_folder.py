@@ -2,7 +2,7 @@
 run_folder.py — папка прогона сборщика ЦИАН: имена, кодировки, порядок записи.
 
 Получает пути (RunPaths), готовые словари и ответ на запрос (PageAnswer);
-пишет папку <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log с эхом в stdout,
+пишет папку <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log с эхом в stdout (say),
 plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
 _broken_* с .note.txt, _block_*.txt, снимок охвата polygons.geojson.gz и
 summary.json (последним). Тексты служебных файлов — чистыми функциями;
@@ -80,13 +80,19 @@ def _fields_text(fields: dict) -> str:
     return "\t".join(f"{k}={v}" for k, v in fields.items())
 
 
+def say(text: str) -> None:
+    """Строка в stdout сразу, без буфера: единственная точка печати обхода
+    (crawl.py не печатает, страж 21.78)."""
+    print(text, flush=True)
+
+
 def append_log(paths: RunPaths, stamp: str, fields: dict) -> None:
     """Дописывает строку в night.log сразу (открыть, дописать, закрыть): время,
     таб, поля. Печатает её эхом: время, два пробела, поля."""
     text = _fields_text(fields)
     with open(paths.log, "a", encoding="utf-8") as fh:
         fh.write(f"{stamp}\t{text}\n")
-    print(f"{stamp}  {text}", flush=True)
+    say(f"{stamp}  {text}")
 
 
 def write_plan(paths: RunPaths, payload: dict) -> None:
