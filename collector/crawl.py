@@ -575,16 +575,32 @@ class Crawl:
         return self._crawl_pages(key, page)
 
     def _crawl_pages(self, key: str, page: int) -> bool:
-        """Листание клетки со страницы page до конца набора, с повторами после
-        сбоя сети. → продолжать ли ночь."""
+        """Листание клетки со страницы page до конца набора; после каждой
+        страницы, кроме последней, — пауза. → продолжать ли ночь."""
         tile = self.tiles[key]
-        attempts = 0  # повторов этой страницы уже было
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
+            self.download_page(key, page)
+            if self.state.stopped:
+                return False  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
+            if page == 1 and self.split(key):
+                return True  # родитель выбыл, дети в очереди
+            page += 1
+            # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
+            if not read_out(tile, page):
+                self.sleep_between()
+        return True
+
+    def download_page(self, key: str, page: int) -> None:
+        """Одна страница клетки; сбой сети — повторы с растущей паузой, сколько
+        пауз в Settings.net_retry_pauses. Каждая попытка — запрос, строка
+        night.log, задача plan.json и единица бюджета."""
+        attempts = 0  # повторов этой страницы уже было
+        while True:
             if self.state.spent >= self.settings.budget:
                 self.state.stopped = "budget_exhausted"
-                return False
+                return
             # с 11.09 все страницы — GET cat.php (вид ssr)
             origin = "seed" if page == 1 else "expanded"
             task = PageTask(
@@ -593,20 +609,10 @@ class Crawl:
             verdict = self.step(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
-                return True
-            if verdict == search_page.OK:
-                if page == 1 and self.split(key):
-                    return True  # родитель выбыл, дети в очереди
-                attempts = 0
-                page += 1
-                if not read_out(tile, page):
-                    self.sleep_between()
-                continue
             if task.state != "net_error":
-                return False  # BLOCK / API_CHANGED / NET_ERROR ×4
+                return
             self._retry_pause(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
-        return True
 
     def _retry_pause(self, key: str, page: int, attempts: int) -> None:
         """Пауза перед повтором номер attempts + 1 после сбоя сети."""
