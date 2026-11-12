@@ -147,7 +147,9 @@ class TransportChoice:
 
 
 def make_urllib(cookie_header: str | None) -> Transport:
-    """Транспорт на urllib стандартной библиотеки (по умолчанию)."""
+    """Транспорт на urllib стандартной библиотеки (по умолчанию). Функция, а не
+    сам класс в TRANSPORTS: так оба входа словаря устроены одинаково, как
+    make_httpx, и тип Callable[[str | None], Transport] виден явно."""
     return urllib_transport.UrllibTransport(cookie_header)
 
 
@@ -167,6 +169,15 @@ TRANSPORTS: dict[str, TransportChoice] = {
     "urllib": TransportChoice(library=None, make=make_urllib),
     "httpx": TransportChoice(library="httpx", make=make_httpx),
 }
+
+
+def make_transport(name: str, cookie_header: str | None) -> Transport:
+    """Транспорт по имени флага --transport из TRANSPORTS; незнакомое имя —
+    ValueError (21.81)."""
+    choice = TRANSPORTS.get(name)
+    if choice is None:
+        raise ValueError(f"make_transport: незнакомый транспорт name={name!r}")
+    return choice.make(cookie_header)
 
 
 # ─────────────────────────────── CLI ────────────────────────────────
@@ -258,15 +269,6 @@ def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
     delay = rnd.uniform(0, settings.start_jitter_max_s)
     print(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …", flush=True)
     clock.sleep(delay)
-
-
-def make_transport(name: str, cookie_header: str | None) -> Transport:
-    """Транспорт по имени флага --transport из TRANSPORTS; незнакомое имя —
-    ValueError (21.81)."""
-    choice = TRANSPORTS.get(name)
-    if choice is None:
-        raise ValueError(f"make_transport: незнакомый транспорт name={name!r}")
-    return choice.make(cookie_header)
 
 
 def main(
