@@ -625,7 +625,7 @@ class Crawl:
         """Одна клетка подряд: стр. 1 → 2 → … до конца набора; между
         страницами — пауза. Стоп ночи — в state.stopped."""
         page = 2 if 1 in self.tiles[key].pages_done else 1  # стр. 1 могла снять проба
-        if page == 2 and self.split(key):  # клетку-переросток сняла проба
+        if page == 2 and self.split_into_quarters(key):  # клетку-переросток сняла проба
             return
         tile = self.tiles[key]
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
@@ -634,7 +634,7 @@ class Crawl:
             self.download_page(key, page)
             if self.state.stopped:
                 return  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
-            if page == 1 and self.split(key):
+            if page == 1 and self.split_into_quarters(key):
                 return  # родитель выбыл, дети в очереди
             page += 1
             # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
@@ -789,7 +789,7 @@ class Crawl:
 
     # ── деление (E-42) ────────────────────────────────────────────
 
-    def split(self, key: str) -> bool:
+    def split_into_quarters(self, key: str) -> bool:
         """После стр. 1 клетки: totalOffers больше порога — родитель выбывает,
         4 четверти ∩ родитель встают в очередь того же среза. → разрезали ли.
         На дне не делим — листаем (вариант Б, решение Андрея 18.09)."""
