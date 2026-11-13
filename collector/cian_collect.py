@@ -4,7 +4,7 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 Получает argv (read_settings → Settings). build_crawl собирает обход
 crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
 в stdout), часы crawl.Clock. enter_cian — билет (read_ticket → Ticket),
-транспорт (make_transport) и page_fetch.CianSite; его зовёт сам обход
+транспорт (make_transport) → page_fetch.CianSite; его зовёт сам обход
 после паузы старта. main запускает обход и печатает итог. Сети здесь нет
 (она в транспорте); сервер и запуск — collector/README.md.
 """
@@ -218,13 +218,12 @@ def print_grid(grid: dict, settings: Settings) -> None:
 
 def enter_cian(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
-) -> tuple[Ticket, CianSite]:
-    """Вход на ЦИАН: билет (куки, UA, возраст кук) и запрос страницы на
-    выбранном транспорте."""
+) -> CianSite:
+    """Вход на ЦИАН: сайт с билетом (куки, UA, возраст кук) на выбранном
+    транспорте."""
     ticket = read_ticket(settings, time.time(), rnd)
     transport = transport_factory(settings.transport, ticket.cookie_header)
-    fetcher = CianSite(transport, ticket, time.monotonic)
-    return ticket, fetcher
+    return CianSite(transport, ticket, time.monotonic)
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:

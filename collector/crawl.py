@@ -462,14 +462,14 @@ def summary_text(report: dict, folder: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); вход на ЦИАН — enter_cian, сеть — только через fetcher, часы и сон —
+    (say); вход на ЦИАН — enter_cian, сеть — только через site, часы и сон —
     через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        enter_cian: Callable[[], tuple[page_fetch.Ticket, page_fetch.CianSite]],
+        enter_cian: Callable[[], page_fetch.CianSite],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
@@ -484,8 +484,7 @@ class Crawl:
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # появляются в open_run
-        self.ticket: page_fetch.Ticket
-        self.fetcher: page_fetch.CianSite
+        self.site: page_fetch.CianSite
         self.started_at: datetime
         self.folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish
@@ -494,7 +493,7 @@ class Crawl:
         """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
         прогона, клетки в работу, очередь вперемешку."""
         # билет — после паузы старта: возраст кук и UA (порядок случайности)
-        self.ticket, self.fetcher = self.enter_cian()
+        self.site = self.enter_cian()
         self.started_at = self.clock.now()
         self.folder = run_folder.RunFolder.create(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only
@@ -594,7 +593,7 @@ class Crawl:
     def _smoke_failed(self, key: str, answer: run_folder.PageAnswer) -> None:
         """Проба не прошла (не OK): итог пробы и стоп ночи."""
         state = self.state
-        detail = burned_mark(answer.verdict, answer.detail, self.ticket.has_ticket)
+        detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
         state.smoke = {"sector": key, "verdict": answer.verdict, "detail": detail}
         state.stop_class, state.stop_detail = answer.verdict, detail
         state.stopped = "smoke_failed"
@@ -667,7 +666,7 @@ class Crawl:
 
     def _stop(self, answer: run_folder.PageAnswer) -> None:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log."""
-        detail = burned_mark(answer.verdict, answer.detail, self.ticket.has_ticket)
+        detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
         state.stopped = answer.verdict.lower()
@@ -696,13 +695,13 @@ class Crawl:
     # ── один запрос ───────────────────────────────────────────────
 
     def request_page(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
-        """Сам запрос, без решений: ссылка и Referer, сайт (`fetcher.fetch`),
+        """Сам запрос, без решений: ссылка и Referer, сайт (`site.fetch`),
         разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
         Бюджет, очередь и стоп не трогает."""
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
         referer = search_page.page_url(ring, page - 1) if page > 1 else None
-        response = self.fetcher.fetch(search_page.page_url(ring, page), referer)
+        response = self.site.fetch(search_page.page_url(ring, page), referer)
         headers = response.headers
         verdict, detail, total, offers = search_page.classify_page(
             response.code,
@@ -745,10 +744,12 @@ class Crawl:
                 answer.body,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
-            name = self.folder.write_broken(answer, self.ticket.ua, self._stamp_hms())
+            name = self.folder.write_broken(
+                answer, self.site.ticket.ua, self._stamp_hms()
+            )
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            self.folder.write_block(answer, self.ticket.ua, self._stamp_hms())
+            self.folder.write_block(answer, self.site.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -886,8 +887,8 @@ class Crawl:
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.ticket.has_ticket),
-            cookie_age_h=self.ticket.age_h,
+            ticket=int(self.site.ticket.has_ticket),
+            cookie_age_h=self.site.ticket.age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
         )
@@ -923,7 +924,7 @@ class Crawl:
     def save_plan(self) -> None:
         self.folder.write_plan(
             plan_payload(
-                self.state, self.settings, self.ticket, self.started_at, self.tiles
+                self.state, self.settings, self.site.ticket, self.started_at, self.tiles
             ),
         )
 
@@ -932,7 +933,7 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.site.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
