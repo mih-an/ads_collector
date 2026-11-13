@@ -117,20 +117,24 @@ def describe_changes(run, expected_dir: Path) -> list[str]:
         if name.endswith(".json"):
             keys = changed_keys(run.run_dir / name, expected_dir / name)
             entry = f"{name} (ключи: {', '.join(keys)})"
+            if not keys:
+                # текст разный, а значения равны — «ключи: » ничего бы не сказал
+                entry = (
+                    f"{name} (значения равны — расходится порядок ключей "
+                    "или оформление)"
+                )
         described.append(entry)
     return described
 
 
-def write_expected(run, expected_dir: Path) -> list[str]:
+def write_expected(run, expected_dir: Path) -> None:
     """Копирует расходящиеся night.log, plan.json, summary.json в эталон байт
-    в байт и сверяет записанное. → имена записанных файлов."""
-    changed = changed_files(run, expected_dir)
-    for name in changed:
+    в байт и сверяет записанное."""
+    for name in changed_files(run, expected_dir):
         shutil.copyfile(run.run_dir / name, expected_dir / name)
     left = changed_files(run, expected_dir)
     if left:
         raise ExpectedChanged(f"{expected_dir}: после записи расходятся {left}")
-    return changed
 
 
 def rebuild_all(check_only: bool) -> dict[str, list[str]]:

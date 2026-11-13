@@ -590,9 +590,8 @@ class Crawl:
             verdict = self.try_page(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
-            # окончательный ответ — или стоп: провал пробы, когда бюджет
-            # кончился на её повторах (21.46)
-            if task.state != "net_error" or self.state.stopped:
+            answered = task.state != "net_error"  # окончательный ответ страницы
+            if answered:
                 return
             self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
@@ -603,6 +602,7 @@ class Crawl:
         задачи (вердикт и число попыток) учитывает страницу или ставит стоп,
         на стр. 1 первой клетки пишет итог пробы (ключ smoke), сохраняет
         plan.json. → вердикт"""
+        on_smoke = self.smoke_unanswered()  # эта попытка — проба (21.32)
         answer = self.request_page(task.sector, task.page, task.kind)
         self.state.spent += 1
         task.attempts += 1
@@ -610,33 +610,30 @@ class Crawl:
         self._log_request(answer)
         retries = len(self.settings.net_retry_pauses)
         task.state = task_state(answer.verdict, task.attempts, retries)
+        # бюджет кончился на повторах пробы — провал пробы, задача failed,
+        # как при любом стопе (21.46, 21.55)
+        if on_smoke and task.state == "net_error" and not self.budget_left():
+            task.state = "failed"
         self.state.done.append(task)
         if task.state == "done":
             self._absorb(answer)
-        # бюджет кончился на повторах пробы — тоже провал пробы (21.46)
-        smoke_cut = (
-            self.smoke_unanswered()
-            and task.state == "net_error"
-            and not self.budget_left()
-        )
         stop_detail = None
-        if task.state == "failed" or smoke_cut:
-            stop_detail = self._stop(answer)
-        # итог пробы — по окончательному ответу стр. 1 первой клетки (21.32);
-        # пишется после _stop: тот по smoke_unanswered() ставит smoke_failed
-        if self.smoke_unanswered() and (task.state != "net_error" or smoke_cut):
+        if task.state == "failed":
+            stop_detail = self._stop(answer, on_smoke)
+        answered = task.state != "net_error"  # окончательный ответ страницы
+        if on_smoke and answered:
             self.state.smoke = smoke_entry(answer, stop_detail)
         self.save_plan()
         return answer.verdict
 
-    def _stop(self, answer: run_folder.PageAnswer) -> str:
+    def _stop(self, answer: run_folder.PageAnswer, on_smoke: bool) -> str:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
-        пробе — smoke_failed (21.32). → деталь стопа (с пометкой «билет
-        сгорел»)."""
+        пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
+        «билет сгорел»)."""
         detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
-        if self.smoke_unanswered():
+        if on_smoke:
             state.stopped = "smoke_failed"
         else:
             state.stopped = answer.verdict.lower()
