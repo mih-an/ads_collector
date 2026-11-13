@@ -1,7 +1,7 @@
 """
 crawl.py — обход выдачи ЦИАН: данные, правила обхода и класс обхода Crawl.
 
-Данные: Settings, Ticket, Clock (часы и сон), TileState, PageTask, CrawlState.
+Данные: Settings, Clock (часы и сон), TileState, PageTask, CrawlState.
 Правила — функции без внешнего мира: интервал и паузы, пул пробы, деление
 [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень, повторы,
 словари plan.json и summary.json, текст итога. Crawl ведёт прогон: проба,
@@ -71,19 +71,6 @@ class Settings:
         """[E-42] режим сетки — пока порог деления включён (файл секторов без
         level убран решением Андрея 10.11)."""
         return self.split_threshold > 0
-
-
-@dataclass(frozen=True)
-class Ticket:
-    """Входной билет: строка Cookie (нет или пусто — None), UA и возраст кук, ч."""
-
-    cookie_header: str | None
-    ua: str
-    age_h: float | None
-
-    @property
-    def has_ticket(self) -> bool:
-        return bool(self.cookie_header)
 
 
 @dataclass(frozen=True)
@@ -335,7 +322,7 @@ def task_entry(task: PageTask) -> dict:
 def plan_payload(
     state: CrawlState,
     settings: Settings,
-    ticket: Ticket,
+    ticket: page_fetch.Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -381,7 +368,7 @@ def _stateless_ok(full: list[dict]) -> bool | None:
 def summary_report(
     state: CrawlState,
     settings: Settings,
-    ticket: Ticket,
+    ticket: page_fetch.Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -482,7 +469,7 @@ class Crawl:
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        enter_cian: Callable[[], tuple[Ticket, page_fetch.PageFetcher]],
+        enter_cian: Callable[[], tuple[page_fetch.Ticket, page_fetch.PageFetcher]],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
@@ -497,7 +484,7 @@ class Crawl:
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # появляются в open_run
-        self.ticket: Ticket
+        self.ticket: page_fetch.Ticket
         self.fetcher: page_fetch.PageFetcher
         self.started_at: datetime
         self.folder: run_folder.RunFolder

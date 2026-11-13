@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
-from collector.crawl import Clock, Crawl, Settings, Ticket
+from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
-from collector.page_fetch import PageFetcher
+from collector.page_fetch import PageFetcher, Ticket
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────

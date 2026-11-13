@@ -6,6 +6,7 @@ monotonic (PageFetcher). Отдаёт FetchedPage на каждый запрос
 у браузера, распаковка тела (битое сжатие ответа 2xx — сбой сети, З167),
 длительность запроса; сбой сети — код 0 с деталью. Повторов нет — они в
 crawl.Crawl. Без сети, диска и часов: сжатие — только в памяти.
+Здесь же входной билет Ticket (куки, UA, возраст кук).
 """
 
 from __future__ import annotations
@@ -13,10 +14,24 @@ from __future__ import annotations
 import gzip
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from collector.search_page import CIAN_BASE_URL
 from collector.transport import HttpReply, NetworkFailure, Transport
+
+
+@dataclass(frozen=True)
+class Ticket:
+    """Входной билет: строка Cookie (нет или пусто — None), UA и возраст кук, ч."""
+
+    cookie_header: str | None
+    ua: str
+    age_h: float | None
+
+    @property
+    def has_ticket(self) -> bool:
+        return bool(self.cookie_header)
 
 
 class FetchedPage(NamedTuple):
