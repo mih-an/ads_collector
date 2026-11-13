@@ -107,16 +107,16 @@ class RunFolder:
     @classmethod
     def create(cls, runs_dir: str, started_at: datetime, smoke_only: bool) -> RunFolder:
         """Папка прогона и raw/ в ней; уже есть — пишем в неё же (exist_ok)."""
-        folder = os.path.join(runs_dir, folder_label(started_at, smoke_only))
-        raw = os.path.join(folder, "raw")
+        path = os.path.join(runs_dir, folder_label(started_at, smoke_only))
+        raw = os.path.join(path, "raw")
         os.makedirs(raw, exist_ok=True)
         return cls(
-            path=folder,
+            path=path,
             raw=raw,
-            log=os.path.join(folder, "night.log"),
-            plan=os.path.join(folder, "plan.json"),
-            summary=os.path.join(folder, "summary.json"),
-            polygons=os.path.join(folder, "polygons.geojson.gz"),
+            log=os.path.join(path, "night.log"),
+            plan=os.path.join(path, "plan.json"),
+            summary=os.path.join(path, "summary.json"),
+            polygons=os.path.join(path, "polygons.geojson.gz"),
         )
 
     def append_log(self, stamp: str, fields: dict) -> None:

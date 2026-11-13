@@ -149,7 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--runs-dir", default=RUNS_DIR)
     ap.add_argument("--window-hours", type=float, default=WINDOW_HOURS)
     ap.add_argument(
-        "--smoke-only", action="store_true", help="1 запрос: жив ли контракт"
+        "--smoke-only",
+        action="store_true",
+        help="страница 1 первой клетки; при сбое сети — повторы",
     )
     ap.add_argument("--no-start-delay", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
@@ -166,7 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
-    паузы старта (21.81, 21.82)."""
+    паузы старта (21.45, 21.81, 21.82)."""
+    # прогона без запросов нет: smoke в законченном прогоне — всегда словарь
+    # (21.45; DECISIONS, block/simplify-2, ревью PR #4)
+    if args.budget < 1:
+        ap.error(f"--budget {args.budget}: нужен хотя бы 1 запрос")
     library = TRANSPORTS[args.transport].library
     if library is not None and importlib.util.find_spec(library) is None:
         ap.error(

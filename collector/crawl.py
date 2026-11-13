@@ -409,7 +409,7 @@ LADDER_VERDICTS = {
 }
 
 
-def summary_text(report: dict, folder: str) -> str:
+def summary_text(report: dict, path: str) -> str:
     """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
     ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
     # первая строка пустая: она отделяет итог от строк stdout выше
@@ -434,7 +434,7 @@ def summary_text(report: dict, folder: str) -> str:
         f"дублей id {report['duplicate_ids_total']}, "
         f"stateless-пагинация {report['stateless_pagination_ok']}"
     )
-    lines.append(f"файлы: {folder}")
+    lines.append(f"файлы: {path}")
     lines.append("─" * 64)
     by_total = sorted(
         report["sectors"].items(), key=lambda kv: -(kv[1]["total_offers"] or 0)
@@ -529,8 +529,10 @@ class Crawl:
         self._log_start()
         self.save_plan()
         if self.settings.smoke_only:
-            # только проба: стр. 1 первой клетки без деления и листания (21.57)
-            self.download_page(state.pending.pop(0), 1)
+            # только проба: стр. 1 первой клетки без деления и листания (21.57);
+            # очередь не пуста — файл клеток без двух клеток не читается (21.60)
+            key = state.pending.pop(0)
+            self.download_page(key, 1)
             self.finish()
             return
         try:
@@ -542,12 +544,12 @@ class Crawl:
                 self.save_plan()
                 self.pause_between_tiles()
         except KeyboardInterrupt:
-            if self.probe_unanswered():
+            if self.smoke_unanswered():
                 raise  # Ctrl+C до итога пробы — выход без сводки (21.51)
             state.stopped, state.stop_class = "interrupted", "interrupted"
         self.finish()
 
-    def probe_unanswered(self) -> bool:
+    def smoke_unanswered(self) -> bool:
         """Итога пробы ещё нет — идёт стр. 1 первой клетки (21.32)."""
         return self.state.smoke is None
 
@@ -588,7 +590,9 @@ class Crawl:
             verdict = self.try_page(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
-            if task.state != "net_error":
+            # окончательный ответ — или стоп: провал пробы, когда бюджет
+            # кончился на её повторах (21.46)
+            if task.state != "net_error" or self.state.stopped:
                 return
             self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
@@ -597,7 +601,8 @@ class Crawl:
         """Одна попытка страницы — решение обхода: зовёт `request_page`, тратит
         единицу бюджета, пишет строку night.log и задачу в done, по состоянию
         задачи (вердикт и число попыток) учитывает страницу или ставит стоп,
-        сохраняет plan.json. → вердикт"""
+        на стр. 1 первой клетки пишет итог пробы (ключ smoke), сохраняет
+        plan.json. → вердикт"""
         answer = self.request_page(task.sector, task.page, task.kind)
         self.state.spent += 1
         task.attempts += 1
@@ -608,22 +613,30 @@ class Crawl:
         self.state.done.append(task)
         if task.state == "done":
             self._absorb(answer)
-        if task.state == "failed":
-            self._stop(answer)
-        # итог пробы — по окончательному ответу стр. 1 первой клетки, после
-        # повторов (21.32, 21.46); stop_detail есть, только если она — стоп
-        if self.probe_unanswered() and task.state != "net_error":
-            self.state.smoke = smoke_entry(answer, self.state.stop_detail)
+        # бюджет кончился на повторах пробы — тоже провал пробы (21.46)
+        smoke_cut = (
+            self.smoke_unanswered()
+            and task.state == "net_error"
+            and not self.budget_left()
+        )
+        stop_detail = None
+        if task.state == "failed" or smoke_cut:
+            stop_detail = self._stop(answer)
+        # итог пробы — по окончательному ответу стр. 1 первой клетки (21.32);
+        # пишется после _stop: тот по smoke_unanswered() ставит smoke_failed
+        if self.smoke_unanswered() and (task.state != "net_error" or smoke_cut):
+            self.state.smoke = smoke_entry(answer, stop_detail)
         self.save_plan()
         return answer.verdict
 
-    def _stop(self, answer: run_folder.PageAnswer) -> None:
+    def _stop(self, answer: run_folder.PageAnswer) -> str:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
-        пробе — smoke_failed (21.32)."""
+        пробе — smoke_failed (21.32). → деталь стопа (с пометкой «билет
+        сгорел»)."""
         detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
-        if self.probe_unanswered():
+        if self.smoke_unanswered():
             state.stopped = "smoke_failed"
         else:
             state.stopped = answer.verdict.lower()
@@ -634,6 +647,7 @@ class Crawl:
             detail=detail,
             spent=state.spent,
         )
+        return detail
 
     def _absorb(self, answer: run_folder.PageAnswer) -> None:
         """Учёт страницы ответа в её клетке; короткая страница — конец клетки."""

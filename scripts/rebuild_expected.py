@@ -99,6 +99,28 @@ def changed_files(run, expected_dir: Path) -> list[str]:
     ]
 
 
+def changed_keys(actual: Path, expected: Path) -> list[str]:
+    """Ключи верхнего уровня JSON, чьи значения расходятся после маски
+    тестов: так из вывода видно, что изменилось (например, только smoke)."""
+    tools = night_tools()
+    got = json.loads(tools.mask_unstable(actual.read_text(encoding="utf-8")))
+    want = json.loads(tools.mask_unstable(expected.read_text(encoding="utf-8")))
+    keys = dict.fromkeys([*got, *want])
+    return [key for key in keys if got.get(key) != want.get(key)]
+
+
+def describe_changes(run, expected_dir: Path) -> list[str]:
+    """Расходящиеся файлы; у JSON — ещё и изменившиеся ключи верхнего уровня."""
+    described = []
+    for name in changed_files(run, expected_dir):
+        entry = name
+        if name.endswith(".json"):
+            keys = changed_keys(run.run_dir / name, expected_dir / name)
+            entry = f"{name} (ключи: {', '.join(keys)})"
+        described.append(entry)
+    return described
+
+
 def write_expected(run, expected_dir: Path) -> list[str]:
     """Копирует расходящиеся night.log, plan.json, summary.json в эталон байт
     в байт и сверяет записанное. → имена записанных файлов."""
@@ -113,7 +135,8 @@ def write_expected(run, expected_dir: Path) -> list[str]:
 
 def rebuild_all(check_only: bool) -> dict[str, list[str]]:
     """Все ночи: сначала проигрывание и проверки каждой, потом запись — без
-    половины эталонов при ошибке. → ночь: изменённые файлы."""
+    половины эталонов при ошибке. → ночь: описание изменённых файлов (до
+    записи)."""
     result = {}
     with tempfile.TemporaryDirectory() as tmp:
         runs = {}
@@ -124,10 +147,9 @@ def rebuild_all(check_only: bool) -> dict[str, list[str]]:
             check_unchanged(runs[label], NIGHTS_DIR / label / "expected")
         for label, run in runs.items():
             expected_dir = NIGHTS_DIR / label / "expected"
-            if check_only:
-                result[label] = changed_files(run, expected_dir)
-            else:
-                result[label] = write_expected(run, expected_dir)
+            result[label] = describe_changes(run, expected_dir)
+            if not check_only:
+                write_expected(run, expected_dir)
     return result
 
 
@@ -144,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     verb = "изменились бы" if args.check else "переписаны"
     for label, changed in result.items():
-        what = f"{verb} {', '.join(changed)}" if changed else "изменений нет"
+        what = f"{verb} {'; '.join(changed)}" if changed else "изменений нет"
         print(f"{label}: {what}")
     return 0
 
