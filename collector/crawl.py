@@ -650,7 +650,7 @@ class Crawl:
             task = PageTask(
                 sector=key, page=page, kind="ssr", origin=origin, attempts=attempts
             )
-            verdict = self.step(task)
+            verdict = self.try_page(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
             if task.state != "net_error":
@@ -658,8 +658,11 @@ class Crawl:
             self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
 
-    def step(self, task: PageTask) -> str:
-        """Один запрос обхода. → вердикт; стоп-вердикты попутно ставят stopped."""
+    def try_page(self, task: PageTask) -> str:
+        """Одна попытка страницы — решение обхода: зовёт `request`, тратит
+        единицу бюджета, пишет строку night.log и задачу в done, по состоянию
+        задачи (вердикт и число попыток) учитывает страницу или ставит стоп,
+        сохраняет plan.json. → вердикт"""
         answer = self.request(task.sector, task.page, task.kind)
         self.state.spent += 1
         task.attempts += 1
