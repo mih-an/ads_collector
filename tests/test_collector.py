@@ -2374,6 +2374,55 @@ def test_21_45_no_pause_when_budget_spent(env, monkeypatch):
     assert env.clock.pauses == []
 
 
+# Края бюджета 3. Проба — всегда по A (единственная клетка от 15 км²), и при
+# seed 1 A стоит в очереди последней: проба (A, 1) → (B, 1) → (A, 2). B
+# дочитана одной короткой страницей, так что последним запросом бюджета
+# дочитывается A — при любом порядке очереди, раз (A, 2) и (B, 1) обе
+# короткие.
+LAST_CELL_READ_OUT = {
+    (A, 1): [page(1, 28, 30)],
+    (A, 2): [page(29, 2, 30)],
+    (B, 1): [page(100, 3, 3)],
+}
+# A — четыре страницы (total 100): бюджет кончается после (A, 2), (A, 3) не
+# запрашивается.
+LAST_CELL_CUT = {
+    (A, 1): [page(1, 28, 100)],
+    (A, 2): [page(29, 28, 100)],
+    (B, 1): [page(100, 3, 3)],
+}
+
+
+def test_21_45_last_cell_read_by_last_request(env, monkeypatch):
+    """21.45 Последняя клетка очереди дочитана ровно последним запросом
+    бюджета: stopped queue_empty, очередь пуста, ступень passed. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, LAST_CELL_READ_OUT, "--budget", "3")
+    summary = summary_of(run_dir)
+    plan = read_json(run_dir / "plan.json")
+    assert (
+        summary["stopped"],
+        summary["spent"],
+        plan["pending_sectors"],
+        summary["ladder_result"],
+    ) == ("queue_empty", 3, [], "passed")
+
+
+def test_21_45_budget_ends_inside_last_cell(env, monkeypatch):
+    """21.45 Бюджет кончился посреди последней клетки (очередь пуста):
+    stopped budget_exhausted, следующая страница не запрошена, клетка не
+    дочитана. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, LAST_CELL_CUT, "--budget", "3")
+    summary = summary_of(run_dir)
+    plan = read_json(run_dir / "plan.json")
+    assert (
+        summary["stopped"],
+        summary["spent"],
+        plan["pending_sectors"],
+        pages_asked(env, A),
+        summary["sectors"][A]["complete"],
+    ) == ("budget_exhausted", 3, [], [1, 2], False)
+
+
 HTTP_500 = Reply(500, b"oops")
 # Ответ 200 с обрезанным gzip: сбой сети с повторами, как 500 (З167).
 TRUNCATED_OK = Reply(200, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
