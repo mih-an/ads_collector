@@ -885,7 +885,7 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
 
 
-def test_21_14_load_sectors_fields(tmp_path):
+def test_21_14_tiles_file_fields(tmp_path):
     """21.14 TilesFile: ключ строкой, поля клетки; у сектора без полей
     клетки — name "", status "", area 0.0, level/parent/clipped/base None.
     Модуль 21."""
@@ -924,7 +924,7 @@ def test_21_14_load_sectors_fields(tmp_path):
     ]
 
 
-def test_21_14_load_sectors_skips_collect_false(tmp_path):
+def test_21_14_tiles_file_skips_collect_false(tmp_path):
     """21.14 Клетка с collect=false (разрезанный родитель) не грузится.
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
@@ -932,7 +932,7 @@ def test_21_14_load_sectors_skips_collect_false(tmp_path):
     assert [s["sector"] for s in geometry.TilesFile(str(path)).tiles] == [B]
 
 
-def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
+def test_21_14_tiles_file_rejects_non_polygon(tmp_path):
     """21.14 Не Polygon — ValueError с ключом сектора и типом. Модуль 21."""
     path = tmp_path / "tiles.geojson"
     feature = tile(A)
