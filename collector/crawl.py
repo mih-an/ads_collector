@@ -6,7 +6,7 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень, повторы,
 словари plan.json и summary.json, текст итога. Crawl ведёт прогон: проба,
 очередь, листание, деление, бюджет, стоп; внешний мир — только вход на ЦИАН
-(enter_cian), запрос страницы (page_fetch.PageFetcher), Clock, rnd,
+(enter_cian), сайт ЦИАН (page_fetch.CianSite), Clock, rnd,
 run_folder (запись и печать run_folder.say) и TilesFile.record_split.
 """
 
@@ -469,7 +469,7 @@ class Crawl:
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        enter_cian: Callable[[], tuple[page_fetch.Ticket, page_fetch.PageFetcher]],
+        enter_cian: Callable[[], tuple[page_fetch.Ticket, page_fetch.CianSite]],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
@@ -485,7 +485,7 @@ class Crawl:
         self.tiles: dict[str, TileState] = {}
         # появляются в open_run
         self.ticket: page_fetch.Ticket
-        self.fetcher: page_fetch.PageFetcher
+        self.fetcher: page_fetch.CianSite
         self.started_at: datetime
         self.folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish

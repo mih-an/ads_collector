@@ -3,24 +3,24 @@
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
-геометрия и ссылка на выдачу, логика запроса страницы над транспортом
-(PageFetcher), сценарии прогона, main; в конце — страж 21.78 (кто что
+геометрия и ссылка на выдачу, сайт ЦИАН над транспортом
+(CianSite), сценарии прогона, main; в конце — страж 21.78 (кто что
 импортирует, модули правил без внешнего мира). Сети нет: main получает
 фабрику фальшивого транспорта FakeTransport (tests/collector_support.py),
-обход — тот же транспорт через PageFetcher; urllib и подмены сети здесь не
+обход — тот же транспорт через CianSite; urllib и подмены сети здесь не
 нужны (сами транспорты — tests/test_collector_transport.py). Часы и сон
 подменены, случайность — --seed, папки и билет — во временной папке теста.
 Имена берутся из своих модулей: search_page (разбор ответа), geometry
-(клетки), page_fetch (запрос страницы), crawl (обход); через cc — только
+(клетки), page_fetch (сайт ЦИАН), crawl (обход); через cc — только
 запуск и края.
 
 Точки подмены, которые код обязан сохранить:
 - cc.main(transport_factory=...) — разбор sys.argv и весь прогон; фабрика
   зовётся как factory(имя транспорта, строка Cookie или None);
-- page_fetch.PageFetcher(transport, ticket, monotonic) и
-  page_fetch.decode_body(raw, content_encoding) — PageFetcher зовёт её по
+- page_fetch.CianSite(transport, ticket, monotonic) и
+  page_fetch.decode_body(raw, content_encoding) — CianSite зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
-- cc.time (time, sleep, monotonic — enter_cian передаёт его в PageFetcher) и
+- cc.time (time, sleep, monotonic — enter_cian передаёт его в CianSite) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
 - crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
@@ -221,7 +221,7 @@ def env(tmp_path, monkeypatch) -> Env:
     tiles = tmp_path / "tiles.geojson"
     fake = FakeTransport(tiles, {})
     # одни часы на всё: time, sleep и monotonic (его main передаёт в
-    # PageFetcher) — у cc; now — для обхода без main (make_crawl)
+    # CianSite) — у cc; now — для обхода без main (make_crawl)
     clock = FakeTime(EPOCH, zone=MSK)
     monkeypatch.setattr(cc, "time", clock)
     monkeypatch.setattr(cc, "datetime", frozen_datetime(MOMENT))
@@ -299,13 +299,13 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile); enter_cian отдаёт билет как в env и PageFetcher
+    features (TilesFile); enter_cian отдаёт билет как в env и CianSite
     над фальшивым транспортом env; часы и сон — FakeTime env,
     случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
-    fetcher = page_fetch.PageFetcher(env.transport, fake_ticket(), env.clock.monotonic)
+    fetcher = page_fetch.CianSite(env.transport, fake_ticket(), env.clock.monotonic)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
@@ -1422,7 +1422,7 @@ def test_21_22_record_split_parent_missing(tmp_path):
     )
 
 
-# ═══════════════ В. Запрос страницы над транспортом (PageFetcher) ═══════════════
+# ═══════════════════ В. Сайт ЦИАН над транспортом (CianSite) ════════════════════
 # Сами транспорты (куки, редирект, сбои, тайм-аут) —
 # tests/test_collector_transport.py.
 
@@ -1441,7 +1441,7 @@ def fetch_env(tmp_path):
 
 
 def fetcher(fetch_env, has_ticket=True, replies=()):
-    """PageFetcher сборщика над фальшивым транспортом; replies — ответы на
+    """CianSite сборщика над фальшивым транспортом; replies — ответы на
     запросы страницы 1 клетки A по порядку."""
     fetch_env.transport.replies[A, 1] = list(replies)
     ticket = page_fetch.Ticket(
@@ -1449,9 +1449,7 @@ def fetcher(fetch_env, has_ticket=True, replies=()):
         ua=USER_AGENT,
         age_h=TICKET_AGE_H,
     )
-    return page_fetch.PageFetcher(
-        fetch_env.transport, ticket, fetch_env.clock.monotonic
-    )
+    return page_fetch.CianSite(fetch_env.transport, ticket, fetch_env.clock.monotonic)
 
 
 # Заголовки браузера, имена в нижнем регистре (lower_keys).
@@ -1478,7 +1476,7 @@ def sent_headers(fetch_env, index: int = 0) -> dict[str, str]:
 def test_21_24_headers_with_ticket(fetch_env):
     """21.24 fetch страницы 1 с билетом: заголовки браузера, заход «с
     главной» (Referer https://www.cian.ru/, same-origin); Cookie кладёт
-    транспорт, PageFetcher его не передаёт. Модуль 21."""
+    транспорт, CianSite его не передаёт. Модуль 21."""
     fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     expected = BROWSER_HEADERS | {
         "sec-fetch-site": "same-origin",
@@ -2949,7 +2947,7 @@ def test_21_52_ticket_reaches_request(env, monkeypatch):
     получает строку Cookie из cookies.txt (её кладёт в запрос транспорт,
     21.23), у первого запроса (проба) User-Agent — строка из ua.txt и заход
     «с главной» (Referer https://www.cian.ru/, Sec-Fetch-Site same-origin):
-    признак билета доходит до PageFetcher. Значения отличны от умолчаний
+    признак билета доходит до CianSite. Значения отличны от умолчаний
     теста, чтобы было видно чтение файлов. Модуль 21."""
     (env.folder / "cookies.txt").write_text("sid=from-file\n", encoding="utf-8")
     (env.folder / "ua.txt").write_text("TestAgent/1.0 (ua.txt)\n", encoding="utf-8")
@@ -2972,7 +2970,7 @@ def test_21_52_no_cookie_without_ticket(env, monkeypatch):
     """21.52 Нет cookies.txt: фабрика транспорта получает строку Cookie
     None — у запросов полного запуска заголовка Cookie нет (21.23); первый
     запрос (проба) — заход из адресной строки: Sec-Fetch-Site none, без
-    Referer (признак «нет билета» доходит до PageFetcher). Модуль 21."""
+    Referer (признак «нет билета» доходит до CianSite). Модуль 21."""
     (env.folder / "cookies.txt").unlink()
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
     headers = lower_keys(env.transport.sent[0].headers)
@@ -3796,7 +3794,7 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
 
 COLLECTOR_DIR = REPO_ROOT / "collector"
 # Без часов и сети: правила, интерфейс транспорта и логика запроса страницы
-# (monotonic приходит в PageFetcher аргументом).
+# (monotonic приходит в CianSite аргументом).
 RULE_MODULES = (
     "crawl.py",
     "search_page.py",
@@ -4231,7 +4229,7 @@ def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (crawl, search_page, geometry, run_folder),
     transport и page_fetch не импортируют time, socket, urllib.request,
     urllib.error, http: сеть — в реализациях транспорта, часы — в
-    cian_collect (monotonic приходит в PageFetcher аргументом). Модуль 21."""
+    cian_collect (monotonic приходит в CianSite аргументом). Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
 
 
@@ -4239,7 +4237,7 @@ def test_21_78_no_network_or_clock_imports(name):
 def test_21_78_transports_no_clock_imports(name):
     """21.78 Реализации транспорта (urllib_transport, httpx_transport) не
     импортируют time: сеть им можно, а часы — нет; длительность запроса
-    меряет PageFetcher переданным monotonic. Модуль 21."""
+    меряет CianSite переданным monotonic. Модуль 21."""
     assert clock_imports(collector_source(name)) == []
 
 
@@ -4434,7 +4432,7 @@ GUARD_SAMPLES = [
         "    httpx_transport = None",
     ),
     (transport_layer_imports, "from collector import crawl"),
-    (transport_layer_imports, "from collector.page_fetch import PageFetcher"),
+    (transport_layer_imports, "from collector.page_fetch import CianSite"),
     (transport_layer_imports, "import search_page"),
     # crawl импортирует transport или реализацию транспорта напрямую
     (crawl_layer_imports, "from collector.transport import HttpReply"),
@@ -4531,7 +4529,7 @@ def get(self, request) -> HttpReply:
 # через него), search_page, geometry, run_folder.
 CRAWL_CLEAN_SAMPLE = """
 from collector import geometry, page_fetch, run_folder, search_page
-from collector.page_fetch import PageFetcher
+from collector.page_fetch import CianSite
 """
 
 # Образец разрешённого cian_collect: httpx_transport — только внутри функции
