@@ -299,18 +299,18 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile); enter_cian отдаёт билет как в env и CianSite
+    features (TilesFile); enter_cian отдаёт CianSite с билетом как в env
     над фальшивым транспортом env; часы и сон — FakeTime env,
     случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
-    fetcher = page_fetch.CianSite(env.transport, fake_ticket(), env.clock.monotonic)
+    site = page_fetch.CianSite(env.transport, fake_ticket(), env.clock.monotonic)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
         tiles_file,
-        lambda: (fake_ticket(), fetcher),
+        lambda: site,
         clock,
         random.Random(1),
     )
