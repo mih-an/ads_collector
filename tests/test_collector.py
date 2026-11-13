@@ -1785,24 +1785,50 @@ def queue_run(env, monkeypatch, features, seed: int, *args):
     return run_main(env, monkeypatch, features, replies, *args, seed=str(seed))
 
 
+def queue_features() -> list[dict]:
+    """Клетки QUEUE_KEYS с площадями QUEUE_AREAS."""
+    pairs = zip(QUEUE_KEYS, QUEUE_AREAS, strict=True)
+    return [tile(key, area=area) for key, area in pairs]
+
+
+def budget_one_view(env, monkeypatch, seed: int) -> tuple:
+    """Прогон по клеткам очереди с --budget 1 и seed. → (клетки запросов,
+    клетка smoke, клетка первой задачи done, pending_sectors)."""
+    run_dir = queue_run(env, monkeypatch, queue_features(), seed, "--budget", "1")
+    plan = read_json(run_dir / "plan.json")
+    return (
+        [s.cell for s in env.transport.sent],
+        summary_of(run_dir)["smoke"]["sector"],
+        plan["done"][0]["sector"],
+        plan["pending_sectors"],
+    )
+
+
 def test_21_32_smoke_cell_is_first_in_queue(env, monkeypatch):
     """21.32 Проба — первая клетка очереди после перемешивания, пула нет:
-    по seed 1–10 клетка первого запроса и клетка smoke — первая клетка
-    очереди того же seed (эталон очереди — pending_sectors прогона с
-    --budget 0, где ни одна клетка не взята), при клетках разной площади,
-    в том числе мельче 15 км². Модуль 21."""
-    features = [
-        tile(key, area=area) for key, area in zip(QUEUE_KEYS, QUEUE_AREAS, strict=True)
-    ]
+    по seed 1–10 в прогоне с --budget 1 единственный запрос, клетка smoke и
+    первая задача done — первая клетка очереди того же seed, а
+    pending_sectors — остаток очереди в её порядке (эталон очереди — порядок
+    запросов полного прогона того же seed: у каждой клетки одна короткая
+    страница, деления нет). Модуль 21."""
     got, expected = [], []
     for seed in range(1, QUEUE_SEEDS + 1):
-        reference = queue_run(env, monkeypatch, features, seed, "--budget", "0")
-        first_in_queue = read_json(reference / "plan.json")["pending_sectors"][0]
-        run_dir = queue_run(env, monkeypatch, features, seed)
-        smoke = summary_of(run_dir)["smoke"]["sector"]
-        got.append((seed, env.transport.sent[0].cell, smoke))
-        expected.append((seed, first_in_queue, first_in_queue))
+        queue_run(env, monkeypatch, queue_features(), seed)
+        queue = [s.cell for s in env.transport.sent]
+        got.append((seed, *budget_one_view(env, monkeypatch, seed)))
+        expected.append((seed, [queue[0]], queue[0], queue[0], queue[1:]))
     assert got == expected
+
+
+def test_21_32_smoke_cell_any_area(env, monkeypatch):
+    """21.32 Площадь клетки на выбор пробы не влияет: по seed 1–10 среди
+    клеток пробы есть клетка мельче 15 км² (порог бывшего пула пробы).
+    Модуль 21."""
+    areas = dict(zip(QUEUE_KEYS, QUEUE_AREAS, strict=True))
+    smoke_areas = []
+    for seed in range(1, QUEUE_SEEDS + 1):
+        smoke_areas.append(areas[budget_one_view(env, monkeypatch, seed)[1]])
+    assert min(smoke_areas) < 15.0
 
 
 def test_21_32_first_page_is_ordinary_request(env, monkeypatch):
@@ -2367,6 +2393,22 @@ def test_21_45_budget_one_single_request(env, monkeypatch):
         plan["spent"],
         plan["pending_sectors"],
     ) == ([(B, 1)], "budget_exhausted", 1, [A])
+
+
+def test_21_45_budget_one_first_cell_read_out(env, monkeypatch):
+    """21.45 Бюджет 1, первая клетка (seed 1: B) — одна короткая страница,
+    дочитана единственным запросом; вторая клетка в очереди: stopped
+    budget_exhausted (бюджет кончился при непустой очереди, не посреди
+    клетки), pending_sectors [A], B дочитана (complete). Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--budget", "1")
+    summary = summary_of(run_dir)
+    plan = read_json(run_dir / "plan.json")
+    assert (
+        summary["stopped"],
+        plan["pending_sectors"],
+        summary["sectors"][B]["complete"],
+    ) == ("budget_exhausted", [A], True)
 
 
 def test_21_45_no_pause_when_budget_spent(env, monkeypatch):
