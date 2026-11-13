@@ -2434,8 +2434,9 @@ def budget_exit(env, monkeypatch, capsys, budget: str, *args) -> tuple:
     )
 
 
-# Бюджет меньше 1 — ошибка запуска (решение тимлида по ревью PR #4: smoke в
-# законченном прогоне всегда словарь, прогона без запросов не бывает).
+# Бюджет меньше 1 — ошибка запуска: smoke в законченном прогоне всегда
+# словарь, прогона без запросов не бывает; допущение (DECISIONS,
+# block/simplify-2, ревью PR #4).
 @pytest.mark.parametrize("budget", ["0", "-1"], ids=["на границе", "снаружи"])
 @pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
 def test_21_45_budget_zero_rejected(env, monkeypatch, capsys, args, budget):
@@ -2664,14 +2665,24 @@ def test_21_46_first_page_recovers_after_retry(env, monkeypatch):
 # успевает только два запроса: бюджет кончается на повторах, окончательного
 # ответа пробы нет.
 FIRST_PAGE_500 = {(A, 1): [HTTP_500] * 4, (B, 1): [HTTP_500] * 4}
+# Тот же путь — в боевом прогоне и с --smoke-only.
+RUN_MODES = pytest.mark.parametrize(
+    "args", [(), ("--smoke-only",)], ids=["боевой", "проба"]
+)
 
 
-def test_21_46_budget_ends_in_first_page_retries(env, monkeypatch):
+def budget_two_run(env, monkeypatch, args):
+    """Прогон с --budget 2 на FIRST_PAGE_500 (и args). → папка прогона."""
+    return run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, *args, "--budget", "2")
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries(env, monkeypatch, args):
     """21.46 Бюджет (2) кончился на повторах страницы 1 первой клетки (сбой
     сети, сбой сети): проба без окончательного ответа — провал пробы, итог
-    smoke_failed, класс NET_ERROR, spent 2, два запроса (решение тимлида по
-    ревью PR #4). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, "--budget", "2")
+    smoke_failed, класс NET_ERROR, spent 2, два запроса; допущение
+    (DECISIONS, block/simplify-2, ревью PR #4). Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
     summary = summary_of(run_dir)
     assert (
         summary["stopped"],
@@ -2681,11 +2692,36 @@ def test_21_46_budget_ends_in_first_page_retries(env, monkeypatch):
     ) == ("smoke_failed", "NET_ERROR", 2, 2)
 
 
-def test_21_46_budget_ends_in_first_page_retries_smoke(env, monkeypatch):
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_tasks(env, monkeypatch, args):
+    """21.46 Бюджет кончился на повторах пробы: в plan.json две задачи done
+    страницы 1 первой клетки — первая net_error, вторая (остановившая
+    прогон) failed, как в 21.55. Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    done = read_json(run_dir / "plan.json")["done"]
+    assert [(t["sector"], t["page"], t["attempts"], t["state"]) for t in done] == [
+        (B, 1, 1, "net_error"),
+        (B, 1, 2, "failed"),
+    ]
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_pauses(env, monkeypatch, args):
+    """21.46 Бюджет кончился на повторах пробы: одна строка retry, одна
+    пауза часов — пауза этого повтора; после обрыва паузы повтора нет.
+    Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    retries = [int(r["after_s"]) for r in events(run_dir, "retry")]
+    pauses = [int(p) for p in env.clock.pauses]
+    assert (len(retries), pauses) == (1, retries)
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_smoke(env, monkeypatch, args):
     """21.46 Бюджет кончился на повторах пробы: smoke вида «провал пробы» —
     клетка, вердикт NET_ERROR, деталь последнего сбоя (http_500), не null.
     Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, "--budget", "2")
+    run_dir = budget_two_run(env, monkeypatch, args)
     assert summary_of(run_dir)["smoke"] == {
         "sector": B,
         "verdict": "NET_ERROR",
@@ -2693,11 +2729,12 @@ def test_21_46_budget_ends_in_first_page_retries_smoke(env, monkeypatch):
     }
 
 
-def test_21_46_budget_ends_in_first_page_retries_stop_line(env, monkeypatch):
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_stop_line(env, monkeypatch, args):
     """21.46 Бюджет кончился на повторах пробы: в night.log строка STOP
     smoke_failed, класс NET_ERROR, деталь последнего сбоя, spent 2.
     Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, "--budget", "2")
+    run_dir = budget_two_run(env, monkeypatch, args)
     assert events(run_dir, "STOP") == [
         {
             "event": "STOP",
