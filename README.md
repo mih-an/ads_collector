@@ -10,7 +10,7 @@ httpx нужна только для `--transport httpx` (`requirements.txt`), �
 
 | Что | Где |
 |---|---|
-| пакет сборщика | `collector/`: `cian_collect.py` (запуск), `transport.py`, `urllib_transport.py`, `httpx_transport.py` (сеть), `page_fetch.py` (сайт ЦИАН: запрос страницы, билет), `crawl.py` (правила обхода и класс `Crawl`), `search_page.py`, `geometry.py`, `run_folder.py`, `status.py`; описание и запуск — `collector/README.md` |
+| пакет сборщика | `collector/`: `cian_collect.py` (запуск), `transport.py`, `urllib_transport.py`, `httpx_transport.py` (сеть), `browser.py` (браузер: запрос страницы, билет), `crawl.py` (правила обхода и класс `Crawl`), `search_page.py`, `geometry.py`, `run_folder.py`, `status.py`; описание и запуск — `collector/README.md` |
 | инструменты разработчика | `scripts/` |
 | тесты и фикстуры | `tests/`, `tests/fixtures/collector/` |
 | документы | `docs/` |
