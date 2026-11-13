@@ -581,7 +581,7 @@ class Crawl:
         )
         self.rnd.shuffle(candidates)
         for key in candidates[: settings.smoke_max_tries]:
-            answer = self.request(key, 1, "smoke")
+            answer = self.request_page(key, 1, "smoke")
             state.spent += 1
             self._log_request(answer)
             if answer.verdict != search_page.OK:
@@ -659,11 +659,11 @@ class Crawl:
             attempts += 1  # та же страница, пауза растёт
 
     def try_page(self, task: PageTask) -> str:
-        """Одна попытка страницы — решение обхода: зовёт `request`, тратит
+        """Одна попытка страницы — решение обхода: зовёт `request_page`, тратит
         единицу бюджета, пишет строку night.log и задачу в done, по состоянию
         задачи (вердикт и число попыток) учитывает страницу или ставит стоп,
         сохраняет plan.json. → вердикт"""
-        answer = self.request(task.sector, task.page, task.kind)
+        answer = self.request_page(task.sector, task.page, task.kind)
         self.state.spent += 1
         task.attempts += 1
         task.detail = answer.detail
@@ -708,8 +708,10 @@ class Crawl:
 
     # ── один запрос ───────────────────────────────────────────────
 
-    def request(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
-        """Один запрос выдачи; пишет страницу, _broken_* или _block_*."""
+    def request_page(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
+        """Сам запрос, без решений: ссылка и Referer, сайт (`fetcher.fetch`),
+        разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
+        Бюджет, очередь и стоп не трогает."""
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
         referer = search_page.page_url(ring, page - 1) if page > 1 else None
