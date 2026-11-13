@@ -101,11 +101,11 @@ class TileState:
 
 @dataclass
 class PageTask:
-    """Задача обхода: поля в порядке ключей задачи в done (plan.json)."""
+    """Задача обхода: поля в порядке ключей задачи в done (plan.json); ключ
+    kind в done не поле задачи, а run_folder.PAGE_KIND (task_entry)."""
 
     sector: str
     page: int
-    kind: str
     origin: str
     attempts: int = 0
     state: str = "pending"
@@ -308,7 +308,7 @@ def task_entry(task: PageTask) -> dict:
     return {
         "sector": task.sector,
         "page": task.page,
-        "kind": task.kind,
+        "kind": run_folder.PAGE_KIND,
         "origin": task.origin,
         "attempts": task.attempts,
         "state": task.state,
@@ -580,11 +580,8 @@ class Crawl:
             if not self.budget_left():
                 self.state.stopped = "budget_exhausted"
                 return
-            # с 11.09 все страницы — GET cat.php (вид ssr)
             origin = "seed" if page == 1 else "expanded"
-            task = PageTask(
-                sector=key, page=page, kind="ssr", origin=origin, attempts=attempts
-            )
+            task = PageTask(sector=key, page=page, origin=origin, attempts=attempts)
             verdict = self.try_page(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
