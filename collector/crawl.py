@@ -500,7 +500,7 @@ class Crawl:
         self.ticket: Ticket
         self.fetcher: page_fetch.PageFetcher
         self.started_at: datetime
-        self.run_folder: run_folder.RunFolder
+        self.folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
@@ -509,7 +509,7 @@ class Crawl:
         # билет — после паузы старта: возраст кук и UA (порядок случайности)
         self.ticket, self.fetcher = self.enter_cian()
         self.started_at = self.clock.now()
-        self.run_folder = run_folder.RunFolder.create(
+        self.folder = run_folder.RunFolder.create(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only
         )
         # джиттер — один раз на (клетка, ночь), в порядке файла
@@ -539,7 +539,7 @@ class Crawl:
     def collect(self) -> None:
         """Прогон целиком: пауза старта → открыть прогон → строка start → проба →
         обход → итог (словарь summary.json) в self.report, папка —
-        self.run_folder.folder. Порядок вызовов случайности — часть поведения
+        self.folder.folder. Порядок вызовов случайности — часть поведения
         (его задают collect и open_run): seed → пауза старта → UA → джиттер
         клеток → перемешивание."""
         state = self.state
@@ -751,19 +751,17 @@ class Crawl:
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
         if answer.verdict == search_page.OK:
             # HTML каждой страницы [E-22]
-            self.run_folder.write_page(
+            self.folder.write_page(
                 answer.key,
                 answer.page,
                 {"totalOffers": answer.total, "offers": offers},
                 answer.body,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
-            name = self.run_folder.write_broken(
-                answer, self.ticket.ua, self._stamp_hms()
-            )
+            name = self.folder.write_broken(answer, self.ticket.ua, self._stamp_hms())
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            self.run_folder.write_block(answer, self.ticket.ua, self._stamp_hms())
+            self.folder.write_block(answer, self.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -891,7 +889,7 @@ class Crawl:
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
         stamp = self.clock.now().isoformat(timespec="seconds")
-        self.run_folder.append_log(stamp, fields)
+        self.folder.append_log(stamp, fields)
 
     def _log_start(self) -> None:
         """Первая строка night.log: с чем прогон стартует."""
@@ -936,7 +934,7 @@ class Crawl:
         )
 
     def save_plan(self) -> None:
-        self.run_folder.write_plan(
+        self.folder.write_plan(
             plan_payload(
                 self.state, self.settings, self.ticket, self.started_at, self.tiles
             ),
@@ -953,10 +951,10 @@ class Crawl:
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
         # sectors сводки; перед summary.json, всегда (и у пробы)
         rings = {key: self.tiles[key].ring_canonical for key in report["sectors"]}
-        self.run_folder.write_polygons(rings)
-        self.run_folder.write_summary(report)
+        self.folder.write_polygons(rings)
+        self.folder.write_summary(report)
         self.report = report
 
     def print_summary(self) -> None:
         """Итог прогона в stdout."""
-        run_folder.say(summary_text(self.report, self.run_folder.folder))
+        run_folder.say(summary_text(self.report, self.folder.folder))
