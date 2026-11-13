@@ -3376,7 +3376,7 @@ def test_21_59_seed_random(env, monkeypatch):
     assert (read_json(run_dir / "plan.json")["seed"], asked) == (12345, [2**31])
 
 
-def test_21_59_parse_settings_defaults():
+def test_21_59_read_settings_defaults():
     """21.59 Умолчания read_settings: --budget 50, --runs-dir runs,
     --window-hours 8.0, без --smoke-only, с паузой старта (З158);
     --transport urllib, --cookies cookies.txt и --ua ua.txt — в папке
@@ -3405,7 +3405,7 @@ def test_21_59_parse_settings_defaults():
     )
 
 
-def test_21_59_parse_settings_requires_geojson(capsys):
+def test_21_59_read_settings_requires_geojson(capsys):
     """21.59 Без --geojson read_settings выходит с кодом 2 (argparse), в
     сообщении назван флаг --geojson (З158). Модуль 21."""
     with pytest.raises(SystemExit) as stop:
