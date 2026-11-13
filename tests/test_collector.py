@@ -1337,7 +1337,7 @@ def tiles_file(tmp_path) -> Path:
     return path
 
 
-def test_21_22_update_tiles_file_parent_and_children(tmp_path):
+def test_21_22_record_split_parent_and_children(tmp_path):
     """21.22 TilesFile.record_split: родитель collect=false, status=split,
     split_at, children; дети — фичами с полями клетки; сосед не тронут.
     Модуль 21."""
@@ -1378,7 +1378,7 @@ def test_21_22_update_tiles_file_parent_and_children(tmp_path):
     )
 
 
-def test_21_22_update_tiles_file_format(tmp_path):
+def test_21_22_record_split_format(tmp_path):
     """21.22 Файл клеток пишется с отступом 1 и русскими буквами как есть,
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
@@ -1394,7 +1394,7 @@ def test_21_22_update_tiles_file_format(tmp_path):
     )
 
 
-def test_21_22_update_tiles_file_key_collision(tmp_path):
+def test_21_22_record_split_key_collision(tmp_path):
     """21.22 Ключ ребёнка уже есть в файле — ValueError с ключом и путём,
     файл цел. Модуль 21."""
     path = tiles_file(tmp_path)
@@ -1407,7 +1407,7 @@ def test_21_22_update_tiles_file_key_collision(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_21_22_update_tiles_file_parent_missing(tmp_path):
+def test_21_22_record_split_parent_missing(tmp_path):
     """21.22 Родителя нет в файле — ValueError с ключом и путём, файл цел,
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
