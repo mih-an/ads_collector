@@ -19,6 +19,10 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 
+# вид запроса в night.log, plan.json, имени и записке _broken_*: поле наших
+# файлов ради совместимости формата, не контракт ЦИАН — все страницы GET cat.php
+PAGE_KIND = "ssr"
+
 
 @dataclass(frozen=True)
 class PageAnswer:
@@ -30,7 +34,6 @@ class PageAnswer:
 
     key: str
     page: int
-    kind: str
     verdict: str
     detail: str
     code: int
@@ -65,7 +68,7 @@ def broken_note(answer: PageAnswer, ua: str) -> str:
     без пометки «|cookie_expired_or_burned» (их добавляет ночь после записи)."""
     return (
         f"verdict=API_CHANGED detail={answer.detail} http={answer.code} "
-        f"kind={answer.kind}\n"
+        f"kind={PAGE_KIND}\n"
         f"sector={answer.key} page={answer.page} ua={ua}\n"
     )
 
@@ -148,7 +151,7 @@ class RunFolder:
     def write_broken(self, answer: PageAnswer, ua: str, hms: str) -> str:
         """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
         hms — время ЧЧММСС. → имя файла с телом (без пути)."""
-        name = f"_broken_{answer.key}_p{answer.page}_{answer.kind}_{answer.code}_{hms}"
+        name = f"_broken_{answer.key}_p{answer.page}_{PAGE_KIND}_{answer.code}_{hms}"
         path = os.path.join(self.raw, name + ".html.gz")
         with gzip.open(path, "wt", encoding="utf-8") as fh:
             fh.write(answer.body)

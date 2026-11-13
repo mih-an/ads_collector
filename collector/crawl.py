@@ -601,7 +601,7 @@ class Crawl:
         на стр. 1 первой клетки пишет итог пробы (ключ smoke), сохраняет
         plan.json. → вердикт"""
         on_smoke = self.smoke_unanswered()  # эта попытка — проба (21.32)
-        answer = self.request_page(task.sector, task.page, task.kind)
+        answer = self.request_page(task.sector, task.page)
         self.state.spent += 1
         task.attempts += 1
         task.detail = answer.detail
@@ -662,7 +662,7 @@ class Crawl:
 
     # ── один запрос ───────────────────────────────────────────────
 
-    def request_page(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
+    def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
         """Сам запрос, без решений: ссылка и Referer, браузер (`browser.fetch`),
         разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
         Бюджет, очередь и стоп не трогает."""
@@ -682,7 +682,6 @@ class Crawl:
         answer = run_folder.PageAnswer(
             key=key,
             page=page,
-            kind=kind,
             verdict=verdict,
             detail=detail,
             code=response.code,
@@ -858,7 +857,7 @@ class Crawl:
             n=self.state.spent,
             sector=answer.key,
             page=answer.page,
-            kind=answer.kind,
+            kind=run_folder.PAGE_KIND,
             http=answer.code,
             ms=int(answer.ms),
             offers=len(answer.ids),
