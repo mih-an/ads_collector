@@ -1,8 +1,8 @@
 """
 page_fetch.py — запрос страницы поиска над транспортом: наша логика, одна для всех.
 
-Получает транспорт (transport.Transport), UA, признак билета и часы
-monotonic (PageFetcher). Отдаёт FetchedPage на каждый запрос: заголовки как
+Получает транспорт (transport.Transport), билет Ticket (UA и признак билета)
+и часы monotonic (PageFetcher). Отдаёт FetchedPage на каждый запрос: заголовки как
 у браузера, распаковка тела (битое сжатие ответа 2xx — сбой сети, З167),
 длительность запроса; сбой сети — код 0 с деталью. Повторов нет — они в
 crawl.Crawl. Без сети, диска и часов: сжатие — только в памяти.
@@ -111,20 +111,18 @@ class PageFetcher:
     def __init__(
         self,
         transport: Transport,
-        user_agent: str,
-        has_ticket: bool,
+        ticket: Ticket,
         monotonic: Callable[[], float],
     ) -> None:
         self.transport = transport
-        self.user_agent = user_agent
-        self.has_ticket = has_ticket
+        self.ticket = ticket
         self.monotonic = monotonic
 
     def fetch(self, url: str, referer: str | None = None) -> FetchedPage:
         """→ FetchedPage(code, body, size, ms, neterr, headers). Ровно два
         вызова monotonic — до запроса и после разбора тела: на них стоит ms=
         в night.log эталонных ночей (21.30)."""
-        headers = browser_headers(self.user_agent, referer, self.has_ticket)
+        headers = browser_headers(self.ticket.ua, referer, self.ticket.has_ticket)
         started = self.monotonic()
         try:
             reply = self.transport.get(url, headers)

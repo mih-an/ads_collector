@@ -223,7 +223,7 @@ def enter_cian(
     выбранном транспорте."""
     ticket = read_ticket(settings, time.time(), rnd)
     transport = transport_factory(settings.transport, ticket.cookie_header)
-    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
+    fetcher = PageFetcher(transport, ticket, time.monotonic)
     return ticket, fetcher
 
 

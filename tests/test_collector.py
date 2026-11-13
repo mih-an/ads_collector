@@ -17,7 +17,7 @@
 Точки подмены, которые код обязан сохранить:
 - cc.main(transport_factory=...) — разбор sys.argv и весь прогон; фабрика
   зовётся как factory(имя транспорта, строка Cookie или None);
-- page_fetch.PageFetcher(transport, user_agent, has_ticket, monotonic) и
+- page_fetch.PageFetcher(transport, ticket, monotonic) и
   page_fetch.decode_body(raw, content_encoding) — PageFetcher зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
 - cc.time (time, sleep, monotonic — enter_cian передаёт его в PageFetcher) и
@@ -292,7 +292,9 @@ def tile_state(**changes):
 
 def fake_ticket():
     """Билет сценария: кука, UA и возраст — как у билета в папке env."""
-    return page_fetch.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
+    return page_fetch.Ticket(
+        cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H
+    )
 
 
 def make_crawl(env, features, **changes):
@@ -303,9 +305,7 @@ def make_crawl(env, features, **changes):
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
-    fetcher = page_fetch.PageFetcher(
-        env.transport, USER_AGENT, True, env.clock.monotonic
-    )
+    fetcher = page_fetch.PageFetcher(env.transport, fake_ticket(), env.clock.monotonic)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
@@ -1444,8 +1444,13 @@ def fetcher(fetch_env, has_ticket=True, replies=()):
     """PageFetcher сборщика над фальшивым транспортом; replies — ответы на
     запросы страницы 1 клетки A по порядку."""
     fetch_env.transport.replies[A, 1] = list(replies)
+    ticket = page_fetch.Ticket(
+        cookie_header=FAKE_COOKIE if has_ticket else None,
+        ua=USER_AGENT,
+        age_h=TICKET_AGE_H,
+    )
     return page_fetch.PageFetcher(
-        fetch_env.transport, USER_AGENT, has_ticket, fetch_env.clock.monotonic
+        fetch_env.transport, ticket, fetch_env.clock.monotonic
     )
 
 
