@@ -1446,7 +1446,7 @@ def fetch_env(tmp_path):
     )
 
 
-def fetcher(fetch_env, has_ticket=True, replies=()):
+def cian_site(fetch_env, has_ticket=True, replies=()):
     """CianSite сборщика над фальшивым транспортом; replies — ответы на
     запросы страницы 1 клетки A по порядку."""
     fetch_env.transport.replies[A, 1] = list(replies)
@@ -1483,7 +1483,7 @@ def test_21_24_headers_with_ticket(fetch_env):
     """21.24 fetch страницы 1 с билетом: заголовки браузера, заход «с
     главной» (Referer https://www.cian.ru/, same-origin); Cookie кладёт
     транспорт, CianSite его не передаёт. Модуль 21."""
-    fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     expected = BROWSER_HEADERS | {
         "sec-fetch-site": "same-origin",
         "referer": "https://www.cian.ru/",
@@ -1494,15 +1494,15 @@ def test_21_24_headers_with_ticket(fetch_env):
 def test_21_24_headers_without_ticket(fetch_env):
     """21.24 fetch без билета: заход из адресной строки (Sec-Fetch-Site
     none), без Referer. Модуль 21."""
-    session = fetcher(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
-    session.fetch(fetch_env.url)
+    site = cian_site(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    site.fetch(fetch_env.url)
     assert sent_headers(fetch_env) == BROWSER_HEADERS | {"sec-fetch-site": "none"}
 
 
 def test_21_24_headers_with_referer(fetch_env):
     """21.24 fetch с Referer: он и уходит, same-origin. Модуль 21."""
-    session = fetcher(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
-    session.fetch(fetch_env.url, referer="https://www.cian.ru/prev")
+    site = cian_site(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    site.fetch(fetch_env.url, referer="https://www.cian.ru/prev")
     headers = sent_headers(fetch_env)
     assert (headers["referer"], headers["sec-fetch-site"]) == (
         "https://www.cian.ru/prev",
@@ -1512,7 +1512,7 @@ def test_21_24_headers_with_referer(fetch_env):
 
 def test_21_24_request_goes_to_url(fetch_env):
     """21.24 fetch отдаёт транспорту ссылку как есть. Модуль 21."""
-    fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     assert fetch_env.transport.sent[0].url == fetch_env.url
 
 
@@ -1547,8 +1547,8 @@ def test_21_26_decode(fetch_env, encoding, raw, expected):
     Content-Encoding (регистр не важен), без сжатия — как есть, битый UTF-8
     — знаком замены. Модуль 21."""
     headers = {} if encoding is None else {"Content-Encoding": encoding}
-    session = fetcher(fetch_env, replies=[Reply(200, raw, headers)])
-    assert session.fetch(fetch_env.url).body == expected
+    site = cian_site(fetch_env, replies=[Reply(200, raw, headers)])
+    assert site.fetch(fetch_env.url).body == expected
 
 
 def test_21_26_fetched_page_ok(fetch_env):
@@ -1556,7 +1556,7 @@ def test_21_26_fetched_page_ok(fetch_env):
     провода (сжатого), ms, без сбоя сети, заголовки ответа. Модуль 21."""
     raw = gzip.compress("страница".encode(), mtime=0)
     reply = Reply(200, raw, {"Content-Encoding": "gzip"})
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == page_fetch.FetchedPage(
         200, "страница", len(raw), 250.0, None, {"content-encoding": "gzip"}
     )
@@ -1567,14 +1567,14 @@ def test_21_27_http_error_403(fetch_env):
     заголовки ответа транспорта — как есть (нижний регистр — забота
     транспорта, 21.31). Модуль 21."""
     reply = Reply(403, "запрет".encode(), {"Server": "nginx"})
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (403, "запрет", 12, 250.0, None, {"server": "nginx"})
 
 
 def test_21_27_http_error_gzip_body(fetch_env):
     """21.27 Ответ-ошибка 500 с gzip-телом: тело распаковано. Модуль 21."""
     reply = Reply(500, gzip.compress(b"oops", mtime=0), {"Content-Encoding": "gzip"})
-    code, body, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body) == (500, "oops")
 
 
@@ -1582,7 +1582,7 @@ def test_21_27_http_error_broken_gzip(fetch_env):
     """21.27 Ответ-ошибка с битым gzip: тело — сырые байты как текст.
     Модуль 21."""
     reply = Reply(500, b"not gzip", {"Content-Encoding": "gzip"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not gzip", 8)
 
 
@@ -1597,7 +1597,7 @@ def test_21_27_http_error_truncated_gzip(fetch_env):
     with pytest.raises(EOFError):
         gzip.decompress(TRUNCATED_GZIP)
     reply = Reply(500, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     expected = TRUNCATED_GZIP.decode("utf-8", errors="replace")
     assert (code, body, size) == (500, expected, len(TRUNCATED_GZIP))
 
@@ -1608,7 +1608,7 @@ def test_21_27_http_error_broken_deflate(fetch_env):
     with pytest.raises(zlib.error):
         zlib.decompress(b"not deflate", -zlib.MAX_WBITS)
     reply = Reply(500, b"not deflate", {"Content-Encoding": "deflate"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not deflate", 11)
 
 
@@ -1623,9 +1623,9 @@ def test_21_27_http_error_unexpected_decode_error_raises(fetch_env, monkeypatch)
     а не глотается: except сужен до OSError, EOFError, zlib.error (З164;
     «ошибки громко»). Модуль 21."""
     monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
-    session = fetcher(fetch_env, replies=[Reply(500, b"oops")])
+    site = cian_site(fetch_env, replies=[Reply(500, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
-        session.fetch(fetch_env.url)
+        site.fetch(fetch_env.url)
 
 
 @pytest.mark.parametrize("detail", ["urlerror:dns", "timeout", "oserror:reset"])
@@ -1633,7 +1633,7 @@ def test_21_29_network_failure_code_0(fetch_env, detail):
     """21.29 NetworkFailure транспорта → (0, "", 0, 250.0, деталь, {}): код 0,
     тело пусто, деталь — текст сбоя, заголовков нет. Модуль 21."""
     reply = Reply(error=transport.NetworkFailure(detail))
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (0, "", 0, 250.0, detail, {})
 
 
@@ -1641,7 +1641,7 @@ def test_21_29_failure_asks_transport_once(fetch_env):
     """21.29 После NetworkFailure fetch транспорт второй раз не зовёт:
     повторы — дело обхода (Crawl). Модуль 21."""
     reply = Reply(error=transport.NetworkFailure("timeout"))
-    fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert len(fetch_env.transport.sent) == 1
 
 
@@ -1677,7 +1677,7 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
     сбой сети: код 0, тело пусто, размер 0, деталь decode:<текст
     исключения>, заголовков нет (З167). Модуль 21."""
     reply = Reply(200, raw, {"Content-Encoding": encoding})
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     detail = "decode:" + decompress_error(raw, encoding)
     assert result == (0, "", 0, 250.0, detail, {})
 
@@ -1685,7 +1685,7 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
 def broken_gzip_result(fetch_env, status: int):
     """FetchedPage ответа status с битым gzip («not gzip»)."""
     reply = Reply(status, b"not gzip", {"Content-Encoding": "gzip"})
-    return fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    return cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
 
 
 def test_21_29_broken_compression_in_204(fetch_env):
@@ -1720,15 +1720,15 @@ def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
     распаковки (ValueError из decode_body), — исключение летит из fetch,
     не глотается (З167, «ошибки громко»). Модуль 21."""
     monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
-    session = fetcher(fetch_env, replies=[Reply(200, b"oops")])
+    site = cian_site(fetch_env, replies=[Reply(200, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
-        session.fetch(fetch_env.url)
+        site.fetch(fetch_env.url)
 
 
 def test_21_30_ms_by_monotonic(fetch_env):
     """21.30 Длительность запроса — по переданным часам monotonic, в мс
     (подставные часы идут на 0,25 с за вызов). Модуль 21."""
-    result = fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     assert result.ms == 250.0
 
 
@@ -1748,7 +1748,7 @@ def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
     держит test_21_30_ms_by_monotonic, а этот тест держит эталонное
     ms=250 в night.log ночей 21.68–21.70 — лишний вызов monotonic сдвинул
     бы его раньше, чем сравнение с эталоном укажет причину. Модуль 21."""
-    fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert fetch_env.clock.monotonic_calls == 2
 
 
@@ -2376,21 +2376,39 @@ def test_21_45_no_pause_when_budget_spent(env, monkeypatch):
     assert env.clock.pauses == []
 
 
-@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
-def test_21_45_budget_zero_no_requests(env, monkeypatch, args):
-    """21.45 Бюджет 0: ни одного запроса, smoke null (итога пробы нет),
-    stopped budget_exhausted, spent 0 — и в боевом прогоне, и с
-    --smoke-only. Модуль 21."""
-    run_dir = run_main(
-        env, monkeypatch, CELLS, short_a() | B_100, *args, "--budget", "0"
-    )
-    summary = summary_of(run_dir)
-    assert (
+def budget_exit(env, monkeypatch, capsys, budget: str, *args) -> tuple:
+    """main с --budget budget (и args) и паузой старта, который обязан выйти.
+    → (код выхода, назван ли --budget в строке ошибки, число запросов,
+    паузы часов, есть ли папка runs/)."""
+    give(env, short_a() | B_100)
+    stop = main_exit(env, monkeypatch, *args, "--budget", budget)
+    error = error_line(capsys.readouterr().err)
+    return (
+        stop.code,
+        "--budget" in error,
         len(env.transport.sent),
-        summary["smoke"],
-        summary["stopped"],
-        summary["spent"],
-    ) == (0, None, "budget_exhausted", 0)
+        env.clock.pauses,
+        (env.folder / "runs").exists(),
+    )
+
+
+# Бюджет меньше 1 — ошибка запуска (решение тимлида по ревью PR #4: smoke в
+# законченном прогоне всегда словарь, прогона без запросов не бывает).
+@pytest.mark.parametrize("budget", ["0", "-1"], ids=["на границе", "снаружи"])
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_45_budget_zero_rejected(env, monkeypatch, capsys, args, budget):
+    """21.45 Бюджет меньше 1 (0 — на границе, -1 — снаружи; 1 — внутри,
+    test_21_45_budget_one_single_request) — ошибка запуска: выход с кодом 2
+    до паузы старта, в строке ошибки назван параметр --budget, ни одного
+    запроса, папки прогона нет — и в боевом прогоне, и с --smoke-only.
+    Модуль 21."""
+    assert budget_exit(env, monkeypatch, capsys, budget, *args) == (
+        2,
+        True,
+        0,
+        [],
+        False,
+    )
 
 
 # Края бюджета 3. При seed 1 очередь — B, A; проба — страница 1 первой
@@ -2414,7 +2432,8 @@ LAST_CELL_CUT = {
 
 def test_21_45_last_cell_read_by_last_request(env, monkeypatch):
     """21.45 Последняя клетка очереди дочитана ровно последним запросом
-    бюджета: stopped queue_empty, очередь пуста, ступень passed. Модуль 21."""
+    бюджета: stopped queue_empty, очередь пуста, ступень passed, клетка
+    дочитана (complete). Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, LAST_CELL_READ_OUT, "--budget", "3")
     summary = summary_of(run_dir)
     plan = read_json(run_dir / "plan.json")
@@ -2423,7 +2442,8 @@ def test_21_45_last_cell_read_by_last_request(env, monkeypatch):
         summary["spent"],
         plan["pending_sectors"],
         summary["ladder_result"],
-    ) == ("queue_empty", 3, [], "passed")
+        summary["sectors"][A]["complete"],
+    ) == ("queue_empty", 3, [], "passed", True)
 
 
 def test_21_45_budget_ends_inside_last_cell(env, monkeypatch):
@@ -2596,6 +2616,55 @@ def test_21_46_first_page_recovers_after_retry(env, monkeypatch):
         {"sector": B, "verdict": "OK", "offers": 3, "total": 3},
         "queue_empty",
     )
+
+
+# Страница 1 обеих клеток — 500 четыре раза подряд; при бюджете 2 проба
+# успевает только два запроса: бюджет кончается на повторах, окончательного
+# ответа пробы нет.
+FIRST_PAGE_500 = {(A, 1): [HTTP_500] * 4, (B, 1): [HTTP_500] * 4}
+
+
+def test_21_46_budget_ends_in_first_page_retries(env, monkeypatch):
+    """21.46 Бюджет (2) кончился на повторах страницы 1 первой клетки (сбой
+    сети, сбой сети): проба без окончательного ответа — провал пробы, итог
+    smoke_failed, класс NET_ERROR, spent 2, два запроса (решение тимлида по
+    ревью PR #4). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, "--budget", "2")
+    summary = summary_of(run_dir)
+    assert (
+        summary["stopped"],
+        summary["stop_class"],
+        summary["spent"],
+        len(env.transport.sent),
+    ) == ("smoke_failed", "NET_ERROR", 2, 2)
+
+
+def test_21_46_budget_ends_in_first_page_retries_smoke(env, monkeypatch):
+    """21.46 Бюджет кончился на повторах пробы: smoke вида «провал пробы» —
+    клетка, вердикт NET_ERROR, деталь последнего сбоя (http_500), не null.
+    Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, "--budget", "2")
+    assert summary_of(run_dir)["smoke"] == {
+        "sector": B,
+        "verdict": "NET_ERROR",
+        "detail": "http_500",
+    }
+
+
+def test_21_46_budget_ends_in_first_page_retries_stop_line(env, monkeypatch):
+    """21.46 Бюджет кончился на повторах пробы: в night.log строка STOP
+    smoke_failed, класс NET_ERROR, деталь последнего сбоя, spent 2.
+    Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, "--budget", "2")
+    assert events(run_dir, "STOP") == [
+        {
+            "event": "STOP",
+            "reason": "smoke_failed",
+            "cls": "NET_ERROR",
+            "detail": "http_500",
+            "spent": "2",
+        }
+    ]
 
 
 BLOCK_HEADERS = {
@@ -3489,6 +3558,19 @@ def test_21_57_smoke_only_failed(env, monkeypatch):
     клетки) — smoke_failed. Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, FAILED_SMOKE, "--smoke-only")
     assert summary_of(run_dir)["stopped"] == "smoke_failed"
+
+
+def test_21_57_smoke_only_empty_cell(env, monkeypatch):
+    """21.57 --smoke-only по пустой первой клетке (seed 1: B, 0 из 0): итог
+    smoke_only, smoke вида EMPTY, один запрос. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 0, 0)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["smoke"], len(env.transport.sent)) == (
+        "smoke_only",
+        {"sector": B, "verdict": "EMPTY", "offers": 0, "total": 0},
+        1,
+    )
 
 
 # ═══════════════════════════════ Д. main ═══════════════════════════════

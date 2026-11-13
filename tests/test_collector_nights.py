@@ -4,14 +4,18 @@
 Ночь проигрывается боевым main() сборщика (collector/cian_collect.py) на
 ответах ЦИАН настоящей ночи из tests/fixtures/collector/nights/<метка>/input
 (выборка клеток, scripts/collector_fixtures.py). Папка прогона сверяется
-файл за файлом с эталоном expected/ (записан один раз до рефакторинга
-разовым скриптом, решение Андрея 10.11) и с тем, что настоящая ночь
-записала про эти клетки. Контракт формата (21.79) проверяет папки
+файл за файлом с эталоном expected/ (пересобирается
+scripts/rebuild_expected.py только по решению о смене поведения) и с тем,
+что настоящая ночь записала про эти клетки. Контракт формата (21.79) проверяет папки
 проигрываний по разделу 7 docs/reference/collector_architecture.md, без
 загрузчика land-monitor; проба контракта портит чистую папку. Сети нет:
 main получает фабрику player_transport — настоящий UrllibTransport, в opener
 которого вместо сети CianPlayer; часы cc.time (сон, возраст кук и
 monotonic — длительность запроса) — один FakeTime.
+
+Помощниками replay_night, compare_with_expected, compare_text,
+compare_with_real, forbid_network пользуется scripts/rebuild_expected.py —
+их имена и смысл менять вместе со скриптом.
 """
 
 import gzip
