@@ -1768,28 +1768,41 @@ def test_21_32_smoke_success(env, monkeypatch):
     }
 
 
-# Клетки на диагонали решётки: шесть целых клеток в разных рядах и колонках.
+# Клетки на диагонали решётки: шесть целых клеток в разных рядах и колонках,
+# площади разные, три мельче 15 км² (порог бывшего пула пробы) — площадь на
+# выбор пробы не влияет.
 QUEUE_KEYS = ["T0101", "T0202", "T0303", "T0404", "T0505", "T0606"]
+QUEUE_AREAS = [3.0, 8.0, 14.9, 15.0, 22.0, 40.0]
 QUEUE_SEEDS = 10
 
 
+def queue_run(env, monkeypatch, features, seed: int, *args):
+    """Прогон по клеткам QUEUE_KEYS с seed (папка runs/ и записанные запросы
+    — заново; у каждой клетки одна короткая страница). → папка прогона."""
+    shutil.rmtree(env.folder / "runs", ignore_errors=True)
+    env.transport.sent.clear()
+    replies = {(key, 1): [page(1, 3, 3)] for key in QUEUE_KEYS}
+    return run_main(env, monkeypatch, features, replies, *args, seed=str(seed))
+
+
 def test_21_32_smoke_cell_is_first_in_queue(env, monkeypatch):
-    """21.32 Проба — первая клетка очереди после перемешивания: по seed 1–10
-    клетка smoke — клетка первого запроса прогона и первой задачи done
-    (страница 1). Модуль 21."""
-    features = [tile(key) for key in QUEUE_KEYS]
-    mismatches = []
+    """21.32 Проба — первая клетка очереди после перемешивания, пула нет:
+    по seed 1–10 клетка первого запроса и клетка smoke — первая клетка
+    очереди того же seed (эталон очереди — pending_sectors прогона с
+    --budget 0, где ни одна клетка не взята), при клетках разной площади,
+    в том числе мельче 15 км². Модуль 21."""
+    features = [
+        tile(key, area=area) for key, area in zip(QUEUE_KEYS, QUEUE_AREAS, strict=True)
+    ]
+    got, expected = [], []
     for seed in range(1, QUEUE_SEEDS + 1):
-        shutil.rmtree(env.folder / "runs", ignore_errors=True)
-        env.transport.sent.clear()
-        replies = {(key, 1): [page(1, 3, 3)] for key in QUEUE_KEYS}
-        run_dir = run_main(env, monkeypatch, features, replies, seed=str(seed))
+        reference = queue_run(env, monkeypatch, features, seed, "--budget", "0")
+        first_in_queue = read_json(reference / "plan.json")["pending_sectors"][0]
+        run_dir = queue_run(env, monkeypatch, features, seed)
         smoke = summary_of(run_dir)["smoke"]["sector"]
-        first_task = read_json(run_dir / "plan.json")["done"][0]
-        seen = (smoke, env.transport.sent[0].cell, first_task["sector"])
-        if seen != (smoke, smoke, smoke) or first_task["page"] != 1:
-            mismatches.append((seed, seen, first_task["page"]))
-    assert mismatches == []
+        got.append((seed, env.transport.sent[0].cell, smoke))
+        expected.append((seed, first_in_queue, first_in_queue))
+    assert got == expected
 
 
 def test_21_32_first_page_is_ordinary_request(env, monkeypatch):
@@ -1874,15 +1887,18 @@ def test_21_33_empty_first_cell_smoke_empty(env, monkeypatch):
 
 def test_21_33_empty_first_cell_crawl_goes_on(env, monkeypatch):
     """21.33 Первая клетка пуста — прогон идёт дальше: вторая клетка (A)
-    запрошена, итог queue_empty, строки smoke_empty в night.log нет.
-    Модуль 21."""
+    запрошена, итог queue_empty, строки smoke_empty в night.log нет; конец
+    пустой клетки — как у любой пустой клетки обхода: страница 1 без
+    объявлений не короткая (crawl.absorb_page: 0 < len(ids)), строки
+    sector_end у B нет (и why=smoke_empty тоже). Модуль 21."""
     replies = short_a() | {(B, 1): [page(100, 0, 0)]}
     run_dir = run_main(env, monkeypatch, CELLS, replies)
     assert (
         [(s.cell, s.page) for s in env.transport.sent],
         summary_of(run_dir)["stopped"],
         events(run_dir, "smoke_empty"),
-    ) == ([(B, 1), (A, 1)], "queue_empty", [])
+        sector_ends(run_dir, B),
+    ) == ([(B, 1), (A, 1)], "queue_empty", [], [])
 
 
 def test_21_33_both_cells_empty(env, monkeypatch):
@@ -2377,11 +2393,11 @@ def test_21_45_budget_zero_no_requests(env, monkeypatch, args):
     ) == (0, None, "budget_exhausted", 0)
 
 
-# Края бюджета 3. Проба — всегда по A (единственная клетка от 15 км²), и при
-# seed 1 A стоит в очереди последней: проба (A, 1) → (B, 1) → (A, 2). B
-# дочитана одной короткой страницей, так что последним запросом бюджета
-# дочитывается A — при любом порядке очереди, раз (A, 2) и (B, 1) обе
-# короткие.
+# Края бюджета 3. При seed 1 очередь — B, A; проба — страница 1 первой
+# клетки (21.32): (B, 1) → (A, 1) → (A, 2). B дочитана одной короткой
+# страницей, так что последним запросом бюджета дочитывается A. Написаны до
+# смены пробы (тогда проба шла по A: (A, 1) → (B, 1) → (A, 2)) и сторожат
+# её: итог тот же при обоих порядках.
 LAST_CELL_READ_OUT = {
     (A, 1): [page(1, 28, 30)],
     (A, 2): [page(29, 2, 30)],
@@ -2960,14 +2976,15 @@ def interrupt_sleep(env, monkeypatch) -> None:
     monkeypatch.setattr(env.clock, "sleep", interrupted_sleep)
 
 
-def test_21_51_ctrl_c_in_retry_pause_on_first_page(env, monkeypatch):
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_51_ctrl_c_in_retry_pause_on_first_page(env, monkeypatch, args):
     """21.51 Ctrl+C в паузе повтора страницы 1 первой клетки (сбой сети на
     пробе, окончательного ответа ещё нет): прерывание выходит из main,
-    summary.json нет. Модуль 21."""
+    summary.json нет — и в боевом прогоне, и с --smoke-only. Модуль 21."""
     interrupt_sleep(env, monkeypatch)
     replies = {(A, 1): [HTTP_500, page(1, 5, 6)], (B, 1): [HTTP_500, page(100, 3, 3)]}
     with pytest.raises(KeyboardInterrupt):
-        run_main(env, monkeypatch, CELLS, replies)
+        run_main(env, monkeypatch, CELLS, replies, *args)
     (run_dir,) = (env.folder / "runs").iterdir()
     assert not (run_dir / "summary.json").exists()
 
@@ -3442,6 +3459,22 @@ def test_21_57_smoke_only_tiles_file_untouched(env, monkeypatch):
     give(env, OVERSIZED_FIRST_PAGE)
     cc.main(transport_factory=env.transport.factory)
     assert env.tiles.read_bytes() == before
+
+
+def test_21_57_smoke_only_retries_network_failure(env, monkeypatch):
+    """21.57 --smoke-only, сбой сети на странице 1 первой клетки (500, потом
+    страница): повтор, как везде (21.46) — два запроса, одна строка retry,
+    итог smoke_only. Модуль 21."""
+    replies = {
+        (A, 1): [HTTP_500, page(1, 5, 6)],
+        (B, 1): [HTTP_500, page(100, 3, 3)],
+    }
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
+    assert (
+        len(env.transport.sent),
+        len(events(run_dir, "retry")),
+        summary_of(run_dir)["stopped"],
+    ) == (2, 1, "smoke_only")
 
 
 def test_21_57_smoke_only_no_pause(env, monkeypatch):
