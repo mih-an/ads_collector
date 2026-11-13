@@ -103,9 +103,9 @@ GRID = {
     "pady": 0.00022,
 }
 
-# Клетки сценариев: A — единственная годная для пробы (площадь ≥ 15 км²),
-# B — обычная клетка обхода. Обе целые, в разных рядах и колонках: main()
-# восстанавливает по ним сетку (infer_tile_grid).
+# Клетки сценариев A и B. Обе целые, в разных рядах и колонках: main()
+# восстанавливает по ним сетку (infer_tile_grid). При seed 1 очередь — B, A:
+# проба — страница 1 клетки B (21.32), A идёт второй.
 A, B = "T0507", "T0608"
 
 
@@ -186,14 +186,15 @@ def page(first_id: int, count: int, total) -> Reply:
 
 
 def short_a(total: int = 6) -> dict:
-    """Проба по A: 5 объявлений — короткая страница, A больше не листается."""
+    """A: 5 объявлений — короткая страница, A больше не листается."""
     return {(A, 1): [page(1, 5, total)]}
 
 
-# Две клетки сценария: A годна для пробы, B (10 км²) — нет, только обход.
+# Две клетки сценария (площади — как в файле клеток, на пробу не влияют).
 CELLS = [tile(A), tile(B, area=10.0)]
-# Проба по A проваливается (403): прогон кончается сразу, без пауз обхода.
-FAILED_SMOKE = {(A, 1): [Reply(403, b"no")]}
+# Страница 1 любой клетки — 403: проба (первая клетка очереди при любом seed)
+# проваливается, прогон кончается сразу, без пауз обхода.
+FAILED_SMOKE = {(A, 1): [Reply(403, b"no")], (B, 1): [Reply(403, b"no")]}
 # B: totalOffers 60 — три страницы, третья короткая (4 объявления).
 B_60 = {
     (B, 1): [page(100, 28, 60)],
@@ -336,6 +337,11 @@ def log_records(run_dir: Path) -> list[dict[str, str]]:
 
 def events(run_dir: Path, name: str) -> list[dict[str, str]]:
     return [r for r in log_records(run_dir) if r.get("event") == name]
+
+
+def sector_ends(run_dir: Path, cell: str) -> list[dict[str, str]]:
+    """Строки sector_end клетки cell в night.log."""
+    return [r for r in events(run_dir, "sector_end") if r["sector"] == cell]
 
 
 def pages_asked(env, cell: str) -> list[int]:
@@ -1750,33 +1756,76 @@ def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
 
 
 def test_21_32_smoke_success(env, monkeypatch):
-    """21.32 Удачная проба: smoke = клетка, OK, объявления, total. Модуль 21."""
+    """21.32 Удачная проба — страница 1 первой клетки очереди (seed 1: B):
+    smoke = клетка, OK, объявления, total. Модуль 21."""
     replies = short_a() | {(B, 1): [page(100, 3, 3)]}
     run_dir = run_main(env, monkeypatch, CELLS, replies)
     assert summary_of(run_dir)["smoke"] == {
-        "sector": A,
+        "sector": B,
         "verdict": "OK",
-        "offers": 5,
-        "total": 6,
+        "offers": 3,
+        "total": 3,
     }
+
+
+# Клетки на диагонали решётки: шесть целых клеток в разных рядах и колонках.
+QUEUE_KEYS = ["T0101", "T0202", "T0303", "T0404", "T0505", "T0606"]
+QUEUE_SEEDS = 10
+
+
+def test_21_32_smoke_cell_is_first_in_queue(env, monkeypatch):
+    """21.32 Проба — первая клетка очереди после перемешивания: по seed 1–10
+    клетка smoke — клетка первого запроса прогона и первой задачи done
+    (страница 1). Модуль 21."""
+    features = [tile(key) for key in QUEUE_KEYS]
+    mismatches = []
+    for seed in range(1, QUEUE_SEEDS + 1):
+        shutil.rmtree(env.folder / "runs", ignore_errors=True)
+        env.transport.sent.clear()
+        replies = {(key, 1): [page(1, 3, 3)] for key in QUEUE_KEYS}
+        run_dir = run_main(env, monkeypatch, features, replies, seed=str(seed))
+        smoke = summary_of(run_dir)["smoke"]["sector"]
+        first_task = read_json(run_dir / "plan.json")["done"][0]
+        seen = (smoke, env.transport.sent[0].cell, first_task["sector"])
+        if seen != (smoke, smoke, smoke) or first_task["page"] != 1:
+            mismatches.append((seed, seen, first_task["page"]))
+    assert mismatches == []
+
+
+def test_21_32_first_page_is_ordinary_request(env, monkeypatch):
+    """21.32 Запрос пробы — обычный запрос обхода: в night.log все строки
+    запросов kind=ssr (строк kind=smoke нет), первая задача done — страница 1
+    клетки пробы, состояние done. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    kinds = [r["kind"] for r in log_records(run_dir) if "kind" in r]
+    first_task = read_json(run_dir / "plan.json")["done"][0]
+    assert (kinds, first_task) == (
+        ["ssr", "ssr"],
+        {
+            "sector": B,
+            "page": 1,
+            "kind": "ssr",
+            "origin": "seed",
+            "attempts": 1,
+            "state": "done",
+            "detail": "-",
+        },
+    )
 
 
 def test_21_32_smoke_page_not_repeated(env, monkeypatch):
-    """21.32 Страница 1 пробы не запрашивается повторно: обход клетки
-    продолжается со страницы 2. Модуль 21."""
-    replies = {
-        (A, 1): [page(1, 28, 60)],
-        (A, 2): [page(29, 28, 60)],
-        (A, 3): [page(57, 4, 60)],
-        (B, 1): [page(100, 3, 3)],
-    }
-    run_main(env, monkeypatch, CELLS, replies)
-    assert pages_asked(env, A) == [1, 2, 3]
+    """21.32 Страница 1 пробы не запрашивается повторно: первая клетка
+    очереди (seed 1: B) листается дальше со страницы 2, потом A. Модуль 21."""
+    run_main(env, monkeypatch, CELLS, short_a() | B_60)
+    asked = [(s.cell, s.page) for s in env.transport.sent]
+    assert asked == [(B, 1), (B, 2), (B, 3), (A, 1)]
 
 
 def test_21_32_smoke_failed(env, monkeypatch):
-    """21.32 Проваленная проба (403 с билетом): обход не идёт, итог
-    smoke_failed, класс и деталь проваленного ответа. Модуль 21."""
+    """21.32 Проваленная проба (403 с билетом на странице 1 первой клетки):
+    обход не идёт, итог smoke_failed, класс и деталь проваленного ответа,
+    smoke вида «провал пробы». Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, FAILED_SMOKE)
     summary = summary_of(run_dir)
     detail = "http_403|cookie_expired_or_burned"
@@ -1790,14 +1839,15 @@ def test_21_32_smoke_failed(env, monkeypatch):
         "smoke_failed",
         "BLOCK",
         detail,
-        {"sector": A, "verdict": "BLOCK", "detail": detail},
+        {"sector": B, "verdict": "BLOCK", "detail": detail},
         1,
     )
 
 
 def test_21_32_smoke_failed_stop_line(env, monkeypatch):
     """21.32 Проваленная проба пишет в night.log строку STOP. Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [Reply(404, b"")]})
+    replies = {(A, 1): [Reply(404, b"")], (B, 1): [Reply(404, b"")]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
     assert events(run_dir, "STOP") == [
         {
             "event": "STOP",
@@ -1809,116 +1859,44 @@ def test_21_32_smoke_failed_stop_line(env, monkeypatch):
     ]
 
 
-def test_21_33_smoke_empty_takes_second(env, monkeypatch):
-    """21.33 Проба попала на пустую клетку: smoke_empty и конец клетки,
-    вторая попытка — по другой клетке пула (seed 1: первой проба берёт A).
+def test_21_33_empty_first_cell_smoke_empty(env, monkeypatch):
+    """21.33 Первая клетка очереди (seed 1: B) пуста: smoke вида EMPTY —
+    клетка, вердикт EMPTY, 0 объявлений, total. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 0, 0)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    assert summary_of(run_dir)["smoke"] == {
+        "sector": B,
+        "verdict": "EMPTY",
+        "offers": 0,
+        "total": 0,
+    }
+
+
+def test_21_33_empty_first_cell_crawl_goes_on(env, monkeypatch):
+    """21.33 Первая клетка пуста — прогон идёт дальше: вторая клетка (A)
+    запрошена, итог queue_empty, строки smoke_empty в night.log нет.
     Модуль 21."""
-    replies = {(A, 1): [page(1, 0, 0)], (B, 1): [page(100, 3, 3)]}
-    run_dir = run_main(env, monkeypatch, [tile(A), tile(B)], replies)
-    records = [
-        r
-        for r in log_records(run_dir)
-        if r.get("kind") == "smoke" or r.get("event") in ("smoke_empty", "sector_end")
-    ]
-    assert [(r.get("event") or "запрос", r["sector"]) for r in records] == [
-        ("запрос", A),
-        ("sector_end", A),
-        ("smoke_empty", A),
-        ("запрос", B),
-        ("sector_end", B),
-    ]
+    replies = short_a() | {(B, 1): [page(100, 0, 0)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    assert (
+        [(s.cell, s.page) for s in env.transport.sent],
+        summary_of(run_dir)["stopped"],
+        events(run_dir, "smoke_empty"),
+    ) == ([(B, 1), (A, 1)], "queue_empty", [])
 
 
-def test_21_33_both_smoke_cells_empty(env, monkeypatch):
-    """21.33 Обе попытки пробы пусты: smoke_failed «все smoke-сектора пусты»,
-    вердикт пробы EMPTY. Модуль 21."""
+def test_21_33_both_cells_empty(env, monkeypatch):
+    """21.33 Обе клетки пусты: итог queue_empty (не smoke_failed), smoke
+    вида EMPTY по первой клетке. Модуль 21."""
     replies = {(A, 1): [page(1, 0, 0)], (B, 1): [page(100, 0, 0)]}
-    run_dir = run_main(env, monkeypatch, [tile(A), tile(B)], replies)
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
     summary = summary_of(run_dir)
     assert (
         summary["stopped"],
         summary["stop_class"],
-        summary["stop_detail"],
+        summary["smoke"]["sector"],
         summary["smoke"]["verdict"],
-    ) == ("smoke_failed", None, "все smoke-сектора пусты", "EMPTY")
-
-
-def smoke_cell(env, monkeypatch, area_a: float, area_b: float) -> str:
-    """Клетка пробы прогона --smoke-only по двум клеткам с площадями area_a
-    (A) и area_b (B). Если в пуле обе клетки, выбор решает перемешивание
-    пула: при seed 1 проба берёт самую мелкую клетку пула."""
-    replies = {(A, 1): [page(1, 3, 3)], (B, 1): [page(100, 3, 3)]}
-    features = [tile(A, area=area_a), tile(B, area=area_b)]
-    run_dir = run_main(env, monkeypatch, features, replies, "--smoke-only")
-    return summary_of(run_dir)["smoke"]["sector"]
-
-
-def test_21_34_smoke_pool_area_above_15(env, monkeypatch):
-    """21.34 Клетка 15,1 км² годна для пробы (вторая — 1 км², не годна).
-    Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 15.1, 1.0) == A
-
-
-def test_21_34_smoke_pool_area_exactly_15(env, monkeypatch):
-    """21.34 Клетка ровно 15 км² годна для пробы (граница включительно).
-    Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 15.0, 1.0) == A
-
-
-def test_21_34_smoke_pool_area_below_15(env, monkeypatch):
-    """21.34 Клетка 14,9 км² не годна: проба идёт по клетке 15 км².
-    Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 14.9, 15.0) == B
-
-
-def test_21_34_smoke_pool_all_small(env, monkeypatch):
-    """21.34 Все клетки мельче 15 км² — пул из всех (для seed 1 проба
-    попадает на B). Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 14.9, 1.0) == B
-
-
-POOL_KEYS = ["T0101", "T0202", "T0303", "T0404", "T0505", "T0606"]
-
-
-POOL_SEEDS = 30
-
-
-def test_21_34_smoke_pool_five_smallest(env, monkeypatch):
-    """21.34 Пул пробы — ровно 5 самых мелких годных клеток: по seed 1–30
-    проба попадает на каждую из пяти (20–24 км²) и ни разу на шестую
-    (25 км²). Модуль 21."""
-    features = [tile(key, area=20.0 + i) for i, key in enumerate(POOL_KEYS)]
-    smoke_cells = set()
-    for seed in range(1, POOL_SEEDS + 1):
-        shutil.rmtree(env.folder / "runs", ignore_errors=True)
-        replies = {(key, 1): [page(1, 3, 3)] for key in POOL_KEYS}
-        run_dir = run_main(
-            env, monkeypatch, features, replies, "--smoke-only", seed=str(seed)
-        )
-        smoke_cells.add(summary_of(run_dir)["smoke"]["sector"])
-    assert sorted(smoke_cells) == POOL_KEYS[:5]
-
-
-def test_21_35_single_empty_cell_smoke_failed(env, monkeypatch):
-    """21.35 Одна годная клетка в пуле пробы (вторая мельче 15 км²) и проба
-    по ней пуста: smoke_failed «все smoke-сектора пусты», вердикт пробы
-    EMPTY — как при двух пустых попытках (З156). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [page(1, 0, 0)]})
-    summary = summary_of(run_dir)
-    assert (
-        summary["stopped"],
-        summary["stop_class"],
-        summary["stop_detail"],
-        summary["smoke"]["verdict"],
-    ) == ("smoke_failed", None, "все smoke-сектора пусты", "EMPTY")
-
-
-def test_21_35_single_empty_cell_no_second_try(env, monkeypatch):
-    """21.35 Одна годная клетка в пуле пробы и проба по ней пуста: второй
-    попытки нет — ровно один запрос, клетка вне пула (B) не запрашивается
-    (З156). Модуль 21."""
-    run_main(env, monkeypatch, CELLS, {(A, 1): [page(1, 0, 0)]})
-    assert [sent.cell for sent in env.transport.sent] == [A]
+    ) == ("queue_empty", None, B, "EMPTY")
 
 
 def test_21_36_pages_in_a_row(env, monkeypatch):
@@ -1966,18 +1944,19 @@ def pause_factors(env, monkeypatch, random_class) -> list[float]:
 
 
 def test_21_36_pause_factors_low(env, monkeypatch):
-    """21.36 Паузы: после пробы и между страницами — средний интервал
-    (множитель 1), между клетками — множитель от 1,5; после последней
-    клетки паузы нет (seed 1: B раньше A — две паузы листания B, потом
-    пауза между клетками). Модуль 21."""
+    """21.36 Паузы: между страницами — средний интервал (множитель 1), между
+    клетками — множитель от 1,5; отдельной паузы после пробы нет, после
+    последней клетки паузы нет (seed 1: B раньше A — две паузы листания B,
+    первая — после пробы-страницы 1, потом пауза между клетками).
+    Модуль 21."""
     factors = pause_factors(env, monkeypatch, LowRandom)
-    assert factors == [1.0, 1.0, 1.0, 1.5]
+    assert factors == [1.0, 1.0, 1.5]
 
 
 def test_21_36_pause_factors_high(env, monkeypatch):
     """21.36 Множитель паузы между клетками — до 3,0. Модуль 21."""
     factors = pause_factors(env, monkeypatch, HighRandom)
-    assert factors == [1.0, 1.0, 1.0, 3.0]
+    assert factors == [1.0, 1.0, 3.0]
 
 
 def test_21_36_pause_lower_bound():
@@ -2002,24 +1981,25 @@ def crawl_pages_pauses(env, monkeypatch, random_class) -> list[float]:
 
 def test_21_36_crawl_sleeps_lower_pauses(env, monkeypatch):
     """21.36 Обход спит паузы U(0,6; 1,4) × средний интервал × множитель; на
-    нижнем краю случайности: после пробы и между двумя страницами B —
+    нижнем краю случайности: между тремя страницами B (первая — проба) —
     0,6 × 72 = 43,2 с, между клетками (множитель 1,5) — 0,6 × 72 × 1,5 =
-    64,8 с; после последней клетки паузы нет. Модуль 21."""
+    64,8 с; отдельной паузы после пробы нет, после последней клетки паузы
+    нет. Модуль 21."""
     pauses = crawl_pages_pauses(env, monkeypatch, LowRandom)
-    assert pauses == pytest.approx([43.2, 43.2, 43.2, 64.8])
+    assert pauses == pytest.approx([43.2, 43.2, 64.8])
 
 
 def test_21_36_crawl_sleeps_upper_pauses(env, monkeypatch):
-    """21.36 На верхнем краю случайности: после пробы и между страницами —
-    1,4 × 72 = 100,8 с, между клетками (множитель 3,0) — 1,4 × 72 × 3 =
-    302,4 с. Модуль 21."""
+    """21.36 На верхнем краю случайности: между страницами — 1,4 × 72 =
+    100,8 с, между клетками (множитель 3,0) — 1,4 × 72 × 3 = 302,4 с.
+    Модуль 21."""
     pauses = crawl_pages_pauses(env, monkeypatch, HighRandom)
-    assert pauses == pytest.approx([100.8, 100.8, 100.8, 302.4])
+    assert pauses == pytest.approx([100.8, 100.8, 302.4])
 
 
 def test_21_36_total_28_one_page(env, monkeypatch):
     """21.36 totalOffers 28 и полная страница — одна страница, вторую не
-    спрашивает. Модуль 21."""
+    спрашивает (страница 1 клетки B — она же проба). Модуль 21."""
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 28, 28)]})
     assert pages_asked(env, B) == [1]
 
@@ -2029,14 +2009,6 @@ def test_21_36_total_29_two_pages(env, monkeypatch):
     replies = {(B, 1): [page(100, 28, 29)], (B, 2): [page(128, 1, 29)]}
     run_main(env, monkeypatch, CELLS, short_a() | replies)
     assert pages_asked(env, B) == [1, 2]
-
-
-def test_21_36_smoke_total_28_no_second_page(env, monkeypatch):
-    """21.36 Проба: totalOffers 28 и полная страница — обход клетки пробы
-    вторую страницу не спрашивает. Модуль 21."""
-    replies = {(A, 1): [page(1, 28, 28)], (B, 1): [page(100, 3, 3)]}
-    run_main(env, monkeypatch, CELLS, replies)
-    assert pages_asked(env, A) == [1]
 
 
 def test_21_36_page_saved_json_and_html(env, monkeypatch):
@@ -2069,9 +2041,9 @@ def test_21_37_short_page_27(env, monkeypatch):
     run_dir = run_main(
         env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 27, 100)]}
     )
-    assert (pages_asked(env, B), events(run_dir, "sector_end")[-1]) == (
+    assert (pages_asked(env, B), sector_ends(run_dir, B)) == (
         [1],
-        {"event": "sector_end", "sector": B, "why": "short_page"},
+        [{"event": "sector_end", "sector": B, "why": "short_page"}],
     )
 
 
@@ -2095,8 +2067,9 @@ def test_21_38_redirect_page_end(env, monkeypatch):
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [Reply(301, location_page1=True)]}
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | replies)
     done = read_json(run_dir / "plan.json")["done"]
-    assert (events(run_dir, "sector_end")[-1], done[-1]["state"]) == (
-        {"event": "sector_end", "sector": B, "why": "redirect_to_p1_301"},
+    last_b = [task for task in done if task["sector"] == B][-1]
+    assert (sector_ends(run_dir, B), last_b["state"]) == (
+        [{"event": "sector_end", "sector": B, "why": "redirect_to_p1_301"}],
         "page_end",
     )
 
@@ -2106,7 +2079,7 @@ def test_21_38_empty_page_end(env, monkeypatch):
     Модуль 21."""
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [page(1, 0, 100)]}
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | replies)
-    assert events(run_dir, "sector_end")[-1]["why"] == "empty_page"
+    assert [r["why"] for r in sector_ends(run_dir, B)] == ["empty_page"]
 
 
 def test_21_38_sector_end_logged_once(env):
@@ -2133,17 +2106,17 @@ def test_21_39_no_total_54_pages(env, monkeypatch):
 
 def test_21_39_no_total_pause_after_page_54(env, monkeypatch):
     """21.39 Нет totalOffers, 54 полные страницы B: пауза есть и после 54-й
-    страницы (потолок проверяется в цикле клетки, после паузы). Пауз 56:
-    после пробы по A — 1, после каждой из 54 страниц B — 54, между B и A
-    (seed 1: B раньше A) — 1; у A страниц больше нет, после последней клетки
-    паузы нет. Модуль 21."""
+    страницы (потолок проверяется в цикле клетки, после паузы). Пауз 55:
+    после каждой из 54 страниц B (первая — проба, отдельной паузы после
+    пробы нет) — 54, между B и A (seed 1: B раньше A) — 1; A — одна короткая
+    страница, после последней клетки паузы нет. Модуль 21."""
     replies = {}
     for number in range(1, 55):
         offers = [offer(number * 100 + i) for i in range(28)]
         body = "<script>initialState=" + json.dumps({"results": {"offers": offers}})
         replies[B, number] = [Reply(200, (body + "</script>").encode())]
     run_main(env, monkeypatch, CELLS, short_a() | replies, "--budget", "100")
-    assert len(env.clock.pauses) == 56
+    assert len(env.clock.pauses) == 55
 
 
 def split_run(env, monkeypatch, total: int):
@@ -2216,13 +2189,19 @@ def test_21_40_children_crawled_same_run(env, monkeypatch):
 
 
 def test_21_41_smoke_oversized_cell_split_without_repeat(env, monkeypatch):
-    """21.41 Переросток пробы делится без повторного запроса страницы 1
-    [E-42]. Модуль 21."""
-    replies = {(A, 1): [page(1, 28, 760)], (B, 1): [page(100, 3, 3)]}
+    """21.41 Переросток пробы (страница 1 первой клетки, seed 1: B, total 760)
+    делится без повторного запроса страницы 1: проба по B, страница 1 B
+    запрошена один раз, деление B с total 760 [E-42]. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 28, 760)]}
     for letter in "abcd":
-        replies[A + letter, 1] = [page(1000 + ord(letter), 3, 3)]
+        replies[B + letter, 1] = [page(1000 + ord(letter), 3, 3)]
     run_dir = run_main(env, monkeypatch, CELLS, replies)
-    assert (pages_asked(env, A), events(run_dir, "split")[0]["total"]) == ([1], "760")
+    split = events(run_dir, "split")[0]
+    assert (
+        summary_of(run_dir)["smoke"]["sector"],
+        pages_asked(env, B),
+        (split["sector"], split["total"]),
+    ) == (B, [1], (B, "760"))
 
 
 FLOOR = "T0709aaa"
@@ -2349,32 +2328,53 @@ B_100 = {(B, n): [page(100 * n, 28, 100)] for n in range(1, 5)}
 
 def test_21_45_budget_inside_cell(env, monkeypatch):
     """21.45 Бюджет кончился посреди клетки: budget_exhausted, следующая
-    страница не запрошена. Модуль 21."""
+    страница не запрошена (бюджет 3: страницы 1–3 клетки B, первая — проба;
+    четвёртая не запрошена). Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | B_100, "--budget", "3")
     summary = summary_of(run_dir)
     assert (summary["stopped"], summary["spent"], pages_asked(env, B)) == (
         "budget_exhausted",
         3,
-        [1, 2],
+        [1, 2, 3],
     )
 
 
-def test_21_45_budget_spent_on_smoke(env, monkeypatch):
-    """21.45 Бюджет кончился на пробе: обход не начат, обе клетки в очереди.
-    Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--budget", "1")
+def test_21_45_budget_one_single_request(env, monkeypatch):
+    """21.45 Бюджет 1: один запрос — страница 1 первой клетки (проба);
+    итог budget_exhausted, клетка пробы ушла из очереди, вторая клетка в
+    очереди. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, short_a() | B_100, "--budget", "1")
     plan = read_json(run_dir / "plan.json")
-    assert (plan["stopped"], sorted(plan["pending_sectors"])) == (
-        "budget_exhausted",
-        [A, B],
-    )
+    assert (
+        [(s.cell, s.page) for s in env.transport.sent],
+        plan["stopped"],
+        plan["spent"],
+        plan["pending_sectors"],
+    ) == ([(B, 1)], "budget_exhausted", 1, [A])
 
 
 def test_21_45_no_pause_when_budget_spent(env, monkeypatch):
     """21.45 Бюджет исчерпан — паузы нет (sleep_between выходит сразу).
     Модуль 21."""
-    run_main(env, monkeypatch, CELLS, short_a(), "--budget", "1")
+    run_main(env, monkeypatch, CELLS, short_a() | B_100, "--budget", "1")
     assert env.clock.pauses == []
+
+
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_45_budget_zero_no_requests(env, monkeypatch, args):
+    """21.45 Бюджет 0: ни одного запроса, smoke null (итога пробы нет),
+    stopped budget_exhausted, spent 0 — и в боевом прогоне, и с
+    --smoke-only. Модуль 21."""
+    run_dir = run_main(
+        env, monkeypatch, CELLS, short_a() | B_100, *args, "--budget", "0"
+    )
+    summary = summary_of(run_dir)
+    assert (
+        len(env.transport.sent),
+        summary["smoke"],
+        summary["stopped"],
+        summary["spent"],
+    ) == (0, None, "budget_exhausted", 0)
 
 
 # Края бюджета 3. Проба — всегда по A (единственная клетка от 15 км²), и при
@@ -2432,12 +2432,13 @@ TRUNCATED_OK = Reply(200, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
 
 
 def retry_run(env, monkeypatch, failures: int, *args, failure: Reply = HTTP_500):
-    """Прогон: страница 1 клетки B отвечает failure (по умолчанию 500)
-    failures раз подряд, потом OK (B — две страницы, total 30). Окно
-    0,01 ч: средний интервал 0,72 с, паузы листания меньше 2 с — всё, что
-    от 60 с и больше в FakeTime.pauses, это паузы повторов (21.46)."""
+    """Прогон: страница 1 клетки B (проба, seed 1) — OK, 28 из 30; страница 2
+    отвечает failure (по умолчанию 500) failures раз подряд, потом OK —
+    сбой посреди обхода, не на пробе. Окно 0,01 ч: средний интервал 0,72 с,
+    паузы листания меньше 2 с — всё, что от 60 с и больше в FakeTime.pauses,
+    это паузы повторов (21.46)."""
     errors = [failure] * failures
-    replies = {(B, 1): errors + [page(100, 28, 30)], (B, 2): [page(128, 2, 30)]}
+    replies = {(B, 1): [page(100, 28, 30)], (B, 2): errors + [page(128, 2, 30)]}
     return run_main(
         env, monkeypatch, CELLS, short_a() | replies, "--window-hours", "0.01", *args
     )
@@ -2490,7 +2491,8 @@ def test_21_46_success_after_retry(env, monkeypatch):
 
 
 def test_21_46_fourth_failure_stops(env, monkeypatch):
-    """21.46 Четвёртый сбой подряд — STOP net_error. Модуль 21."""
+    """21.46 Четвёртый сбой подряд — STOP net_error (потрачено 5: проба и
+    четыре попытки страницы 2). Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 4)
     assert events(run_dir, "STOP") == [
         {
@@ -2504,7 +2506,7 @@ def test_21_46_fourth_failure_stops(env, monkeypatch):
 
 
 def test_21_46_broken_compression_retried(env, monkeypatch):
-    """21.46 Битое сжатие в ответе 200 на стр. 1 клетки B, затем страница:
+    """21.46 Битое сжатие в ответе 200 на стр. 2 клетки B, затем страница:
     один повтор (строка retry), клетка дочитана, ночь идёт дальше (З167).
     Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 1, failure=TRUNCATED_OK)
@@ -2535,15 +2537,48 @@ def test_21_46_broken_compression_fourth_stops(env, monkeypatch):
     )
 
 
+# Страница 1 обеих клеток — битое сжатие четыре раза подряд: какая бы клетка
+# ни стояла первой, проба исчерпывает повторы.
+FIRST_PAGE_BROKEN = {(A, 1): [TRUNCATED_OK] * 4, (B, 1): [TRUNCATED_OK] * 4}
+
+
 def test_21_46_broken_compression_on_smoke(env, monkeypatch):
-    """21.46 Битое сжатие на пробе — smoke_failed, класс NET_ERROR, без
-    повторов: один запрос (З167). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [TRUNCATED_OK]})
+    """21.46 Битое сжатие на пробе (страница 1 первой клетки) повторяется,
+    как везде: три повтора, после четвёртого сбоя — smoke_failed, класс
+    NET_ERROR; четыре запроса (З167). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_BROKEN)
     summary = summary_of(run_dir)
-    assert (summary["stopped"], summary["stop_class"], len(env.transport.sent)) == (
-        "smoke_failed",
-        "NET_ERROR",
+    assert (
+        summary["stopped"],
+        summary["stop_class"],
+        len(events(run_dir, "retry")),
+        len(env.transport.sent),
+    ) == ("smoke_failed", "NET_ERROR", 3, 4)
+
+
+def test_21_46_broken_compression_on_smoke_entry(env, monkeypatch):
+    """21.46 Повторы пробы исчерпаны: smoke вида «провал пробы» — клетка,
+    вердикт NET_ERROR, деталь decode:<текст> (окончательный ответ страницы
+    1). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_BROKEN)
+    detail = "decode:" + decompress_error(TRUNCATED_GZIP, "gzip")
+    assert summary_of(run_dir)["smoke"] == {
+        "sector": B,
+        "verdict": "NET_ERROR",
+        "detail": detail,
+    }
+
+
+def test_21_46_first_page_recovers_after_retry(env, monkeypatch):
+    """21.46 Сбой сети на пробе, затем страница: один повтор, smoke вида OK
+    по ответу повтора, прогон идёт дальше до queue_empty. Модуль 21."""
+    replies = short_a() | {(B, 1): [TRUNCATED_OK, page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    summary = summary_of(run_dir)
+    assert (len(events(run_dir, "retry")), summary["smoke"], summary["stopped"]) == (
         1,
+        {"sector": B, "verdict": "OK", "offers": 3, "total": 3},
+        "queue_empty",
     )
 
 
@@ -2558,8 +2593,9 @@ BLOCK_HEADERS = {
 
 
 def page2_run(env, monkeypatch, reply: Reply):
-    """Прогон: проба по A, у B страница 1 — OK (28 из 100), на странице 2 —
-    ответ reply. → папка прогона."""
+    """Прогон: у B (seed 1 — первая клетка) страница 1 — проба, OK (28 из
+    100), на странице 2 — ответ reply, посреди обхода; до A прогон не
+    доходит, если reply его останавливает. → папка прогона."""
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [reply]}
     return run_main(env, monkeypatch, CELLS, short_a() | replies)
 
@@ -2578,7 +2614,8 @@ def test_21_47_block_stops_crawl(env, monkeypatch):
 
 def test_21_47_block_stop_line(env, monkeypatch):
     """21.47 BLOCK пишет в night.log строку STOP: reason=block, cls=BLOCK,
-    деталь с пометкой билета, потрачено запросов. Модуль 21."""
+    деталь с пометкой билета, потрачено запросов (2: страницы 1 и 2 B).
+    Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(403, b"<html>no</html>"))
     assert events(run_dir, "STOP") == [
         {
@@ -2586,7 +2623,7 @@ def test_21_47_block_stop_line(env, monkeypatch):
             "reason": "block",
             "cls": "BLOCK",
             "detail": "http_403|cookie_expired_or_burned",
-            "spent": "3",
+            "spent": "2",
         }
     ]
 
@@ -2664,9 +2701,15 @@ def test_21_48_burned_ticket(env, monkeypatch, ticket, reply, detail):
 
 
 def test_21_48_burned_ticket_on_smoke(env, monkeypatch):
-    """21.48 Пометка «билет сгорел» ставится и на пробе. Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [CAPTCHA_PAGE]})
-    assert summary_of(run_dir)["stop_detail"] == "captcha|cookie_expired_or_burned"
+    """21.48 Пометка «билет сгорел» ставится и на пробе (капча на странице 1
+    первой клетки): итог smoke_failed, деталь с пометкой. Модуль 21."""
+    replies = {(A, 1): [CAPTCHA_PAGE], (B, 1): [CAPTCHA_PAGE]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_detail"]) == (
+        "smoke_failed",
+        "captcha|cookie_expired_or_burned",
+    )
 
 
 BROKEN_NAME = f"_broken_{B}_p2_ssr_200_013140"
@@ -2705,12 +2748,13 @@ def test_21_49_api_changed_stop(env, monkeypatch):
 
 
 def test_21_49_api_changed_empty_body_not_saved(env, monkeypatch):
-    """21.49 API_CHANGED с пустым телом (404): файла _broken_ нет. Модуль 21."""
+    """21.49 API_CHANGED с пустым телом (404): файла _broken_ нет, в raw/
+    только страница 1 клетки B. Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(404, b""))
     names = sorted(p.name for p in (run_dir / "raw").iterdir())
     assert (summary_of(run_dir)["stop_detail"], names) == (
         "http_404",
-        [f"{A}_p1.html.gz", f"{A}_p1.json.gz", f"{B}_p1.html.gz", f"{B}_p1.json.gz"],
+        [f"{B}_p1.html.gz", f"{B}_p1.json.gz"],
     )
 
 
@@ -2722,12 +2766,12 @@ SERVICEPIPE_MOMENTS = {
 
 
 def servicepipe_smoke_run(env, monkeypatch, stamp: str):
-    """Прогон, как настоящая проба 10.11: проба по T1205 (15,3 км², B — мельче
-    15 км², в пул не входит), ответ — тело Servicepipe, UA и время — из
-    образца stamp. → папка прогона."""
+    """Прогон, как настоящая проба 10.11: проба по T1205 (клетки в файле —
+    B, T1205; при seed 1 очередь переставляет их, T1205 — первая), ответ —
+    тело Servicepipe, UA и время — из образца stamp. → папка прогона."""
     (env.folder / "ua.txt").write_text(servicepipe_ua(stamp), encoding="utf-8")
     monkeypatch.setattr(cc, "datetime", frozen_datetime(SERVICEPIPE_MOMENTS[stamp]))
-    features = [tile(SMOKE_CELL, area=15.3), tile(B, area=10.0)]
+    features = [tile(B, area=10.0), tile(SMOKE_CELL, area=15.3)]
     replies = {(SMOKE_CELL, 1): [Reply(200, servicepipe_body(stamp))]}
     return run_main(env, monkeypatch, features, replies)
 
@@ -2801,71 +2845,75 @@ def test_21_50_servicepipe_mid_crawl_stop_line(env, monkeypatch):
             "reason": "block",
             "cls": "BLOCK",
             "detail": "servicepipe",
-            "spent": "3",
+            "spent": "2",
         }
     ]
 
 
 def test_21_50_servicepipe_mid_crawl_block_file(env, monkeypatch):
-    """21.50 Страница Servicepipe посреди обхода: в raw/ рядом со страницами 1
-    клеток A и B — _block_T0608_p2_200_013140.txt, файла _broken_ нет
-    (З155). Модуль 21."""
+    """21.50 Страница Servicepipe посреди обхода: в raw/ рядом со страницей 1
+    клетки B — _block_T0608_p2_200_013140.txt, файла _broken_ нет (З155).
+    Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(200, servicepipe_body("013140")))
     names = sorted(p.name for p in (run_dir / "raw").iterdir())
     assert names == [
-        f"{A}_p1.html.gz",
-        f"{A}_p1.json.gz",
         f"{B}_p1.html.gz",
         f"{B}_p1.json.gz",
         f"_block_{B}_p2_200_013140.txt",
     ]
 
 
-SMOKE_BROKEN_NAME = f"_broken_{A}_p1_smoke_200_013140"
+SMOKE_BROKEN_NAME = f"_broken_{B}_p1_ssr_200_013140"
 UNKNOWN_PAGE = Reply(200, "<html>другое</html>".encode())
+# Непонятная страница 1 у обеих клеток: какая бы ни стояла первой, проба
+# кончается API_CHANGED (seed 1 — B).
+UNKNOWN_FIRST_PAGE = {(A, 1): [UNKNOWN_PAGE], (B, 1): [UNKNOWN_PAGE]}
 
 
 def test_21_50_unknown_page_on_smoke_html_gz(env, monkeypatch):
     """21.50 Непонятная страница на пробе (API_CHANGED) сохраняется, как у
-    обхода, в raw/_broken_<клетка>_p1_smoke_200_<ЧЧММСС>.html.gz рядом с
-    .note.txt (З157; решение Андрея 10.11). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    обхода, в raw/_broken_<клетка>_p1_ssr_200_<ЧЧММСС>.html.gz рядом с
+    .note.txt (З157; решение Андрея 10.11); запрос пробы — обычный, вид
+    ssr. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     names = sorted(p.name for p in (run_dir / "raw").iterdir())
     assert names == [f"{SMOKE_BROKEN_NAME}.html.gz", f"{SMOKE_BROKEN_NAME}.note.txt"]
 
 
 def test_21_50_unknown_page_on_smoke_detail(env, monkeypatch):
-    """21.50 Непонятная страница на пробе: деталь итога —
+    """21.50 Непонятная страница на пробе: итог smoke_failed, деталь итога —
     no_initial_state|saved:<имя>.html.gz (З157). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     detail = f"no_initial_state|saved:{SMOKE_BROKEN_NAME}.html.gz"
-    assert summary_of(run_dir)["stop_detail"] == detail
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_detail"]) == ("smoke_failed", detail)
 
 
 def test_21_50_unknown_page_on_smoke_saves_body(env, monkeypatch):
     """21.50 Непонятная страница на пробе: распакованный
-    _broken_<клетка>_p1_smoke_200_<ЧЧММСС>.html.gz — ответ целиком (З157).
+    _broken_<клетка>_p1_ssr_200_<ЧЧММСС>.html.gz — ответ целиком (З157).
     Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     saved = run_dir / "raw" / f"{SMOKE_BROKEN_NAME}.html.gz"
     assert gzip.decompress(saved.read_bytes()) == UNKNOWN_PAGE.body
 
 
 def test_21_50_unknown_page_on_smoke_note(env, monkeypatch):
     """21.50 Непонятная страница на пробе: рядом .note.txt с вердиктом,
-    деталью, кодом, видом smoke, клеткой и UA (формат run_folder.broken_note;
+    деталью, кодом, видом ssr, клеткой и UA (формат run_folder.broken_note;
     З157). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     note = run_dir / "raw" / f"{SMOKE_BROKEN_NAME}.note.txt"
     assert note.read_text(encoding="utf-8") == (
-        "verdict=API_CHANGED detail=no_initial_state http=200 kind=smoke\n"
-        f"sector={A} page=1 ua={USER_AGENT}\n"
+        "verdict=API_CHANGED detail=no_initial_state http=200 kind=ssr\n"
+        f"sector={B} page=1 ua={USER_AGENT}\n"
     )
 
 
 def test_21_51_ctrl_c_during_crawl(env, monkeypatch):
-    """21.51 Ctrl+C в обходе: stopped и класс interrupted, сводка и снимок
-    охвата записаны. Модуль 21."""
+    """21.51 Ctrl+C в обходе (страница 2 клетки B): stopped и класс
+    interrupted, сводка и снимок охвата записаны; в снимке — клетка со
+    страницами (B), A не запрошена. Модуль 21."""
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [Reply(error=KeyboardInterrupt())]}
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | replies)
     summary = summary_of(run_dir)
@@ -2876,15 +2924,24 @@ def test_21_51_ctrl_c_during_crawl(env, monkeypatch):
     assert (summary["stopped"], summary["stop_class"], keys) == (
         "interrupted",
         "interrupted",
-        [A, B],
+        [B],
     )
 
 
-def test_21_51_ctrl_c_during_smoke(env, monkeypatch):
-    """21.51 Ctrl+C на пробе: прерывание выходит из main, summary.json нет.
-    Модуль 21."""
+# Ctrl+C на странице 1 любой клетки: прерывается сама проба.
+FIRST_PAGE_CTRL_C = {
+    (A, 1): [Reply(error=KeyboardInterrupt())],
+    (B, 1): [Reply(error=KeyboardInterrupt())],
+}
+
+
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_51_ctrl_c_on_first_page(env, monkeypatch, args):
+    """21.51 Ctrl+C на пробе (запрос страницы 1 первой клетки, до её
+    окончательного ответа): прерывание выходит из main, summary.json нет —
+    и в боевом прогоне, и с --smoke-only. Модуль 21."""
     with pytest.raises(KeyboardInterrupt):
-        run_main(env, monkeypatch, CELLS, {(A, 1): [Reply(error=KeyboardInterrupt())]})
+        run_main(env, monkeypatch, CELLS, FIRST_PAGE_CTRL_C, *args)
     (run_dir,) = (env.folder / "runs").iterdir()
     assert sorted(p.name for p in run_dir.iterdir()) == [
         "night.log",
@@ -2893,20 +2950,43 @@ def test_21_51_ctrl_c_during_smoke(env, monkeypatch):
     ]
 
 
-def test_21_51_ctrl_c_in_pause_after_smoke(env, monkeypatch):
-    """21.51 Ctrl+C в паузе сразу после пробы (первый сон ночи): прерывание
-    выходит из main, summary.json нет — пауза стоит до перехвата Ctrl+C
-    обходом (collector_architecture.md, 3.2). Модуль 21."""
+def interrupt_sleep(env, monkeypatch) -> None:
+    """Любой сон ночи (пауза листания, повтора) — Ctrl+C. Ночь берёт сон из
+    cc.time в момент запуска: подмена на часах env."""
 
     def interrupted_sleep(seconds: float) -> None:
         raise KeyboardInterrupt
 
-    # Ночь берёт сон из cc.time в момент запуска: подмена на часах env.
     monkeypatch.setattr(env.clock, "sleep", interrupted_sleep)
+
+
+def test_21_51_ctrl_c_in_retry_pause_on_first_page(env, monkeypatch):
+    """21.51 Ctrl+C в паузе повтора страницы 1 первой клетки (сбой сети на
+    пробе, окончательного ответа ещё нет): прерывание выходит из main,
+    summary.json нет. Модуль 21."""
+    interrupt_sleep(env, monkeypatch)
+    replies = {(A, 1): [HTTP_500, page(1, 5, 6)], (B, 1): [HTTP_500, page(100, 3, 3)]}
     with pytest.raises(KeyboardInterrupt):
-        run_main(env, monkeypatch, CELLS, short_a() | B_60)
+        run_main(env, monkeypatch, CELLS, replies)
     (run_dir,) = (env.folder / "runs").iterdir()
     assert not (run_dir / "summary.json").exists()
+
+
+def test_21_51_ctrl_c_in_pause_after_first_page(env, monkeypatch):
+    """21.51 Ctrl+C в паузе сразу после пробы (первый сон ночи — пауза
+    листания после страницы 1 клетки B): итог пробы уже есть, прогон
+    кончается interrupted, сводка записана. Модуль 21."""
+    interrupt_sleep(env, monkeypatch)
+    # KeyboardInterrupt из теста оборвал бы весь прогон pytest — ловим здесь
+    try:
+        run_dir = run_main(env, monkeypatch, CELLS, short_a() | B_60)
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl+C после итога пробы вышел из main без сводки")
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_class"]) == (
+        "interrupted",
+        "interrupted",
+    )
 
 
 def ticket_state(env) -> tuple:
@@ -3022,9 +3102,9 @@ SIMPLE = short_a() | {(B, 1): [page(100, 28, 56)], (B, 2): [page(128, 28, 56)]}
 
 
 def test_21_54_summary(env, monkeypatch):
-    """21.54 summary.json простой ночи: итог, лестница, клетки (полна по
-    короткой странице и по числу страниц [E-21]), served_vs_total и
-    медиана. Модуль 21."""
+    """21.54 summary.json простой ночи: итог, лестница, проба (страница 1
+    первой клетки, seed 1: B), клетки (полна по короткой странице и по
+    числу страниц [E-21]), served_vs_total и медиана. Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, SIMPLE)
     common = {
         "level": 0,
@@ -3042,7 +3122,7 @@ def test_21_54_summary(env, monkeypatch):
         "stopped": "queue_empty",
         "stop_class": None,
         "stop_detail": None,
-        "smoke": {"sector": A, "verdict": "OK", "offers": 5, "total": 6},
+        "smoke": {"sector": B, "verdict": "OK", "offers": 28, "total": 56},
         "ticket": True,
         "cookie_age_h": TICKET_AGE_H,
         "ladder_step_valid": True,
@@ -3170,7 +3250,7 @@ def test_21_54_printed_summary(env, monkeypatch, capsys):
         f"\n{line}\nночь 2026-11-10   бюджет 50   запросов 3   билет: есть, 5.7 ч\n"
         "стоп: queue_empty   класс: -   \n"
         "ИТОГ: ступень ПРОЙДЕНА — можно поднимать бюджет\n"
-        f"smoke: {{'sector': '{A}', 'verdict': 'OK', 'offers': 5, 'total': 6}}\n"
+        f"smoke: {{'sector': '{B}', 'verdict': 'OK', 'offers': 28, 'total': 56}}\n"
         "секторов затронуто 2, полностью выкачано 2, дублей id 0, "
         "stateless-пагинация True\n"
         f"файлы: {run_dir}\n{line}\n"
@@ -3199,10 +3279,11 @@ def test_21_54_printed_split_and_no_ticket(env, monkeypatch, capsys):
 
 
 def test_21_55_plan(env, monkeypatch):
-    """21.55 plan.json пробы: аргументы ночи, билет, проба, итог, клетки без
-    колец, очередь; started_at — время машины в МСК со смещением.
-    Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
+    """21.55 plan.json пробы (--smoke-only): аргументы ночи, билет, проба,
+    итог, клетки без колец, задача пробы в done, очередь без клетки пробы;
+    started_at — время машины в МСК со смещением. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
     plan = read_json(run_dir / "plan.json")
     sector_common = {
         "level": 0,
@@ -3224,7 +3305,7 @@ def test_21_55_plan(env, monkeypatch):
         "seed": 1,
         "ticket": True,
         "cookie_age_h": TICKET_AGE_H,
-        "smoke": {"sector": A, "verdict": "OK", "offers": 5, "total": 6},
+        "smoke": {"sector": B, "verdict": "OK", "offers": 3, "total": 3},
         "stopped": "smoke_only",
         "stop_class": None,
         "stop_detail": None,
@@ -3234,62 +3315,76 @@ def test_21_55_plan(env, monkeypatch):
                 "status": "collect",
                 "area_km2": 100.0,
                 **sector_common,
-                "total_offers": 6,
-                "pages_planned": 1,
-                "pages_done": [1],
-                "ids": [1, 2, 3, 4, 5],
-                "served_end": True,
-            },
-            B: {
-                "name": f"Сбор {B}",
-                "status": "collect",
-                "area_km2": 10.0,
-                **sector_common,
                 "total_offers": None,
                 "pages_planned": None,
                 "pages_done": [],
                 "ids": [],
                 "served_end": False,
             },
+            B: {
+                "name": f"Сбор {B}",
+                "status": "collect",
+                "area_km2": 10.0,
+                **sector_common,
+                "total_offers": 3,
+                "pages_planned": 1,
+                "pages_done": [1],
+                "ids": [100, 101, 102],
+                "served_end": True,
+            },
         },
         "split_events": [],
-        "done": [],
-        "pending_sectors": [B, A],
+        "done": [
+            {
+                "sector": B,
+                "page": 1,
+                "kind": "ssr",
+                "origin": "seed",
+                "attempts": 1,
+                "state": "done",
+                "detail": "-",
+            }
+        ],
+        "pending_sectors": [A],
     }
 
 
 def test_21_55_night_log_time_column(env, monkeypatch):
     """21.55 Первая колонка night.log — время машины в МСК со смещением
     +03:00 (datetime.now().astimezone()). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
     lines = (run_dir / "night.log").read_text(encoding="utf-8").splitlines()
     assert {line.split("\t")[0] for line in lines} == {"2026-11-10T01:31:40+03:00"}
 
 
 def test_21_55_plan_tasks_after_retry(env, monkeypatch):
     """21.55 plan.json → done: задачи страниц с попытками, состоянием и
-    деталью; после сбоя — net_error, повтор — новая задача. Модуль 21."""
+    деталью; первая — страница 1 пробы; после сбоя — net_error, повтор —
+    новая задача. Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 1)
     task = {"sector": B, "kind": "ssr"}
     assert read_json(run_dir / "plan.json")["done"] == [
         task
-        | {
-            "page": 1,
-            "origin": "seed",
-            "attempts": 1,
-            "state": "net_error",
-            "detail": "http_500",
-        },
-        task
-        | {"page": 1, "origin": "seed", "attempts": 2, "state": "done", "detail": "-"},
+        | {"page": 1, "origin": "seed", "attempts": 1, "state": "done", "detail": "-"},
         task
         | {
             "page": 2,
             "origin": "expanded",
             "attempts": 1,
+            "state": "net_error",
+            "detail": "http_500",
+        },
+        task
+        | {
+            "page": 2,
+            "origin": "expanded",
+            "attempts": 2,
             "state": "done",
             "detail": "-",
         },
+        {"sector": A, "kind": "ssr"}
+        | {"page": 1, "origin": "seed", "attempts": 1, "state": "done", "detail": "-"},
     ]
 
 
@@ -3315,19 +3410,50 @@ def test_21_56_run_folder_name(env, monkeypatch, args, name):
 
 
 def test_21_57_smoke_only(env, monkeypatch):
-    """21.57 --smoke-only: один запрос, обхода нет, итог smoke_only.
-    Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
+    """21.57 --smoke-only: один запрос — страница 1 первой клетки очереди
+    (seed 1: B), обхода нет, итог smoke_only. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
     summary = summary_of(run_dir)
-    assert (len(env.transport.sent), summary["stopped"], summary["ladder_result"]) == (
-        1,
-        "smoke_only",
-        "smoke_only",
-    )
+    assert (
+        [(s.cell, s.page) for s in env.transport.sent],
+        summary["stopped"],
+        summary["ladder_result"],
+    ) == ([(B, 1)], "smoke_only", "smoke_only")
+
+
+# Страница 1 обеих клеток — переросток: 28 объявлений из 401 (деление и
+# листание, если бы шёл обход).
+OVERSIZED_FIRST_PAGE = {(A, 1): [page(1, 28, 401)], (B, 1): [page(100, 28, 401)]}
+
+
+def test_21_57_smoke_only_no_split(env, monkeypatch):
+    """21.57 --smoke-only, на странице 1 total 401: деления нет — строк split
+    в night.log нет, запрошена одна страница 1. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, OVERSIZED_FIRST_PAGE, "--smoke-only")
+    assert (events(run_dir, "split"), len(env.transport.sent)) == ([], 1)
+
+
+def test_21_57_smoke_only_tiles_file_untouched(env, monkeypatch):
+    """21.57 --smoke-only, на странице 1 total 401: файл клеток не
+    переписан — байт в байт как до прогона. Модуль 21."""
+    set_argv(env, monkeypatch, CELLS, "--smoke-only")
+    before = env.tiles.read_bytes()
+    give(env, OVERSIZED_FIRST_PAGE)
+    cc.main(transport_factory=env.transport.factory)
+    assert env.tiles.read_bytes() == before
+
+
+def test_21_57_smoke_only_no_pause(env, monkeypatch):
+    """21.57 --smoke-only, страница 1 полная (28 из 401 — было бы листание):
+    ни одной паузы. Модуль 21."""
+    run_main(env, monkeypatch, CELLS, OVERSIZED_FIRST_PAGE, "--smoke-only")
+    assert env.clock.pauses == []
 
 
 def test_21_57_smoke_only_failed(env, monkeypatch):
-    """21.57 --smoke-only с проваленной пробой — smoke_failed. Модуль 21."""
+    """21.57 --smoke-only с проваленной пробой (403 на странице 1 первой
+    клетки) — smoke_failed. Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, FAILED_SMOKE, "--smoke-only")
     assert summary_of(run_dir)["stopped"] == "smoke_failed"
 

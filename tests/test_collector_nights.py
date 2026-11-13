@@ -48,7 +48,8 @@ NIGHTS_DIR = FIXTURES / "nights"
 FIXTURES_SIZE_LIMIT = 3_000_000
 
 # Поля строки night.log, которые не сравниваются с настоящей ночью: номер
-# запроса, вид (проба может попасть на другую клетку), размер, длительность
+# запроса, вид (у настоящей ночи проба — отдельный запрос kind=smoke, у
+# проигрывания — страница 1 первой клетки, kind=ssr), размер, длительность
 # и пауза — их дают сеть и часы, а не логика сборщика. Тот же список — в
 # scripts/collector_fixtures.py (скрипт не импортирует tests/).
 NOT_COMPARED_FIELDS = ("n", "sector", "kind", "bytes", "ms", "after_s")
@@ -679,7 +680,9 @@ def ids_violations(run_dir: Path, summary: dict) -> list[str]:
 
 def spent_violations(summary: dict, plan: dict, log: list[dict]) -> list[str]:
     """len(done) + строк kind=smoke = spent и в summary.json, и в plan.json
-    (CIAN_DATA_FORMAT.md §8: оба spent равны)."""
+    (CIAN_DATA_FORMAT.md §8: оба spent равны). У прогонов после
+    block/simplify-2 строк kind=smoke нет (проба — обычная задача done), у
+    старых прогонов есть: контракт читает оба (21.79)."""
     smoke = sum(1 for record in log if record.get("kind") == "smoke")
     spent = len(plan["done"]) + smoke
     return [
@@ -1048,7 +1051,9 @@ SPOILS = {
     ),
     "page=x в строке OK": (
         lambda d: edit_text(
-            d / "night.log", "page=1\tkind=smoke", "page=x\tkind=smoke"
+            d / "night.log",
+            "sector=T0611\tpage=1\tkind=ssr",
+            "sector=T0611\tpage=x\tkind=ssr",
         ),
         ("raw/T0611_p1.json.gz:", "файл есть"),
     ),
