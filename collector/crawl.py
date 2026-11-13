@@ -6,8 +6,9 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 «билет сгорел», итог пробы, учёт страницы, дочитанность [E-21], ступень,
 повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
 очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
-внешний мир — только вход на ЦИАН (enter_cian), сайт ЦИАН (page_fetch.CianSite),
-Clock, rnd, run_folder (запись и печать say) и TilesFile.record_split.
+пауза старта — до обхода, в cian_collect.build_crawl; внешний мир — только
+вход на ЦИАН (enter_cian), сайт ЦИАН (page_fetch.CianSite), Clock, rnd,
+run_folder (запись и печать say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -487,7 +488,8 @@ class Crawl:
     def open_run(self) -> None:
         """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
         прогона, клетки в работу, очередь вперемешку."""
-        # билет — после паузы старта: возраст кук и UA (порядок случайности)
+        # билет — после паузы старта (build_crawl): возраст кук и UA (порядок
+        # случайности)
         self.site = self.enter_cian()
         self.started_at = self.clock.now()
         self.folder = run_folder.RunFolder.create(
@@ -518,13 +520,12 @@ class Crawl:
     # ── главный цикл ──────────────────────────────────────────────
 
     def collect(self) -> None:
-        """Прогон целиком: пауза старта → открыть прогон → строка start → обход
-        (проба — стр. 1 первой клетки очереди, 21.32) → итог (словарь
-        summary.json) в self.report, папка — self.folder.path. Порядок вызовов
-        случайности — часть поведения (его задают collect и open_run): seed →
+        """Прогон целиком: открыть прогон → строка start → обход (проба — стр. 1
+        первой клетки очереди, 21.32) → итог (словарь summary.json) в
+        self.report, папка — self.folder.path. Порядок вызовов случайности —
+        часть поведения (его задают cian_collect.build_crawl и open_run): seed →
         пауза старта → UA → джиттер клеток → перемешивание."""
         state = self.state
-        self.pause_before_start()
         self.open_run()
         self._log_start()
         self.save_plan()
@@ -792,16 +793,6 @@ class Crawl:
     def budget_left(self) -> bool:
         """Остался ли бюджет запросов прогона."""
         return self.state.spent < self.settings.budget
-
-    def pause_before_start(self) -> None:
-        """Случайное смещение старта U(0; start_jitter_max_s); нет у --smoke-only
-        и --no-start-delay (21.58)."""
-        settings = self.settings
-        if settings.smoke_only or not settings.start_delay:
-            return
-        delay = self.rnd.uniform(0, settings.start_jitter_max_s)
-        run_folder.say(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …")
-        self.clock.sleep(delay)
 
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова

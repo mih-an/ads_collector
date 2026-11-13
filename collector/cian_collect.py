@@ -3,9 +3,9 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 
 Получает argv (read_settings → Settings). build_crawl собирает обход
 crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
-в stdout), часы crawl.Clock. enter_cian — билет (read_ticket → Ticket),
-транспорт (make_transport) → page_fetch.CianSite; его зовёт сам обход
-после паузы старта. main запускает обход и печатает итог. Сети здесь нет
+в stdout), часы crawl.Clock, пауза старта. enter_cian — билет (read_ticket →
+Ticket), транспорт (make_transport) → page_fetch.CianSite; его зовёт сам
+обход в начале прогона. main запускает обход и печатает итог. Сети здесь нет
 (она в транспорте); сервер и запуск — collector/README.md.
 """
 
@@ -232,10 +232,20 @@ def enter_cian(
     return CianSite(transport, ticket, time.monotonic)
 
 
+def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
+    """Случайное смещение старта U(0; start_jitter_max_s); нет у --smoke-only
+    и --no-start-delay — без вызова случайности (21.58)."""
+    if settings.smoke_only or not settings.start_delay:
+        return
+    delay = rnd.uniform(0, settings.start_jitter_max_s)
+    print(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …", flush=True)
+    clock.sleep(delay)
+
+
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
-    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы;
-    случайность и часы здесь не вызываются — паузу старта и вход на ЦИАН
-    (билет, транспорт) обход делает сам в начале прогона."""
+    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
+    пауза старта (первый вызов случайности после seed); вход на ЦИАН (билет,
+    транспорт) обход делает сам в начале прогона."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -250,6 +260,7 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # time берётся по имени модуля в момент вызова: так часы подменяют тесты
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
+    pause_before_start(settings, rnd, clock)
     return Crawl(
         settings,
         tiles_file,

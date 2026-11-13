@@ -24,7 +24,8 @@
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
 - crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
-  так обход собирается без main (make_crawl);
+  так обход собирается без main (make_crawl); паузы старта при этом нет:
+  её делает cc.pause_before_start в build_crawl;
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -4438,8 +4439,8 @@ def is_stdout_use(node: ast.expr, sys_names: dict[str, str]) -> bool:
 
 def stdout_use(source: str) -> list[str]:
     """Печать в stdout: print и sys.stdout (таблица 2.4 документа: stdout —
-    только run_folder.say — эхо night.log, строка паузы старта и итог — и
-    cian_collect)."""
+    только run_folder.say — эхо night.log и итог — и cian_collect: строка
+    паузы старта и печать сетки)."""
     tree = ast.parse(source)
     sys_names = module_bindings(tree, "sys")
     found = []
@@ -4582,9 +4583,8 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не печатают в stdout (print,
     sys.stdout): по таблице 2.4 документа stdout — только run_folder.say
-    (через него обход печатает эхо строк night.log, строку паузы старта и
-    итог) и cian_collect
-    (печать сетки). Модуль 21."""
+    (через него обход печатает эхо строк night.log и итог) и cian_collect
+    (строка паузы старта и печать сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 

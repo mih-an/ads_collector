@@ -3,7 +3,7 @@ run_folder.py — папка прогона сборщика ЦИАН: имен�
 
 Создаёт папку прогона (RunFolder.create), получает готовые словари и ответ на
 запрос (PageAnswer); пишет папку <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log
-(say — печать обхода в stdout: эхо night.log, строка паузы старта, итог),
+(say — печать обхода в stdout: эхо night.log, итог),
 plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
 _broken_* с .note.txt, _block_*.txt, снимок охвата polygons.geojson.gz и
 summary.json (последним). Тексты служебных файлов — чистыми функциями;
