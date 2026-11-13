@@ -6,8 +6,8 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 «билет сгорел», итог пробы, учёт страницы, дочитанность [E-21], ступень,
 повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
 очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
-пауза старта — до обхода, в cian_collect.build_crawl; внешний мир — только
-вход на ЦИАН (enter_cian), сайт ЦИАН (page_fetch.CianSite), Clock, rnd,
+пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
+внешний мир — только сайт ЦИАН (page_fetch.CianSite), Clock, rnd,
 run_folder (запись и печать say) и TilesFile.record_split.
 """
 
@@ -458,21 +458,21 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); вход на ЦИАН — enter_cian, сеть — только через site, часы и сон —
-    через clock, случайность — rnd."""
+    (say); сеть — только через site (готовый сайт ЦИАН из
+    cian_collect.build_crawl), часы и сон — через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        enter_cian: Callable[[], page_fetch.CianSite],
+        site: page_fetch.CianSite,
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
-        self.enter_cian = enter_cian
+        self.site = site
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -480,17 +480,13 @@ class Crawl:
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # появляются в open_run
-        self.site: page_fetch.CianSite
         self.started_at: datetime
         self.folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
-        """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
-        прогона, клетки в работу, очередь вперемешку."""
-        # билет — после паузы старта (build_crawl): возраст кук и UA (порядок
-        # случайности)
-        self.site = self.enter_cian()
+        """Начало прогона: время старта, папка прогона, клетки в работу,
+        очередь вперемешку."""
         self.started_at = self.clock.now()
         self.folder = run_folder.RunFolder.create(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only

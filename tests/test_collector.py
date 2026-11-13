@@ -23,9 +23,9 @@
 - cc.time (time, sleep, monotonic — enter_cian передаёт его в CianSite) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
-  так обход собирается без main (make_crawl); паузы старта при этом нет:
-  её делает cc.pause_before_start в build_crawl;
+- crawl.Crawl(settings, tiles_file, site, Clock(now, sleep), rnd) —
+  так обход собирается без main (make_crawl); паузы старта и входа на
+  ЦИАН при этом нет: их делает build_crawl;
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -301,7 +301,7 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile); enter_cian отдаёт CianSite с билетом как в env
+    features (TilesFile); готовый сайт CianSite с билетом как в env
     над фальшивым транспортом env; часы и сон — FakeTime env,
     случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
@@ -312,7 +312,7 @@ def make_crawl(env, features, **changes):
     started = crawl.Crawl(
         settings,
         tiles_file,
-        lambda: site,
+        site,
         clock,
         random.Random(1),
     )

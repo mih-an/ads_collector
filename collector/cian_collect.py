@@ -3,9 +3,9 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 
 Получает argv (read_settings → Settings). build_crawl собирает обход
 crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
-в stdout), часы crawl.Clock, пауза старта. enter_cian — билет (read_ticket →
-Ticket), транспорт (make_transport) → page_fetch.CianSite; его зовёт сам
-обход в начале прогона. main запускает обход и печатает итог. Сети здесь нет
+в stdout), часы crawl.Clock, пауза старта, затем вход на ЦИАН. enter_cian —
+билет (read_ticket → Ticket), транспорт (make_transport) →
+page_fetch.CianSite. main запускает обход и печатает итог. Сети здесь нет
 (она в транспорте); сервер и запуск — collector/README.md.
 """
 
@@ -244,8 +244,8 @@ def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
-    пауза старта (первый вызов случайности после seed); вход на ЦИАН (билет,
-    транспорт) обход делает сам в начале прогона."""
+    пауза старта (первый вызов случайности после seed), затем вход на ЦИАН
+    (билет, транспорт) — готовый сайт для обхода."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -261,13 +261,9 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
     pause_before_start(settings, rnd, clock)
-    return Crawl(
-        settings,
-        tiles_file,
-        lambda: enter_cian(settings, rnd, transport_factory),
-        clock,
-        rnd,
-    )
+    # билет — после паузы старта: возраст кук и UA (порядок случайности)
+    site = enter_cian(settings, rnd, transport_factory)
+    return Crawl(settings, tiles_file, site, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
