@@ -23,7 +23,7 @@
 - cc.time (time, sleep, monotonic — enter_cian передаёт его в Browser) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(settings, tiles_file, site, Clock(now, sleep), rnd) —
+- crawl.Crawl(settings, tiles_file, browser, Clock(now, sleep), rnd) —
   так обход собирается без main (make_crawl); паузы старта и входа на
   ЦИАН при этом нет: их делает build_crawl;
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
