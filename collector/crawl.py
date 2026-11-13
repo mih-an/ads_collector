@@ -539,7 +539,7 @@ class Crawl:
     def collect(self) -> None:
         """Прогон целиком: пауза старта → открыть прогон → строка start → проба →
         обход → итог (словарь summary.json) в self.report, папка —
-        self.folder.folder. Порядок вызовов случайности — часть поведения
+        self.folder.path. Порядок вызовов случайности — часть поведения
         (его задают collect и open_run): seed → пауза старта → UA → джиттер
         клеток → перемешивание."""
         state = self.state
@@ -957,4 +957,4 @@ class Crawl:
 
     def print_summary(self) -> None:
         """Итог прогона в stdout."""
-        run_folder.say(summary_text(self.report, self.folder.folder))
+        run_folder.say(summary_text(self.report, self.folder.path))

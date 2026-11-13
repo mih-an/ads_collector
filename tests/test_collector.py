@@ -2112,7 +2112,7 @@ def test_21_38_sector_end_logged_once(env):
     run = make_crawl(env, CELLS)
     run.mark_end(B, "short_page")
     run.mark_end(B, "page_end")
-    assert [r for r in log_records(Path(run.folder.folder)) if r.get("event")] == [
+    assert [r for r in log_records(Path(run.folder.path)) if r.get("event")] == [
         {"event": "sector_end", "sector": B, "why": "short_page"}
     ]
 

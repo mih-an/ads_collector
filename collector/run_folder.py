@@ -97,7 +97,7 @@ class RunFolder:
     """Папка прогона: её пути и запись файлов в неё; создаётся через
     RunFolder.create."""
 
-    folder: str
+    path: str
     raw: str
     log: str
     plan: str
@@ -111,7 +111,7 @@ class RunFolder:
         raw = os.path.join(folder, "raw")
         os.makedirs(raw, exist_ok=True)
         return cls(
-            folder=folder,
+            path=folder,
             raw=raw,
             log=os.path.join(folder, "night.log"),
             plan=os.path.join(folder, "plan.json"),
