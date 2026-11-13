@@ -4,8 +4,8 @@ geometry.py — геометрия клеток сбора и файл клет�
 Чистые функции: джиттер кольца (случайность приходит аргументом rnd),
 восстановление сетки по файлу клеток, базовый квадрат клетки по ключу,
 четверти, отсечение кольца прямоугольником, площадь, уплотнение, дети
-деления. Внизу края: чтение файла клеток (load_sectors) и его атомарная
-перезапись при делении (update_tiles_file).
+деления. Внизу края: чтение файла клеток (TilesFile) и его атомарная
+перезапись при делении (TilesFile.record_split).
 """
 
 from __future__ import annotations
@@ -322,35 +322,84 @@ def make_children(
 # ───────────────────── КРАЯ: ФАЙЛ КЛЕТОК (ДИСК) ──────────────────────
 
 
-def load_sectors(path: str) -> list[dict]:
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    out = []
-    for feat in data["features"]:
-        props, geom = feat["properties"], feat["geometry"]
-        if geom["type"] != "Polygon":
-            sector = props.get("sector")
-            raise ValueError(f"сектор {sector}: {geom['type']}, нужен Polygon")
-        if props.get("collect") is False:
-            # выбывшая (разрезанная) клетка: дети уже в файле
-            continue
-        out.append(
-            {
-                "sector": str(props["sector"]),
-                "name": props.get("name", ""),
-                "status": props.get("status", ""),
-                "area_km2": props.get("area_km2") or 0.0,
-                "ring": [
-                    (float(lon), float(lat)) for lon, lat in geom["coordinates"][0]
-                ],
-                # поля клеток сбора [E-42]
-                "level": props.get("level"),
-                "parent": props.get("parent"),
-                "clipped": props.get("clipped"),
-                "base": tuple(props["base"]) if props.get("base") else None,
-            }
-        )
-    return out
+class TilesFile:
+    """Файл клеток сбора: клетки из него, сетка по ним, запись деления.
+    tiles — клетки на момент чтения (старт прогона); record_split их не
+    обновляет."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.tiles = self._read_tiles()
+
+    def grid(self) -> dict:
+        """Сетка клеток по файлу (считается заново, функция чистая); без целых
+        клеток — ValueError (21.60)."""
+        return infer_tile_grid(self.tiles)
+
+    def _read_tiles(self) -> list[dict]:
+        """Клетки сбора из файла; выбывшие (collect=false) пропускаются."""
+        with open(self.path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        out = []
+        for feat in data["features"]:
+            props, geom = feat["properties"], feat["geometry"]
+            if geom["type"] != "Polygon":
+                sector = props.get("sector")
+                raise ValueError(f"сектор {sector}: {geom['type']}, нужен Polygon")
+            if props.get("collect") is False:
+                # выбывшая (разрезанная) клетка: дети уже в файле
+                continue
+            out.append(
+                {
+                    "sector": str(props["sector"]),
+                    "name": props.get("name", ""),
+                    "status": props.get("status", ""),
+                    "area_km2": props.get("area_km2") or 0.0,
+                    "ring": [
+                        (float(lon), float(lat)) for lon, lat in geom["coordinates"][0]
+                    ],
+                    # поля клеток сбора [E-42]
+                    "level": props.get("level"),
+                    "parent": props.get("parent"),
+                    "clipped": props.get("clipped"),
+                    "base": tuple(props["base"]) if props.get("base") else None,
+                }
+            )
+        return out
+
+    def record_split(
+        self, parent_key: str, children: list[dict], split_at: str
+    ) -> None:
+        """
+        Атомарная запись нарезки в файл клеток: родитель выбывает навсегда
+        (collect=false, status=split, ключ остаётся — повторно не выдаётся),
+        дети добавляются фичами.
+        """
+        with open(self.path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        existing = {str(f["properties"].get("sector")) for f in data["features"]}
+        for child in children:
+            if child["sector"] in existing:
+                key = child["sector"]
+                raise ValueError(
+                    f"ключ {key} уже есть в {self.path} — нарезка не записана"
+                )
+        found = False
+        for feat in data["features"]:
+            if str(feat["properties"].get("sector")) == parent_key:
+                feat["properties"]["collect"] = False
+                feat["properties"]["status"] = "split"
+                feat["properties"]["split_at"] = split_at
+                feat["properties"]["children"] = [c["sector"] for c in children]
+                found = True
+        if not found:
+            raise ValueError(f"родитель {parent_key} не найден в {self.path}")
+        for c in children:
+            data["features"].append(_child_feature(c, split_at))
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, self.path)
 
 
 def _child_feature(c: dict, split_at: str) -> dict:
@@ -376,36 +425,3 @@ def _child_feature(c: dict, split_at: str) -> dict:
         },
         "geometry": {"type": "Polygon", "coordinates": [ring]},
     }
-
-
-def update_tiles_file(
-    path: str, parent_key: str, children: list[dict], split_at: str
-) -> None:
-    """
-    Атомарная запись нарезки в файл клеток: родитель выбывает навсегда
-    (collect=false, status=split, ключ остаётся — повторно не выдаётся),
-    дети добавляются фичами.
-    """
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    existing = {str(f["properties"].get("sector")) for f in data["features"]}
-    for child in children:
-        if child["sector"] in existing:
-            key = child["sector"]
-            raise ValueError(f"ключ {key} уже есть в {path} — нарезка не записана")
-    found = False
-    for feat in data["features"]:
-        if str(feat["properties"].get("sector")) == parent_key:
-            feat["properties"]["collect"] = False
-            feat["properties"]["status"] = "split"
-            feat["properties"]["split_at"] = split_at
-            feat["properties"]["children"] = [c["sector"] for c in children]
-            found = True
-    if not found:
-        raise ValueError(f"родитель {parent_key} не найден в {path}")
-    for c in children:
-        data["features"].append(_child_feature(c, split_at))
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)

@@ -6,7 +6,7 @@ effort: low
 tools: Read, Grep, Glob, Edit, Write, Bash
 ---
 
-Поиск по файлам — только инструментами Grep и Glob, не grep / git grep / rg через Bash (CLAUDE.md §8); если Grep недоступен — `git grep` (разрешён в настройках).
+Поиск по файлам — `git grep -n -e '<шаблон>' -- <пути>`; шаблон только в одинарных кавычках; в командах Bash нет обратных кавычек, `$` и подстановок; если Grep/Glob есть в сессии — можно ими (CLAUDE.md §8, решение Андрея 13.11).
 
 Окружение (CLAUDE.md §8): своё окружение `.venv` в корне репозитория, Python —
 абсолютным путём:
@@ -56,7 +56,7 @@ docs/process/TEAMLEAD_REPORT.md (их ведёт только тимлид); к�
    CLAUDE.md не правишь — замечание тимлиду.
 6. `tests/fixtures/collector/README.md` описывает то, что лежит в папке
    фикстур.
-7. Устаревшие формулировки: поиск Grep по docs/ и README на понятия,
+7. Устаревшие формулировки: поиск (git grep) по docs/ и README на понятия,
    которые блок заменил (старые имена функций и модулей, пути land-monitor
    — `land_monitor/`, `watchdog/`, `TEST_PLAN_STAGE2`, `STAGE1_HANDOFF`,
    `ROADMAP`, отменённые режимы) — перечисли места. Упоминания land-monitor

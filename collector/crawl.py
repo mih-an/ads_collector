@@ -1,12 +1,13 @@
 """
-crawl.py — обход выдачи ЦИАН: данные, правила обхода и дирижёр Crawl.
+crawl.py — обход выдачи ЦИАН: данные, правила обхода и класс обхода Crawl.
 
-Данные: Settings, Ticket, Clock (часы и сон), CrawlInput, TileState, PageTask,
-CrawlState. Правила — функции без внешнего мира: интервал и паузы, пул пробы,
-деление [E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень,
-повторы, словари plan.json и summary.json. Crawl ведёт ночь: проба, очередь,
-листание, деление, бюджет, стоп; внешний мир — только запрос страницы
-(page_fetch.PageFetcher), Clock, rnd, run_folder и geometry.update_tiles_file.
+Данные: Settings, Ticket, Clock (часы и сон), TileState, PageTask, CrawlState.
+Правила — функции без внешнего мира: интервал и паузы, пул пробы, деление
+[E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень, повторы,
+словари plan.json и summary.json, текст итога. Crawl ведёт прогон: проба,
+очередь, листание, деление, бюджет, стоп; внешний мир — только вход на ЦИАН
+(enter_cian), запрос страницы (page_fetch.PageFetcher), Clock, rnd,
+run_folder (запись и печать run_folder.say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -91,19 +92,6 @@ class Clock:
 
     now: Callable[[], datetime]
     sleep: Callable[[float], None]
-
-
-@dataclass(frozen=True)
-class CrawlInput:
-    """Входы, которые обход не заменяет: настройки, билет, клетки, сетка.
-    Собраны вместе из-за предела 5 аргументов (CLAUDE.md §6); fetcher,
-    clock и rnd идут в Crawl отдельно — это внешний мир (DECISIONS,
-    block/transport)."""
-
-    settings: Settings
-    ticket: Ticket
-    raw_tiles: list[dict]
-    grid: dict
 
 
 @dataclass
@@ -234,7 +222,7 @@ def is_complete(tile: TileState) -> bool:
 
 def read_out(tile: TileState, page: int) -> bool:
     """Страница page клетке уже не нужна: конец набора или верхняя оценка
-    totalOffers исчерпана. Потолок выдачи — отдельно, в цикле Crawl._crawl_pages."""
+    totalOffers исчерпана. Потолок выдачи — отдельно, в цикле Crawl.download_tile."""
     if tile.served_end:
         return True
     return page > 1 and tile.pages_planned is not None and page > tile.pages_planned
@@ -254,7 +242,7 @@ def task_state(verdict: str, attempts: int, retries: int) -> str:
 
 
 # «Ступень» — наследие калибровки ЦИАН-контура: ступень бюджета пройдена —
-# можно поднимать бюджет (тексты итога — cian_collect.LADDER_VERDICTS).
+# можно поднимать бюджет (тексты итога — LADDER_VERDICTS ниже).
 def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]:
     """Ступень засчитана, только если ночь дошла до конца бюджета или очереди
     (чисто) или упёрлась в блок (порог найден); поломка контракта, сбой сети
@@ -266,6 +254,22 @@ def ladder(stopped: str | None, stop_class: str | None) -> tuple[bool, str]:
     if stopped == "smoke_only":
         return True, "smoke_only"
     return False, "invalid"
+
+
+def stop_reason(state: CrawlState, smoke_only: bool) -> str:
+    """Причина конца прогона (поле stopped). Записанная раньше остаётся:
+    провал пробы, стоп-вердикт, бюджет посреди клетки, Ctrl+C. Иначе —
+    только проба, бюджет кончился при непустой очереди, очередь пуста.
+    «Непустая очередь → budget_exhausted» верно при условии цикла collect
+    (while pending and budget_left()): с непустой очередью он выходит только
+    по бюджету."""
+    if state.stopped:
+        return state.stopped
+    if smoke_only:
+        return "smoke_only"
+    if state.pending:
+        return "budget_exhausted"
+    return "queue_empty"
 
 
 def tile_plan_entry(tile: TileState) -> dict:
@@ -415,43 +419,106 @@ def summary_report(
     }
 
 
-# ─────────────────────────────── дирижёр ───────────────────────────────
+LADDER_VERDICTS = {
+    "passed": "ступень ПРОЙДЕНА — можно поднимать бюджет",
+    "blocked": "ступень ПРОВАЛЕНА — порог IP найден, сутки паузы",
+    "smoke_only": "smoke-проверка, обход не запускался",
+    "invalid": "ступень НЕ ЗАСЧИТАНА — повторить после починки",
+}
+
+
+def summary_text(report: dict, folder: str) -> str:
+    """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
+    ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
+    # первая строка пустая: она отделяет итог от строк stdout выше
+    lines = [
+        "",
+        "─" * 64,
+        f"ночь {report['night']}   бюджет {report['budget']}   "
+        f"запросов {report['spent']}   билет: {ticket}",
+        f"стоп: {report['stopped']}   класс: {report['stop_class'] or '-'}   "
+        f"{report['stop_detail'] or ''}",
+        f"ИТОГ: {LADDER_VERDICTS[report['ladder_result']]}",
+        f"smoke: {report['smoke']}",
+    ]
+    for ev in report["split_events"]:
+        lines.append(
+            f"РАЗРЕЗАНА {ev['parent']} (total={ev['total_offers']}) → "
+            f"{', '.join(ev['children'])}"
+        )
+    lines.append(
+        f"секторов затронуто {report['sectors_touched']}, "
+        f"полностью выкачано {report['sectors_complete']}, "
+        f"дублей id {report['duplicate_ids_total']}, "
+        f"stateless-пагинация {report['stateless_pagination_ok']}"
+    )
+    lines.append(f"файлы: {folder}")
+    lines.append("─" * 64)
+    by_total = sorted(
+        report["sectors"].items(), key=lambda kv: -(kv[1]["total_offers"] or 0)
+    )
+    for key, v in by_total:
+        svt = f"{v['served_vs_total']:.2f}" if v["served_vs_total"] else "  -  "
+        lines.append(
+            f"  {key:>4}  total={str(v['total_offers']):>5}  "
+            f"стр {len(v['pages_done'])}/{v['pages_planned']}  "
+            f"{'полн.' if v['complete'] else 'част.'}  "
+            f"uniq={v['unique_ids']:>5}  dup={v['duplicate_ids']:>3}  "
+            f"served/total={svt}  {v['name'][:30]}"
+        )
+    return "\n".join(lines)
+
+
+# ──────────────────────────────── обход ────────────────────────────────
 
 
 class Crawl:
-    """Дирижёр ночи: проба, очередь клеток, листание, деление, бюджет, повторы,
-    стоп, Ctrl+C. Правила — функции выше, запись файлов — run_folder; сеть —
-    только через fetcher, часы и сон — через clock, случайность — rnd."""
+    """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
+    стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
+    (say); вход на ЦИАН — enter_cian, сеть — только через fetcher, часы и сон —
+    через clock, случайность — rnd."""
 
     def __init__(
         self,
-        crawl_input: CrawlInput,
-        fetcher: page_fetch.PageFetcher,
+        settings: Settings,
+        tiles_file: geometry.TilesFile,
+        enter_cian: Callable[[], tuple[Ticket, page_fetch.PageFetcher]],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
-        settings = crawl_input.settings
+        """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
-        self.grid = crawl_input.grid
-        self.ticket = crawl_input.ticket
-        self.fetcher = fetcher
+        self.tiles_file = tiles_file
+        self.enter_cian = enter_cian
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
         self.state = CrawlState()
-        self.started_at = clock.now()
-        self.paths = run_folder.create_folder(
-            settings.runs_dir, self.started_at, settings.smoke_only
-        )
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
+        # появляются в open_run
+        self.ticket: Ticket
+        self.fetcher: page_fetch.PageFetcher
+        self.started_at: datetime
+        self.run_folder: run_folder.RunFolder
+        self.report: dict  # итог прогона (summary.json), появляется в finish
+
+    def open_run(self) -> None:
+        """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
+        прогона, клетки в работу, очередь вперемешку."""
+        # билет — после паузы старта: возраст кук и UA (порядок случайности)
+        self.ticket, self.fetcher = self.enter_cian()
+        self.started_at = self.clock.now()
+        self.run_folder = run_folder.RunFolder.create(
+            self.settings.runs_dir, self.started_at, self.settings.smoke_only
+        )
         # джиттер — один раз на (клетка, ночь), в порядке файла
-        for raw_tile in crawl_input.raw_tiles:
+        for raw_tile in self.tiles_file.tiles:
             self._register(raw_tile)
         # клетки вперемешку, страницы внутри клетки — подряд (решение Андрея
         # 15.09: листание подряд — единственный человеческий паттерн)
         order = list(self.tiles)
-        rnd.shuffle(order)
+        self.rnd.shuffle(order)
         self.state.pending = order
 
     def _register(self, raw_tile: dict) -> None:
@@ -469,66 +536,45 @@ class Crawl:
 
     # ── главный цикл ──────────────────────────────────────────────
 
-    def run(self) -> dict:
-        """Ночь целиком. → словарь summary.json (папка — self.paths.folder)."""
+    def collect(self) -> None:
+        """Прогон целиком: пауза старта → открыть прогон → строка start → проба →
+        обход → итог (словарь summary.json) в self.report, папка —
+        self.run_folder.folder. Порядок вызовов случайности — часть поведения
+        (его задают collect и open_run): seed → пауза старта → UA → джиттер
+        клеток → перемешивание."""
         state = self.state
-        self.log(
-            event="start",
-            budget=self.settings.budget,
-            sectors=len(self.tiles),
-            window_h=self.settings.window_hours,
-            mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.ticket.has_ticket),
-            cookie_age_h=self.ticket.age_h,
-            order="sectors_shuffled_pages_sequential",
-            dry_run=0,  # режим убран, поле осталось в формате
-        )
+        self.pause_before_start()
+        self.open_run()
+        self._log_start()
         self.save_plan()
-        if not self.smoke():
-            self.log(
-                event="STOP",
-                reason=state.stopped,
-                cls=state.stop_class or "-",
-                detail=state.stop_detail,
-                spent=state.spent,
-            )
-            return self.finish()
-        if self.settings.smoke_only:
-            state.stopped = "smoke_only"
-            return self.finish()
+        # проба провалена или режим «только проба» — обхода нет
+        if not self.smoke() or self.settings.smoke_only:
+            self.finish()
+            return
         # пауза после пробы: иначе первая страница обхода уходит через секунду
         # после неё (человек так быстро не листает; мини-тест 15.09). Стоит до
         # try: Ctrl+C в этой паузе — выход без сводки (collector_architecture.md
         # 3.2, тест 21.51)
-        self.sleep_between()
+        self.pause_between_pages()
         try:
-            self._crawl_queue()
+            while state.pending and self.budget_left():
+                key = state.pending.pop(0)
+                self.download_tile(key)
+                if state.stopped:
+                    break  # прогон остановлен (блок, сеть, бюджет)
+                self.save_plan()
+                self.pause_between_tiles()
         except KeyboardInterrupt:
             state.stopped, state.stop_class = "interrupted", "interrupted"
-        return self.finish()
-
-    def _crawl_queue(self) -> None:
-        """Клетки очереди по одной, пока есть бюджет и очередь."""
-        state, budget = self.state, self.settings.budget
-        while state.pending:
-            if state.spent >= budget:
-                state.stopped = "budget_exhausted"
-                return
-            key = state.pending.pop(0)
-            if not self.crawl_tile(key):
-                return  # ночь остановлена (блок, сеть, бюджет)
-            self.save_plan()
-            if state.pending and state.spent < budget:
-                factor = self.rnd.uniform(*self.settings.inter_tile_pause)
-                self.sleep_between(factor)
-        state.stopped = state.stopped or "queue_empty"
+        self.finish()
 
     # ── проба ─────────────────────────────────────────────────────
 
     def smoke(self) -> bool:
         """Контрольный запрос по мелкой клетке до обхода. Тратит бюджет: IP его
         видит, измерение должно быть честным. Клетка случайная из самых
-        мелких — постоянная была бы паттерном. → прошла ли проба."""
+        мелких — постоянная была бы паттерном. → прошла ли проба; провал —
+        причина в состоянии и строка STOP."""
         settings, state = self.settings, self.state
         candidates = smoke_pool(
             self.tiles, settings.smoke_min_area_km2, settings.smoke_pool_size
@@ -555,6 +601,7 @@ class Crawl:
             self.log(event="smoke_empty", sector=key, note="сектор пуст, беру другой")
         state.stop_detail = "все smoke-сектора пусты"
         state.stopped = "smoke_failed"
+        self._log_stop()
         return False
 
     def _smoke_failed(self, key: str, answer: run_folder.PageAnswer) -> None:
@@ -564,27 +611,40 @@ class Crawl:
         state.smoke = {"sector": key, "verdict": answer.verdict, "detail": detail}
         state.stop_class, state.stop_detail = answer.verdict, detail
         state.stopped = "smoke_failed"
+        self._log_stop()
 
     # ── клетка ────────────────────────────────────────────────────
 
-    def crawl_tile(self, key: str) -> bool:
-        """Одна клетка подряд: стр. 1 → 2 → … до конца набора. → продолжать ли ночь."""
-        page = 2 if 1 in self.tiles[key].pages_done else 1  # стр. 1 могла снять проба
-        if page == 2 and self.split(key):  # клетку-переросток сняла проба
-            return True
-        return self._crawl_pages(key, page)
-
-    def _crawl_pages(self, key: str, page: int) -> bool:
-        """Листание клетки со страницы page до конца набора, с повторами после
-        сбоя сети. → продолжать ли ночь."""
+    def download_tile(self, key: str) -> None:
+        """Клетка целиком: стр. 1 → стоп / деление на четверти / стр. 2…N до
+        конца набора; между страницами — пауза. Стоп прогона — в state.stopped."""
         tile = self.tiles[key]
-        attempts = 0  # повторов этой страницы уже было
+        smoke_took_page_1 = 1 in tile.pages_done
+        page = 2 if smoke_took_page_1 else 1
+        if smoke_took_page_1 and self.split_into_quarters(key):
+            return  # клетку-переросток сняла проба
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
-            if self.state.spent >= self.settings.budget:
+            self.download_page(key, page)
+            if self.state.stopped:
+                return  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
+            if page == 1 and self.split_into_quarters(key):
+                return  # родитель выбыл, дети в очереди
+            page += 1
+            # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
+            if not read_out(tile, page):
+                self.pause_between_pages()
+
+    def download_page(self, key: str, page: int) -> None:
+        """Одна страница клетки; сбой сети — повторы с растущей паузой, сколько
+        пауз в Settings.net_retry_pauses. Каждая попытка — запрос, строка
+        night.log, задача plan.json и единица бюджета."""
+        attempts = 0  # повторов этой страницы уже было
+        while True:
+            if not self.budget_left():
                 self.state.stopped = "budget_exhausted"
-                return False
+                return
             # с 11.09 все страницы — GET cat.php (вид ssr)
             origin = "seed" if page == 1 else "expanded"
             task = PageTask(
@@ -593,34 +653,10 @@ class Crawl:
             verdict = self.step(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
-                return True
-            if verdict == search_page.OK:
-                if page == 1 and self.split(key):
-                    return True  # родитель выбыл, дети в очереди
-                attempts = 0
-                page += 1
-                if not read_out(tile, page):
-                    self.sleep_between()
-                continue
             if task.state != "net_error":
-                return False  # BLOCK / API_CHANGED / NET_ERROR ×4
-            self._retry_pause(key, page, attempts)
+                return
+            self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
-        return True
-
-    def _retry_pause(self, key: str, page: int, attempts: int) -> None:
-        """Пауза перед повтором номер attempts + 1 после сбоя сети."""
-        retry_pauses = self.settings.net_retry_pauses
-        pause = self.rnd.uniform(*retry_pauses[attempts])
-        self.log(
-            event="retry",
-            sector=key,
-            page=page,
-            attempt=attempts + 1,
-            of=len(retry_pauses),
-            after_s=int(pause),
-        )
-        self.clock.sleep(pause)
 
     def step(self, task: PageTask) -> str:
         """Один запрос обхода. → вердикт; стоп-вердикты попутно ставят stopped."""
@@ -710,22 +746,19 @@ class Crawl:
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
         if answer.verdict == search_page.OK:
             # HTML каждой страницы [E-22]
-            run_folder.write_page(
-                self.paths,
+            self.run_folder.write_page(
                 answer.key,
                 answer.page,
                 {"totalOffers": answer.total, "offers": offers},
                 answer.body,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
-            name = run_folder.write_broken(
-                self.paths, answer, self.ticket.ua, self._stamp_hms()
+            name = self.run_folder.write_broken(
+                answer, self.ticket.ua, self._stamp_hms()
             )
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            run_folder.write_block(
-                self.paths, answer, self.ticket.ua, self._stamp_hms()
-            )
+            self.run_folder.write_block(answer, self.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -734,7 +767,7 @@ class Crawl:
 
     # ── деление (E-42) ────────────────────────────────────────────
 
-    def split(self, key: str) -> bool:
+    def split_into_quarters(self, key: str) -> bool:
         """После стр. 1 клетки: totalOffers больше порога — родитель выбывает,
         4 четверти ∩ родитель встают в очередь того же среза. → разрезали ли.
         На дне не делим — листаем (вариант Б, решение Андрея 18.09)."""
@@ -759,14 +792,14 @@ class Crawl:
         # split_decision отдаёт "split" только клетке с level — подсказка для mypy
         assert tile.level is not None
         children = geometry.make_children(
-            key, tile.ring_canonical, tile.level, self.grid, base=tile.base
+            key, tile.ring_canonical, tile.level, self.tiles_file.grid(), base=tile.base
         )
         if not children:
             self.log(event="split_skip", sector=key, note="нет непустых четвертей")
             return False
         self._queue_children(key, children)
         split_at = self.clock.now().isoformat(timespec="seconds")
-        geometry.update_tiles_file(self.settings.tiles_path, key, children, split_at)
+        self.tiles_file.record_split(key, children, split_at)
         self.save_plan()
         return True
 
@@ -797,20 +830,88 @@ class Crawl:
 
     # ── паузы, журнал, план, итог ─────────────────────────────────
 
+    def budget_left(self) -> bool:
+        """Остался ли бюджет запросов прогона."""
+        return self.state.spent < self.settings.budget
+
+    def pause_before_start(self) -> None:
+        """Случайное смещение старта U(0; start_jitter_max_s); нет у --smoke-only
+        и --no-start-delay (21.58)."""
+        settings = self.settings
+        if settings.smoke_only or not settings.start_delay:
+            return
+        delay = self.rnd.uniform(0, settings.start_jitter_max_s)
+        run_folder.say(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …")
+        self.clock.sleep(delay)
+
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
-        случайности (точка подмены теста 21.36)."""
-        if self.state.spent >= self.settings.budget:
+        случайности (точка подмены теста 21.36); общий помощник
+        pause_between_pages и pause_between_tiles."""
+        if not self.budget_left():
             return
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
         self.clock.sleep(self.rnd.uniform(low, high))
 
+    def pause_between_pages(self) -> None:
+        """Обычная пауза между запросами: средний интервал ± разброс."""
+        self.sleep_between()
+
+    def pause_between_tiles(self) -> None:
+        """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
+        state = self.state
+        # проверка бюджета повторяет sleep_between, чтобы не звать случайность
+        # для множителя впустую после последнего запроса
+        if not state.pending or not self.budget_left():
+            return
+        factor = self.rnd.uniform(*self.settings.inter_tile_pause)
+        self.sleep_between(factor)
+
+    def pause_before_retry(self, key: str, page: int, attempts: int) -> None:
+        """Пауза перед повтором номер attempts + 1 после сбоя сети."""
+        retry_pauses = self.settings.net_retry_pauses
+        pause = self.rnd.uniform(*retry_pauses[attempts])
+        self.log(
+            event="retry",
+            sector=key,
+            page=page,
+            attempt=attempts + 1,
+            of=len(retry_pauses),
+            after_s=int(pause),
+        )
+        self.clock.sleep(pause)
+
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
         stamp = self.clock.now().isoformat(timespec="seconds")
-        run_folder.append_log(self.paths, stamp, fields)
+        self.run_folder.append_log(stamp, fields)
+
+    def _log_start(self) -> None:
+        """Первая строка night.log: с чем прогон стартует."""
+        self.log(
+            event="start",
+            budget=self.settings.budget,
+            sectors=len(self.tiles),
+            window_h=self.settings.window_hours,
+            mean_interval_s=int(self.mean_interval_s),
+            ticket=int(self.ticket.has_ticket),
+            cookie_age_h=self.ticket.age_h,
+            order="sectors_shuffled_pages_sequential",
+            dry_run=0,  # режим убран, поле осталось в формате
+        )
+
+    def _log_stop(self) -> None:
+        """Строка STOP в night.log по причине остановки, записанной в состоянии."""
+        state = self.state
+        self.log(
+            event="STOP",
+            reason=state.stopped,
+            cls=state.stop_class or "-",
+            detail=state.stop_detail,
+            spent=state.spent,
+        )
 
     def _log_request(self, answer: run_folder.PageAnswer) -> None:
         """Строка запроса в night.log; err — деталь до пометки «билет сгорел»."""
@@ -830,15 +931,15 @@ class Crawl:
         )
 
     def save_plan(self) -> None:
-        run_folder.write_plan(
-            self.paths,
+        self.run_folder.write_plan(
             plan_payload(
                 self.state, self.settings, self.ticket, self.started_at, self.tiles
             ),
         )
 
-    def finish(self) -> dict:
-        """План, снимок охвата и summary.json последним. → словарь итога."""
+    def finish(self) -> None:
+        """План, снимок охвата и summary.json последним; итог — в self.report."""
+        self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
             self.state, self.settings, self.ticket, self.started_at, self.tiles
@@ -847,6 +948,10 @@ class Crawl:
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
         # sectors сводки; перед summary.json, всегда (и у пробы)
         rings = {key: self.tiles[key].ring_canonical for key in report["sectors"]}
-        run_folder.write_polygons(self.paths, rings)
-        run_folder.write_summary(self.paths, report)
-        return report
+        self.run_folder.write_polygons(rings)
+        self.run_folder.write_summary(report)
+        self.report = report
+
+    def print_summary(self) -> None:
+        """Итог прогона в stdout."""
+        run_folder.say(summary_text(self.report, self.run_folder.folder))

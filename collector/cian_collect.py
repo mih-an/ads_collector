@@ -1,11 +1,12 @@
 """
 cian_collect.py — запуск боевого сборщика ЦИАН и его края (часы, сон, билет).
 
-Получает argv (parse_settings → Settings), файл клеток сбора [E-42], входной
-билет (read_ticket → Ticket). Собирает транспорт (make_transport), запрос
-страницы page_fetch.PageFetcher, часы crawl.Clock, случайность — и отдаёт
-ночь crawl.Crawl; печатает сетку и итог ночи в stdout. Сети здесь нет: она в
-реализациях транспорта. Python 3.12; сервер и запуск — collector/README.md.
+Получает argv (read_settings → Settings). build_crawl собирает обход
+crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
+в stdout), часы crawl.Clock. enter_cian — билет (read_ticket → Ticket),
+транспорт (make_transport) и page_fetch.PageFetcher; его зовёт сам обход
+после паузы старта. main запускает обход и печатает итог. Сети здесь нет
+(она в транспорте); сервер и запуск — collector/README.md.
 """
 
 from __future__ import annotations
@@ -21,8 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
-from collector.crawl import Clock, Crawl, CrawlInput, Settings, Ticket
-from collector.geometry import infer_tile_grid, load_sectors
+from collector.crawl import Clock, Crawl, Settings, Ticket
+from collector.geometry import TilesFile
 from collector.page_fetch import PageFetcher
 from collector.transport import Transport
 
@@ -82,57 +83,6 @@ def read_ticket(settings: Settings, now_ts: float, rnd: random.Random) -> Ticket
     return Ticket(cookie_header=cookie_header, ua=ua, age_h=age_h)
 
 
-# ─────────────────────────────── ИТОГ ───────────────────────────────
-
-LADDER_VERDICTS = {
-    "passed": "ступень ПРОЙДЕНА — можно поднимать бюджет",
-    "blocked": "ступень ПРОВАЛЕНА — порог IP найден, сутки паузы",
-    "smoke_only": "smoke-проверка, обход не запускался",
-    "invalid": "ступень НЕ ЗАСЧИТАНА — повторить после починки",
-}
-
-
-def print_summary(report: dict, folder: str) -> None:
-    """Итог ночи в stdout: шапка и клетки по убыванию totalOffers."""
-    ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
-    print("\n" + "─" * 64)
-    print(
-        f"ночь {report['night']}   бюджет {report['budget']}   "
-        f"запросов {report['spent']}   билет: {ticket}"
-    )
-    print(
-        f"стоп: {report['stopped']}   класс: {report['stop_class'] or '-'}   "
-        f"{report['stop_detail'] or ''}"
-    )
-    print(f"ИТОГ: {LADDER_VERDICTS[report['ladder_result']]}")
-    print(f"smoke: {report['smoke']}")
-    for ev in report["split_events"]:
-        print(
-            f"РАЗРЕЗАНА {ev['parent']} (total={ev['total_offers']}) → "
-            f"{', '.join(ev['children'])}"
-        )
-    print(
-        f"секторов затронуто {report['sectors_touched']}, "
-        f"полностью выкачано {report['sectors_complete']}, "
-        f"дублей id {report['duplicate_ids_total']}, "
-        f"stateless-пагинация {report['stateless_pagination_ok']}"
-    )
-    print(f"файлы: {folder}")
-    print("─" * 64)
-    by_total = sorted(
-        report["sectors"].items(), key=lambda kv: -(kv[1]["total_offers"] or 0)
-    )
-    for key, v in by_total:
-        svt = f"{v['served_vs_total']:.2f}" if v["served_vs_total"] else "  -  "
-        print(
-            f"  {key:>4}  total={str(v['total_offers']):>5}  "
-            f"стр {len(v['pages_done'])}/{v['pages_planned']}  "
-            f"{'полн.' if v['complete'] else 'част.'}  "
-            f"uniq={v['unique_ids']:>5}  dup={v['duplicate_ids']:>3}  "
-            f"served/total={svt}  {v['name'][:30]}"
-        )
-
-
 # ──────────────────────────── ТРАНСПОРТЫ ────────────────────────────
 
 
@@ -178,6 +128,11 @@ def make_transport(name: str, cookie_header: str | None) -> Transport:
     if choice is None:
         raise ValueError(f"make_transport: незнакомый транспорт name={name!r}")
     return choice.make(cookie_header)
+
+
+# транспорт по имени флага --transport и строке Cookie: make_transport или
+# подмена в тестах
+TransportFactory = Callable[[str, str | None], Transport]
 
 
 # ─────────────────────────────── CLI ────────────────────────────────
@@ -229,7 +184,7 @@ def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             ap.error(f"{flag}: пустой файл {path}")
 
 
-def parse_settings(argv: list[str]) -> Settings:
+def read_settings(argv: list[str]) -> Settings:
     """Аргументы запуска → Settings; нет --seed — случайный seed (первый вызов
     случайности ночи, записывается в plan.json для повтора)."""
     ap = build_parser()
@@ -261,47 +216,50 @@ def print_grid(grid: dict, settings: Settings) -> None:
     )
 
 
-def wait_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
-    """Случайное смещение старта ночи U(0; start_jitter_max_s) перед прогоном;
-    нет у --smoke-only и --no-start-delay (кейс 21.58)."""
-    if settings.smoke_only or not settings.start_delay:
-        return
-    delay = rnd.uniform(0, settings.start_jitter_max_s)
-    print(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …", flush=True)
-    clock.sleep(delay)
+def enter_cian(
+    settings: Settings, rnd: random.Random, transport_factory: TransportFactory
+) -> tuple[Ticket, PageFetcher]:
+    """Вход на ЦИАН: билет (куки, UA, возраст кук) и запрос страницы на
+    выбранном транспорте."""
+    ticket = read_ticket(settings, time.time(), rnd)
+    transport = transport_factory(settings.transport, ticket.cookie_header)
+    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
+    return ticket, fetcher
 
 
-def main(
-    transport_factory: Callable[[str, str | None], Transport] = make_transport,
-) -> None:
-    """Запуск ночи: настройки, клетки и сетка, пауза старта, билет, транспорт,
-    запрос страницы, прогон и печать итога. Порядок вызовов случайности —
-    часть поведения: seed → пауза старта → UA → джиттер клеток →
-    перемешивание. transport_factory — точка подмены транспорта в тестах."""
-    settings = parse_settings(sys.argv[1:])
+def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
+    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы;
+    случайность и часы здесь не вызываются — паузу старта и вход на ЦИАН
+    (билет, транспорт) обход делает сам в начале прогона."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
-    tiles = load_sectors(settings.tiles_path)
+    tiles_file = TilesFile(settings.tiles_path)
     # сетка — всегда: по файлу без целых клеток её не восстановить — выход с
     # путём и причиной, без трассировки (З160)
     try:
-        grid = infer_tile_grid(tiles)
+        grid = tiles_file.grid()
     except ValueError as error:
         sys.exit(f"файл клеток {settings.tiles_path}: {error}")
     print_grid(grid, settings)
     # time берётся по имени модуля в момент вызова: так часы подменяют тесты
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
-    wait_start(settings, rnd, clock)
-    ticket = read_ticket(settings, time.time(), rnd)
-    transport = transport_factory(settings.transport, ticket.cookie_header)
-    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
-    crawl_input = CrawlInput(
-        settings=settings, ticket=ticket, raw_tiles=tiles, grid=grid
+    return Crawl(
+        settings,
+        tiles_file,
+        lambda: enter_cian(settings, rnd, transport_factory),
+        clock,
+        rnd,
     )
-    crawl = Crawl(crawl_input, fetcher, clock, rnd)
-    print_summary(crawl.run(), crawl.paths.folder)
+
+
+def main(transport_factory: TransportFactory = make_transport) -> None:
+    """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
+    settings = read_settings(sys.argv[1:])
+    crawl = build_crawl(settings, transport_factory)
+    crawl.collect()
+    crawl.print_summary()
 
 
 if __name__ == "__main__":

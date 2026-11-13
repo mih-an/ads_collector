@@ -20,12 +20,12 @@
 - page_fetch.PageFetcher(transport, user_agent, has_ticket, monotonic) и
   page_fetch.decode_body(raw, content_encoding) — PageFetcher зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
-- cc.time (time, sleep, monotonic — main передаёт его в PageFetcher) и
+- cc.time (time, sleep, monotonic — enter_cian передаёт его в PageFetcher) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(CrawlInput, fetcher, Clock(now, sleep), rnd) — так обход
-  собирается без main (make_crawl);
-- cc.parse_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
+- crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
+  так обход собирается без main (make_crawl);
+- cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
   читают build_parser, check_args и make_transport в момент вызова: 21.81
@@ -296,22 +296,26 @@ def fake_ticket():
 
 
 def make_crawl(env, features, **changes):
-    """Crawl без main(): файл клеток features, билет как в env, сеть —
-    фальшивый транспорт env через PageFetcher, часы и сон — FakeTime env,
+    """Crawl без main() с уже начатым прогоном (open_run): файл клеток
+    features (TilesFile); enter_cian отдаёт билет как в env и PageFetcher
+    над фальшивым транспортом env; часы и сон — FakeTime env,
     случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
-    tiles = geometry.load_sectors(str(env.tiles))
-    crawl_input = crawl.CrawlInput(
-        settings=settings_of(env.folder, **changes),
-        ticket=fake_ticket(),
-        raw_tiles=tiles,
-        grid=geometry.infer_tile_grid(tiles),
-    )
+    tiles_file = geometry.TilesFile(str(env.tiles))
+    settings = settings_of(env.folder, **changes)
     fetcher = page_fetch.PageFetcher(
         env.transport, USER_AGENT, True, env.clock.monotonic
     )
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
-    return crawl.Crawl(crawl_input, fetcher, clock, random.Random(1))
+    started = crawl.Crawl(
+        settings,
+        tiles_file,
+        lambda: (fake_ticket(), fetcher),
+        clock,
+        random.Random(1),
+    )
+    started.open_run()
+    return started
 
 
 def read_json(path: Path):
@@ -882,7 +886,7 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
 
 
 def test_21_14_load_sectors_fields(tmp_path):
-    """21.14 load_sectors: ключ строкой, поля клетки; у сектора без полей
+    """21.14 TilesFile: ключ строкой, поля клетки; у сектора без полей
     клетки — name "", status "", area 0.0, level/parent/clipped/base None.
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
@@ -894,7 +898,7 @@ def test_21_14_load_sectors_fields(tmp_path):
     }
     write_features(path, [cell, bare])
     ring = [tuple(p) for p in rect_ring(A)]
-    assert geometry.load_sectors(str(path)) == [
+    assert geometry.TilesFile(str(path)).tiles == [
         {
             "sector": A,
             "name": f"Сбор {A}",
@@ -925,7 +929,7 @@ def test_21_14_load_sectors_skips_collect_false(tmp_path):
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
     write_features(path, [tile(A, collect=False), tile(B)])
-    assert [s["sector"] for s in geometry.load_sectors(str(path))] == [B]
+    assert [s["sector"] for s in geometry.TilesFile(str(path)).tiles] == [B]
 
 
 def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
@@ -935,7 +939,7 @@ def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
     feature["geometry"]["type"] = "MultiPolygon"
     write_features(path, [feature])
     with pytest.raises(ValueError, match=f"сектор {A}: MultiPolygon, нужен Polygon"):
-        geometry.load_sectors(str(path))
+        geometry.TilesFile(str(path))
 
 
 def test_21_15_jitter_ring_values():
@@ -1334,12 +1338,12 @@ def tiles_file(tmp_path) -> Path:
 
 
 def test_21_22_update_tiles_file_parent_and_children(tmp_path):
-    """21.22 update_tiles_file: родитель collect=false, status=split,
+    """21.22 TilesFile.record_split: родитель collect=false, status=split,
     split_at, children; дети — фичами с полями клетки; сосед не тронут.
     Модуль 21."""
     path = tiles_file(tmp_path)
     children = geometry.make_children(A, rect_ring(A), 0, GRID)
-    geometry.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
+    geometry.TilesFile(str(path)).record_split(A, children, "2026-11-10T01:31:40+03:00")
     props = [f["properties"] for f in read_json(path)["features"]]
     assert (props[0], props[1]["collect"], props[2]) == (
         {
@@ -1379,7 +1383,7 @@ def test_21_22_update_tiles_file_format(tmp_path):
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
     children = geometry.make_children(A, rect_ring(A), 0, GRID)
-    geometry.update_tiles_file(str(path), A, children, "2026-11-10T01:31:40+03:00")
+    geometry.TilesFile(str(path)).record_split(A, children, "2026-11-10T01:31:40+03:00")
     text = path.read_text(encoding="utf-8")
     head = '{\n "type": "FeatureCollection",\n "features": [\n  {\n   "type"'
     names = sorted(p.name for p in tmp_path.iterdir())
@@ -1399,7 +1403,7 @@ def test_21_22_update_tiles_file_key_collision(tmp_path):
     with pytest.raises(
         ValueError, match=f"ключ T0508 уже есть в {re.escape(str(path))}"
     ):
-        geometry.update_tiles_file(str(path), A, children, "x")
+        geometry.TilesFile(str(path)).record_split(A, children, "x")
     assert path.read_bytes() == before
 
 
@@ -1411,7 +1415,7 @@ def test_21_22_update_tiles_file_parent_missing(tmp_path):
     with pytest.raises(
         ValueError, match=f"родитель T0999 не найден в {re.escape(str(path))}"
     ):
-        geometry.update_tiles_file(str(path), "T0999", [], "x")
+        geometry.TilesFile(str(path)).record_split("T0999", [], "x")
     assert (path.read_bytes(), sorted(p.name for p in tmp_path.iterdir())) == (
         before,
         ["tiles.geojson"],
@@ -2108,7 +2112,7 @@ def test_21_38_sector_end_logged_once(env):
     run = make_crawl(env, CELLS)
     run.mark_end(B, "short_page")
     run.mark_end(B, "page_end")
-    assert [r for r in log_records(Path(run.paths.folder)) if r.get("event")] == [
+    assert [r for r in log_records(Path(run.run_folder.folder)) if r.get("event")] == [
         {"event": "sector_end", "sector": B, "why": "short_page"}
     ]
 
@@ -3324,11 +3328,11 @@ def test_21_59_seed_random(env, monkeypatch):
 
 
 def test_21_59_parse_settings_defaults():
-    """21.59 Умолчания parse_settings: --budget 50, --runs-dir runs,
+    """21.59 Умолчания read_settings: --budget 50, --runs-dir runs,
     --window-hours 8.0, без --smoke-only, с паузой старта (З158);
     --transport urllib, --cookies cookies.txt и --ua ua.txt — в папке
     запуска. Модуль 21."""
-    settings = cc.parse_settings(["--geojson", "клетки.geojson", "--seed", "1"])
+    settings = cc.read_settings(["--geojson", "клетки.geojson", "--seed", "1"])
     assert (
         settings.budget,
         settings.runs_dir,
@@ -3353,10 +3357,10 @@ def test_21_59_parse_settings_defaults():
 
 
 def test_21_59_parse_settings_requires_geojson(capsys):
-    """21.59 Без --geojson parse_settings выходит с кодом 2 (argparse), в
+    """21.59 Без --geojson read_settings выходит с кодом 2 (argparse), в
     сообщении назван флаг --geojson (З158). Модуль 21."""
     with pytest.raises(SystemExit) as stop:
-        cc.parse_settings(["--seed", "1"])
+        cc.read_settings(["--seed", "1"])
     assert (stop.value.code, "--geojson" in capsys.readouterr().err) == (2, True)
 
 
@@ -3440,7 +3444,7 @@ def test_21_81_unknown_transport_exits(capsys):
     """21.81 --transport не из {urllib, httpx} — выход argparse с кодом 2,
     в строке ошибки назван флаг --transport. Модуль 21."""
     with pytest.raises(SystemExit) as stop:
-        cc.parse_settings(["--geojson", "x.geojson", "--transport", "curl"])
+        cc.read_settings(["--geojson", "x.geojson", "--transport", "curl"])
     error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о значении, а не о незнакомом флаге
     assert (stop.value.code, "--transport" in error, "unrecognized" in error) == (
@@ -3499,7 +3503,7 @@ def test_21_81_urllib_without_httpx(monkeypatch):
     # зовёт cc.main.
     monkeypatch.setattr(collector, "cian_collect", cc)
     fresh = importlib.import_module("collector.cian_collect")
-    settings = fresh.parse_settings(["--geojson", "x.geojson", "--seed", "1"])
+    settings = fresh.read_settings(["--geojson", "x.geojson", "--seed", "1"])
     made = fresh.make_transport(settings.transport, FAKE_COOKIE)
     assert (type(made), "collector.httpx_transport" in sys.modules) == (
         urllib_transport.UrllibTransport,
@@ -3559,7 +3563,7 @@ def test_21_81_choices_from_transports(monkeypatch):
     транспорт, добавленный в словарь, парсер принимает. Модуль 21."""
     add_fake_transport(monkeypatch, library=None)
     argv = ["--geojson", "x.geojson", "--seed", "1", "--transport", "fake"]
-    assert cc.parse_settings(argv).transport == "fake"
+    assert cc.read_settings(argv).transport == "fake"
 
 
 def test_21_81_make_transport_from_transports(monkeypatch):
@@ -3647,12 +3651,12 @@ def test_21_82_ticket_flag_missing_file_exits(tmp_path, capsys, flag):
 
 
 def ticket_flag_exit(capsys, flag: str, path: Path) -> tuple:
-    """parse_settings с флагом билета flag на путь path, который обязан
+    """read_settings с флагом билета flag на путь path, который обязан
     выйти. → (код выхода, назван ли флаг, назван ли путь, «unrecognized») —
     слова только из строки ошибки (error_line)."""
     argv = ["--geojson", "x.geojson", "--seed", "1", flag, str(path)]
     with pytest.raises(SystemExit) as stop:
-        cc.parse_settings(argv)
+        cc.read_settings(argv)
     error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о файле, а не о незнакомом флаге
     return (stop.value.code, flag in error, str(path) in error, "unrecognized" in error)
@@ -3688,7 +3692,7 @@ def test_21_82_ticket_flags_parsed(tmp_path):
     cookies.write_text(FAKE_COOKIE, encoding="utf-8")
     ua.write_text(USER_AGENT, encoding="utf-8")
     argv = ["--geojson", "x.geojson", "--cookies", str(cookies), "--ua", str(ua)]
-    settings = cc.parse_settings(argv)
+    settings = cc.read_settings(argv)
     assert (settings.cookies_file, settings.ua_file) == (str(cookies), str(ua))
 
 
@@ -4062,7 +4066,8 @@ def is_stdout_use(node: ast.expr, sys_names: dict[str, str]) -> bool:
 
 def stdout_use(source: str) -> list[str]:
     """Печать в stdout: print и sys.stdout (таблица 2.4 документа: stdout —
-    только run_folder.append_log и cian_collect)."""
+    только run_folder.say — эхо night.log, строка паузы старта и итог — и
+    cian_collect)."""
     tree = ast.parse(source)
     sys_names = module_bindings(tree, "sys")
     found = []
@@ -4204,8 +4209,10 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не печатают в stdout (print,
-    sys.stdout): по таблице 2.4 документа stdout — только
-    run_folder.append_log (эхо строк night.log) и cian_collect. Модуль 21."""
+    sys.stdout): по таблице 2.4 документа stdout — только run_folder.say
+    (через него обход печатает эхо строк night.log, строку паузы старта и
+    итог) и cian_collect
+    (печать сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 
