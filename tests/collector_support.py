@@ -16,7 +16,7 @@ collector.cian_collect): cc.main(transport_factory=...) — фабрика зо�
 методом get(url, headers) → transport.HttpReply; urllib_transport.
 UrllibTransport(cookie_header) с атрибутом opener (urllib OpenerDirector);
 cc.time (time, sleep, monotonic — длительность запроса main передаёт в
-CianSite) и cc.datetime (now, astimezone, strftime, isoformat).
+Browser) и cc.datetime (now, astimezone, strftime, isoformat).
 
 Модули сборщика (collector.transport, collector.urllib_transport)
 импортируются внутри функций, а не наверху. Почему: этот файл импортирует и
@@ -178,7 +178,7 @@ class Reply:
 class Sent:
     """Запрос, который сборщик отправил: клетка, страница, заголовки (у
     CianPlayer — как их хранит urllib, у FakeTransport — как их передал
-    CianSite), тайм-аут (только у CianPlayer)."""
+    Browser), тайм-аут (только у CianPlayer)."""
 
     cell: str
     page: int

@@ -7,7 +7,7 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
 очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
 пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
-внешний мир — только сайт ЦИАН (page_fetch.CianSite), Clock, rnd,
+внешний мир — только браузер (page_fetch.Browser), Clock, rnd,
 run_folder (запись и печать say) и TilesFile.record_split.
 """
 
@@ -458,14 +458,14 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); сеть — только через site (готовый сайт ЦИАН из
+    (say); сеть — только через site (готовый браузер из
     cian_collect.build_crawl), часы и сон — через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        site: page_fetch.CianSite,
+        site: page_fetch.Browser,
         clock: Clock,
         rnd: random.Random,
     ) -> None:

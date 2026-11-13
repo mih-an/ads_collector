@@ -460,7 +460,7 @@ def test_21_80_error_status_is_reply(kit):
     )
 
 
-# Полный набор заголовков браузера, как его передаёт CianSite с билетом
+# Полный набор заголовков браузера, как его передаёт Browser с билетом
 # на страницу 1 (21.24).
 GIVEN_HEADERS = page_fetch.browser_headers(USER_AGENT, None, True)
 

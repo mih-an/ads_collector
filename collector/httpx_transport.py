@@ -31,7 +31,7 @@ class HttpxTransport:
         # network — это transport= у httpx, точка подмены для MockTransport
         self.client = httpx.Client(transport=network, timeout=HTTP_TIMEOUT_S)
         # свои User-Agent, Accept, Accept-Encoding, Connection клиента не
-        # шлём: уходят только заголовки CianSite, как у urllib (21.80)
+        # шлём: уходят только заголовки Browser, как у urllib (21.80)
         self.client.headers.clear()
         for name, value in parse_cookie_header(cookie_header or ""):
             self.client.cookies.set(name, value, domain=COOKIE_DOMAIN)
