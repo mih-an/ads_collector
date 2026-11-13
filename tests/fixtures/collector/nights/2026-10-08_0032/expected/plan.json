@@ -11,10 +11,10 @@
  "ticket": true,
  "cookie_age_h": 463.2,
  "smoke": {
-  "sector": "T0712",
+  "sector": "T0803",
   "verdict": "OK",
-  "offers": 28,
-  "total": 102
+  "offers": 16,
+  "total": 75
  },
  "stopped": "net_error",
  "stop_class": "NET_ERROR",
@@ -420,6 +420,15 @@
    "attempts": 1,
    "state": "page_end",
    "detail": "redirect_to_p1_301"
+  },
+  {
+   "sector": "T0712",
+   "page": 1,
+   "kind": "ssr",
+   "origin": "seed",
+   "attempts": 1,
+   "state": "done",
+   "detail": "-"
   },
   {
    "sector": "T0712",

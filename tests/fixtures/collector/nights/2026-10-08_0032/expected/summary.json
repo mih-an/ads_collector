@@ -7,10 +7,10 @@
  "stop_class": "NET_ERROR",
  "stop_detail": "urlerror:timed out",
  "smoke": {
-  "sector": "T0712",
+  "sector": "T0803",
   "verdict": "OK",
-  "offers": 28,
-  "total": 102
+  "offers": 16,
+  "total": 75
  },
  "ticket": true,
  "cookie_age_h": 463.2,

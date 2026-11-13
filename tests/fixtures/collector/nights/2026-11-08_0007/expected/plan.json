@@ -11,10 +11,10 @@
  "ticket": true,
  "cookie_age_h": 1206.8,
  "smoke": {
-  "sector": "T1307",
+  "sector": "T0710",
   "verdict": "OK",
-  "offers": 26,
-  "total": 26
+  "offers": 28,
+  "total": 57
  },
  "stopped": "queue_empty",
  "stop_class": null,
@@ -428,6 +428,15 @@
   },
   {
    "sector": "T0713cac",
+   "page": 1,
+   "kind": "ssr",
+   "origin": "seed",
+   "attempts": 1,
+   "state": "done",
+   "detail": "-"
+  },
+  {
+   "sector": "T1307",
    "page": 1,
    "kind": "ssr",
    "origin": "seed",

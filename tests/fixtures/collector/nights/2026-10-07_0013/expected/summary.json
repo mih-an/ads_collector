@@ -7,10 +7,10 @@
  "stop_class": null,
  "stop_detail": null,
  "smoke": {
-  "sector": "T0611",
+  "sector": "T0713cac",
   "verdict": "OK",
-  "offers": 28,
-  "total": 87
+  "offers": 6,
+  "total": 444
  },
  "ticket": true,
  "cookie_age_h": 438.9,
