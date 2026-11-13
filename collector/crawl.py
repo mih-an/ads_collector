@@ -459,21 +459,21 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); сеть — только через site (готовый браузер из
+    (say); сеть — только через browser (готовый браузер из
     cian_collect.build_crawl), часы и сон — через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        site: Browser,
+        browser: Browser,
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
-        self.site = site
+        self.browser = browser
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -628,7 +628,9 @@ class Crawl:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
         пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
         «билет сгорел»)."""
-        detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
+        detail = burned_mark(
+            answer.verdict, answer.detail, self.browser.ticket.has_ticket
+        )
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
         if on_smoke:
@@ -661,13 +663,13 @@ class Crawl:
     # ── один запрос ───────────────────────────────────────────────
 
     def request_page(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
-        """Сам запрос, без решений: ссылка и Referer, сайт (`site.fetch`),
+        """Сам запрос, без решений: ссылка и Referer, браузер (`browser.fetch`),
         разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
         Бюджет, очередь и стоп не трогает."""
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
         referer = search_page.page_url(ring, page - 1) if page > 1 else None
-        response = self.site.fetch(search_page.page_url(ring, page), referer)
+        response = self.browser.fetch(search_page.page_url(ring, page), referer)
         headers = response.headers
         verdict, detail, total, offers = search_page.classify_page(
             response.code,
@@ -711,11 +713,11 @@ class Crawl:
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
             name = self.folder.write_broken(
-                answer, self.site.ticket.ua, self._stamp_hms()
+                answer, self.browser.ticket.ua, self._stamp_hms()
             )
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            self.folder.write_block(answer, self.site.ticket.ua, self._stamp_hms())
+            self.folder.write_block(answer, self.browser.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -843,8 +845,8 @@ class Crawl:
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.site.ticket.has_ticket),
-            cookie_age_h=self.site.ticket.age_h,
+            ticket=int(self.browser.ticket.has_ticket),
+            cookie_age_h=self.browser.ticket.age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
         )
@@ -869,7 +871,11 @@ class Crawl:
     def save_plan(self) -> None:
         self.folder.write_plan(
             plan_payload(
-                self.state, self.settings, self.site.ticket, self.started_at, self.tiles
+                self.state,
+                self.settings,
+                self.browser.ticket,
+                self.started_at,
+                self.tiles,
             ),
         )
 
@@ -878,7 +884,7 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.site.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.browser.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам

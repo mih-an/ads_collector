@@ -262,8 +262,8 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     clock = Clock(now=now_local, sleep=time.sleep)
     pause_before_start(settings, rnd, clock)
     # билет — после паузы старта: возраст кук и UA (порядок случайности)
-    site = enter_cian(settings, rnd, transport_factory)
-    return Crawl(settings, tiles_file, site, clock, rnd)
+    browser = enter_cian(settings, rnd, transport_factory)
+    return Crawl(settings, tiles_file, browser, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
