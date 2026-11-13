@@ -7,7 +7,7 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
 очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
 пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
-внешний мир — только браузер (page_fetch.Browser), Clock, rnd,
+внешний мир — только браузер (browser.Browser), Clock, rnd,
 run_folder (запись и печать say) и TilesFile.record_split.
 """
 
@@ -19,7 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from collector import geometry, page_fetch, run_folder, search_page
+from collector import geometry, run_folder, search_page
+from collector.browser import Browser, Ticket
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -318,7 +319,7 @@ def task_entry(task: PageTask) -> dict:
 def plan_payload(
     state: CrawlState,
     settings: Settings,
-    ticket: page_fetch.Ticket,
+    ticket: Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -364,7 +365,7 @@ def _stateless_ok(full: list[dict]) -> bool | None:
 def summary_report(
     state: CrawlState,
     settings: Settings,
-    ticket: page_fetch.Ticket,
+    ticket: Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -465,7 +466,7 @@ class Crawl:
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        site: page_fetch.Browser,
+        site: Browser,
         clock: Clock,
         rnd: random.Random,
     ) -> None:

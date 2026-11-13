@@ -5,7 +5,7 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
 в stdout), часы crawl.Clock, пауза старта, затем вход на ЦИАН. enter_cian —
 билет (read_ticket → Ticket), транспорт (make_transport) →
-браузер page_fetch.Browser. main запускает обход и печатает итог. Сети здесь нет
+браузер browser.Browser. main запускает обход и печатает итог. Сети здесь нет
 (она в транспорте); сервер и запуск — collector/README.md.
 """
 
@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
+from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
-from collector.page_fetch import Browser, Ticket
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
