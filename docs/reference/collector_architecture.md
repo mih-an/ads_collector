@@ -520,18 +520,18 @@ class RunFolder:                                    # path, raw, log, plan, summ
 |---|---|---|---|
 | папка | `<runs-dir>/ГГГГ-ММ-ДД_ЧЧММ`, у `--smoke-only` — суффикс `-smoke` | метка — время старта после паузы старта, часы машины (МСК); папка создаётся с `exist_ok` — два старта в одну минуту пишут в одну папку (как сейчас) | загрузчик `list_runs`, сторож `_run_names`, `status.py` (`runs/2*`), упаковщик, бэкап |
 | `night.log` | — | строки дописываются по одной сразу (открыть, дописать, закрыть), UTF-8; каждая строка эхом в stdout: «время, два пробела, поля через таб» | загрузчик `read_page_times`; сторож `run_stats`, `active_run` (и время изменения файла — признак идущего обхода); `status.py`; хэш |
-| `plan.json` | — | JSON, отступ 1, русские буквы как есть, без перевода строки в конце; атомарно через `plan.json.tmp`; в начале, после каждого запроса обхода (после запроса пробы — нет), после деления, после каждой клетки, в конце | загрузчик `read_plan` (`pending_sectors`); хэш |
+| `plan.json` | — | JSON, отступ 1, русские буквы как есть, без перевода строки в конце; атомарно через `plan.json.tmp`; в начале, после каждого запроса (с PR #4 — и после запроса пробы; до block/simplify-2 после него план не писался), после деления, после каждой клетки, в конце | загрузчик `read_plan` (`pending_sectors`); хэш |
 | `polygons.geojson.gz` | — | в конце, перед `summary.json`, всегда (и при провале пробы, и у `--smoke-only`); gzip без имени файла, mtime=0; атомарно через `.tmp` | загрузчик `read_run_polygons`; хэш; архив |
 | `summary.json` | — | последним, только в конце, не атомарно; JSON, отступ 1, русские как есть, без перевода строки в конце; его наличие = прогон закончен | загрузчик, сторож (поля и время записи), `status.py`, хэш; бэкап не удаляет его никогда |
 | `raw/<ключ>_p<N>.json.gz` | — | только при OK; gzip текста `{"totalOffers": …, "offers": […]}` без отступа, русские как есть, `offers` — как отдал ЦИАН | загрузчик `read_pages`; хэш и архив — распакованными |
 | `raw/<ключ>_p<N>.html.gz` | — | при каждом OK; gzip тела ответа (раскодированный текст, битые байты — знак замены) | ротация удаляет через 30 дней; в хэш и архив не входит |
-| `raw/_broken_<ключ>_p<N>_<вид>_<код>_<ЧЧММСС>.html.gz` / `.json.gz` | `.html.gz` у любого вида, в том числе `smoke` (З157, block/collector-fixes, PR #122); `.json.gz` писала проба до починки — такие файлы остались в старых прогонах | только API_CHANGED с непустым телом; тело целиком | загрузчик пропускает; `.json.gz` (старые) — в хэше и архиве; `.html.gz` — нет и ротируется |
+| `raw/_broken_<ключ>_p<N>_<вид>_<код>_<ЧЧММСС>.html.gz` / `.json.gz` | `.html.gz` у любого вида; вид `smoke` — только в старых прогонах (до block/simplify-2 проба шла отдельным запросом; З157, PR #122); `.json.gz` писала проба до починки — такие файлы остались в старых прогонах | только API_CHANGED с непустым телом; тело целиком | загрузчик пропускает; `.json.gz` (старые) — в хэше и архиве; `.html.gz` — нет и ротируется |
 | `raw/_broken_…_<ЧЧММСС>.note.txt` | — | две строки: `verdict=API_CHANGED detail=<деталь> http=<код> kind=<вид>` и `sector=<ключ> page=<N> ua=<UA>` | хэш |
 | `raw/_block_<ключ>_p<N>_<код>_<ЧЧММСС>.txt` | — | `verdict=BLOCK detail=<деталь без «\|cookie_expired_or_burned»> http=<код>`, `sector=… page=… ua=…`, пустая строка; затем заголовки `location`, `waf-verdict`, `waf-verdict-reason`, `server`, `x-request-id`, `set-cookie` (какие есть, в этом порядке, `имя: значение`); пустая строка, первые 100 000 знаков тела или `<пустое тело>` | загрузчик пропускает; хэш |
 
 Других файлов в папке нет, `.tmp` не остаётся. Время в именах служебных файлов — часы машины ЧЧММСС.
 
-**Деталь API_CHANGED с сохранённым телом** получает хвост с именем файла: `<деталь>|saved:<имя _broken_ с расширением>`, например `no_initial_state|saved:_broken_T0608_p2_ssr_200_013140.html.gz` (`Night._write_answer` в `collector/night.py`; имя возвращает `run_folder.write_broken` — `os.path.basename`). В таком виде деталь идёт в `err=` строки запроса и `detail=` строки STOP в `night.log`, в `detail` задачи `done` и в `stop_detail` в `plan.json` и `summary.json`, а на пробе — ещё в `smoke.detail`. В `.note.txt` пишется деталь без хвоста. При пустом теле файла нет и хвоста нет.
+**Деталь API_CHANGED с сохранённым телом** получает хвост с именем файла: `<деталь>|saved:<имя _broken_ с расширением>`, например `no_initial_state|saved:_broken_T0608_p2_ssr_200_013140.html.gz` (`Crawl._write_answer` в `collector/crawl.py`; имя возвращает `run_folder.write_broken` — `os.path.basename`). В таком виде деталь идёт в `err=` строки запроса и `detail=` строки STOP в `night.log`, в `detail` задачи `done` и в `stop_detail` в `plan.json` и `summary.json`, а на пробе — ещё в `smoke.detail`. В `.note.txt` пишется деталь без хвоста. При пустом теле файла нет и хвоста нет.
 
 **summary.json**, ключи в этом порядке: `night`, `dry_run` (всегда `false` — загрузчик требует ровно `false`), `budget`, `spent`, `stopped`, `stop_class`, `stop_detail`, `smoke`, `ticket`, `cookie_age_h`, `ladder_step_valid`, `ladder_result`, `sectors_touched`, `sectors_complete`, `duplicate_ids_total`, `stateless_pagination_ok`, `served_vs_total_median`, `collect_file` (имя файла клеток без пути), `tile_mode`, `split_threshold` (400 или `null` при выключенном делении), `split_events` (`{parent, total_offers, children}`), `sectors`.
 
@@ -543,22 +543,22 @@ class RunFolder:                                    # path, raw, log, plan, summ
 **plan.json**, ключи в этом порядке: `night`, `dry_run` (`false`), `started_at` (ISO с поясом, секунды), `budget`, `spent`, `window_hours` (дробное), `mean_interval_s` (до 0,1), `user_agent`, `seed`, `ticket`, `cookie_age_h`, `smoke`, `stopped`, `stop_class`, `stop_detail`, `sectors`, `split_events`, `done`, `pending_sectors`.
 
 - В `sectors` — все клетки ночи (и не начатые). У каждой: `name`, `status`, `area_km2`, `level`, `parent`, `base` (у детей — неокруглённый базовый квадрат), `split`, `children`, `total_offers`, `pages_planned`, `pages_done`, `ids`, `dup_ids`, `served_end`.
-- `done` — задачи обхода `{sector, page, kind: "ssr", origin: "seed" | "expanded", attempts, state: "done" | "page_end" | "net_error" | "failed", detail}`. Запрос пробы в `done` не пишется: `len(done)` + число строк `kind=smoke` = `spent`.
-- `pending_sectors` — строки-ключи; клетка пробы из очереди не убирается.
+- `done` — задачи обхода `{sector, page, kind: "ssr", origin: "seed" | "expanded", attempts, state: "done" | "page_end" | "net_error" | "failed", detail}`. С PR #4 проба — стр. 1 первой клетки очереди, обычная задача `done` (`len(done)` = `spent`). До block/simplify-2 запрос пробы в `done` не писался: `len(done)` + число строк `kind=smoke` = `spent`.
+- `pending_sectors` — строки-ключи; клетка пробы уходит из очереди как любая (до block/simplify-2 — не убиралась).
 
 **night.log**: строка — `ISO-время с поясом (секунды)` + таб + поля `ключ=значение` через таб, в этом порядке:
 
 | Строка | Поля |
 |---|---|
 | старт | `event=start budget sectors window_h mean_interval_s ticket(0/1) cookie_age_h order=sectors_shuffled_pages_sequential dry_run=0` |
-| запрос | `n sector page kind(smoke/ssr) http ms offers bytes total("-" если нет) verdict err` |
-| конец клетки | `event=sector_end sector why` (`short_page`, `smoke_empty`, `redirect_to_p1_<код>`, `empty_page`; запасное `page_end` в коде есть, но не достигается — деталь у задачи `PAGE_END` есть всегда) |
-| пустая проба | `event=smoke_empty sector note=сектор пуст, беру другой` |
+| запрос | `n sector page kind(ssr; smoke — только в старых прогонах, до block/simplify-2) http ms offers bytes total("-" если нет) verdict err` |
+| конец клетки | `event=sector_end sector why` (`short_page`, `redirect_to_p1_<код>`, `empty_page`; `smoke_empty` — только в старых прогонах; запасное `page_end` в коде есть, но не достигается — деталь у задачи `PAGE_END` есть всегда) |
+| пустая проба | только в старых прогонах (до block/simplify-2): `event=smoke_empty sector note=сектор пуст, беру другой`; с PR #4 пустая первая клетка — обычная `EMPTY`, прогон идёт дальше, строки нет |
 | деление | `event=split sector total level children=<a,b,c,d>` |
 | дно | `event=split_floor sector level total note=дно деления: листаем` |
 | пустое деление | `event=split_skip sector note=нет непустых четвертей` |
 | повтор | `event=retry sector page attempt of after_s` |
-| стоп | `event=STOP reason cls detail spent` (у провала пробы без класса `cls=-`); пишется только при `smoke_failed`, `block`, `api_changed`, `net_error` |
+| стоп | `event=STOP reason cls detail spent` (`cls=-` — только в старых прогонах: у провала пробы без класса; с PR #4 класс есть всегда); пишется только при `smoke_failed`, `block`, `api_changed`, `net_error` |
 
 **Входы.**
 - **Файл клеток** (`--geojson`). Читаются `properties`: `sector` (строкой), `name`, `status`, `area_km2`, `level`, `parent`, `clipped`, `base`, `collect` (`false` — пропуск); геометрия только `Polygon`, иначе `ValueError`.
@@ -567,7 +567,7 @@ class RunFolder:                                    # path, raw, log, plan, summ
 - **`ua.txt`** — пустой или нет файла: случайный из трёх UA.
 
 **Аргументы и вывод.**
-- Остаются `--budget` (50), `--geojson`, `--runs-dir` (`runs`), `--window-hours` (8.0), `--smoke-only`, `--no-start-delay`, `--seed`; `--geojson` обязательный (без него — выход argparse с кодом 2), `--fast` убран.
+- Остаются `--budget` (50; с PR #4 меньше 1 — выход с кодом 2 до паузы старта), `--geojson`, `--runs-dir` (`runs`), `--window-hours` (8.0), `--smoke-only`, `--no-start-delay`, `--seed`; `--geojson` обязательный (без него — выход argparse с кодом 2), `--fast` убран.
 - stdout: первая строка — сетка (`сетка клеток: шаг …`, кейс 21.17), затем строка паузы старта (21.58), эхо строк лога, блок итога (21.54).
 - Нет файла клеток — выход `не найден <путь>` (21.60). В файле нет целых клеток уровня 0 (сетку не восстановить) — выход `файл клеток <путь>: <причина>` (21.60).
 
@@ -576,15 +576,15 @@ class RunFolder:                                    # path, raw, log, plan, summ
 | Что | Как сейчас и после рефакторинга | Кейсы |
 |---|---|---|
 | классы ответа | 403/429 → BLOCK; 404/410 и прочий не-200 → API_CHANGED; ≥500 → NET_ERROR; 3xx: капча → BLOCK, p>1 на cat.php без p или с p=1 → PAGE_END, прочее → BLOCK; нет `initialState`: `servicepipe.tech` в HTML → BLOCK `servicepipe` (З155; проверяется раньше капчи; регистр учитывается; страницы без признака сняты до включения Servicepipe 09.11 — при смене шаблона перепроверить), капча в первых 200 000 знаков → BLOCK, иначе API_CHANGED; пусто при total>0: на p1 API_CHANGED, на p>1 PAGE_END; поле потеряно во всех первых 5 → API_CHANGED | 21.1–21.13 |
-| проба | пул — клетки ≥15 км² (нет таких — все), 5 самых мелких, перемешать, до 2 попыток; пустая → `smoke_empty` и вторая; OK с объявлениями — страница учтена, обход клетки со стр. 2; провал → `smoke_failed`, обхода нет; запрос пробы тратит бюджет | 21.32–21.35, 21.41 |
+| проба | с PR #4: стр. 1 первой клетки перемешанной очереди, обычный запрос (`kind=ssr`, задача в `done`, бюджет); пустая — `smoke` вида `EMPTY`, прогон идёт дальше; OK — страница учтена, обход клетки со стр. 2; сбой сети — повторы как везде, бюджет кончился на повторах — `smoke_failed`, `NET_ERROR`, задача `failed`; иной провал → `smoke_failed`, обхода нет. До block/simplify-2 (старые прогоны): пул — клетки ≥15 км² (нет таких — все), 5 самых мелких, перемешать, до 2 попыток; пустая → `smoke_empty` и вторая; отдельный запрос `kind=smoke` | 21.32, 21.33, 21.41, 21.46; 21.34–21.35 удалены |
 | «билет сгорел» | BLOCK при билете и деталь содержит «403» или «captcha» → `\|cookie_expired_or_burned` (проба и обход) | 21.48 |
 | порядок | клетки вперемешку, страницы подряд; Referer — ссылка предыдущей страницы с тем же джиттером; стр. 1 с билетом — Referer главной, без билета — без Referer | 21.24, 21.36 |
-| паузы | средний интервал = окно × 3600 / бюджет; пауза = U(0,6; 1,4) × интервал × множитель; после пробы и между страницами множитель 1, между клетками U(1,5; 3,0); после последней клетки и при исчерпанном бюджете паузы нет | 21.36, 21.45 |
+| паузы | средний интервал = окно × 3600 / бюджет; пауза = U(0,6; 1,4) × интервал × множитель; между страницами (в том числе после стр. 1 пробы) множитель 1, между клетками U(1,5; 3,0); отдельной паузы после пробы нет (до block/simplify-2 была); после последней клетки и при исчерпанном бюджете паузы нет | 21.36, 21.45 |
 | старт | U(0; 40 мин) перед прогоном, кроме `--smoke-only` и `--no-start-delay` | 21.58 |
-| бюджет | проверка перед каждым запросом; исчерпан → `budget_exhausted` | 21.45 |
+| бюджет | проверка перед каждым запросом; исчерпан → `budget_exhausted`; `--budget` меньше 1 — ошибка запуска (код 2), так проба не остаётся без бюджета | 21.45 |
 | конец клетки | короткая страница (1–27), PAGE_END, все страницы по оценке `pages_for`, потолок 54 | 21.36–21.39 |
 | повторы | NET_ERROR: 3 повтора, паузы U(60,120), U(150,240), U(300,420) через `time.sleep`; каждая попытка тратит бюджет и даёт задачу в `done` (`net_error`, повтор — новая задача); 4-й сбой → `failed`, STOP `net_error` | 21.46, 21.55, 21.70 |
-| стоп | BLOCK и API_CHANGED в обходе → STOP; Ctrl+C в обходе → `interrupted` со сводкой и снимком; Ctrl+C на пробе и в паузе сразу после неё — выход без сводки (пауза `sleep_between()` стоит до `try` в `Night.run`) | 21.47–21.51 |
+| стоп | BLOCK и API_CHANGED в обходе → STOP; Ctrl+C в обходе → `interrupted` со сводкой и снимком; Ctrl+C до итога пробы (запрос стр. 1 первой клетки или пауза её повтора) — выход без сводки; после итога пробы, в том числе в паузе сразу после неё, — `interrupted` со сводкой (с PR #4; до block/simplify-2 Ctrl+C и в паузе после пробы выходил без сводки) | 21.47–21.51 |
 | деление | на стр. 1 total > 400 → 4 четверти ∩ родитель, дети в случайные места очереди того же прогона, файл клеток переписан, родитель дальше не листается; дно level 3 — листается (`split_floor`); пустые четверти — `split_skip`; порог 0 — деления нет (`tile_mode=false`) | 21.40–21.44 |
 | дочитанность | `complete` = клетка не разрезана и (`served_end` или страниц столько, сколько по оценке) | 21.54 |
 | ступень | `budget_exhausted`/`queue_empty` → passed; класс BLOCK → blocked; `smoke_only` → smoke_only; прочее → invalid | 21.54 |

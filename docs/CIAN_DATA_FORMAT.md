@@ -33,6 +33,8 @@ v1.6 (решения Андрея 26.09.2026 по коду сборщика cali
 `sectors`, но остаётся в pending; §8 — smoke-запрос в `done` не пишется,
 инвариант `len(done)` + число строк `kind=smoke` = `spent` (проверен на всех 12
 прогонах `data/runs/`), при пустом первом smoke-секторе smoke-строк две.
+(До block/simplify-2; с PR #4 проба — стр. 1 первой клетки очереди, обычный запрос
+`kind=ssr` в `done` (раздел 6 PR #4, допущение).)
 v1.5 (решение Андрея 25.09.2026, блок 3a): §3 — инвариант `unique_ids +
 duplicate_ids` = число объявлений на страницах полигона; проверен на всех 12
 прогонах `data/runs/` (743 полигона, расхождений 0). v1.4 (решение Андрея 25.09.2026): §2 — эталон структуры сырья = фикстура БД
@@ -84,7 +86,8 @@ runs/<YYYY-MM-DD_HHMM>/        один прогон (метка = время с
         <sector>_p<N>.html.gz  сырой HTML КАЖДОЙ страницы (с 18.09; в прогонах
                                до 18.09 HTML есть только у страниц 1)
         _broken_*.html.gz      ответ при API_CHANGED (поломка контракта), тело целиком;
-                               у обхода (kind=ssr) и у пробы (kind=smoke) (block/collector-fixes, PR #122)
+                               у обхода (kind=ssr) и у пробы (kind=smoke) (block/collector-fixes, PR #122);
+                               kind=smoke — до block/simplify-2, с PR #4 проба — kind=ssr
         _broken_*.json.gz      только старые прогоны: проба до починки писала
                                HTML под этим именем
         _broken_*.note.txt     пояснение к ответу: verdict, detail, http, kind, sector,
@@ -244,15 +247,19 @@ runs_mini/                     ручные мини-тесты — та же с
   прогон ещё не дошёл. Дети нарезки вставляются в него такими же строками в СЛУЧАЙНУЮ
   позицию; порядок списка ничего не значит. В законченном полном прогоне пуст (ФАКТ:
   пуст во всех 12 прогонах `data/runs/`, скан 26.09; сейчас прогонов больше — §1).
-- Smoke-клетка: `Crawl.smoke` читает страницу 1 случайной мелкой клетки и кладёт её в
-  `sectors` (`pages_done=[1]`), но из `pending_sectors` не убирает — обход потом
-  начинает её со страницы 2. Обрыв прогона до её очереди → ключ одновременно в
+- Smoke-клетка (до block/simplify-2; с PR #4 проба — стр. 1 первой клетки очереди,
+  обычный запрос `kind=ssr` в `done`, клетка уходит из очереди как любая — раздел 6
+  PR #4, допущение): прежний `Crawl.smoke` читал страницу 1 случайной мелкой клетки и
+  клал её в `sectors` (`pages_done=[1]`), но из `pending_sectors` не убирал — обход
+  потом начинал её со страницы 2. Обрыв прогона до её очереди → ключ одновременно в
   `sectors` и в `pending_sectors`; для загрузчика это один полигон по записи summary.
 
 `night.log` — строки `ISO-время \t k=v \t k=v ...`. Запросы:
-`n= sector= page= kind=(smoke|ssr) http= ms= offers= bytes= total= verdict= err=`.
+`n= sector= page= kind=(smoke|ssr) http= ms= offers= bytes= total= verdict= err=`
+(`kind=smoke` — до block/simplify-2; с PR #4 всегда `ssr`).
 События: `event=start` (budget, window_h, ticket, cookie_age_h, order),
-`event=sector_end` (why=short_page|redirect_to_p1_301|empty_page|smoke_empty),
+`event=sector_end` (why=short_page|redirect_to_p1_301|empty_page|smoke_empty;
+`smoke_empty` — до block/simplify-2),
 `event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent).
 Вердикты: OK, PAGE_END (не отказ), BLOCK, API_CHANGED, NET_ERROR.
 
@@ -338,8 +345,11 @@ json, 18 МБ — html.gz страниц 1 (~400 КБ/страница в сжа
   R-1; решение Андрея 19.09 — не бэкфилить) → в БД не грузятся. Полные срезы сетки со
   снимками: `2026-09-20_0108`, `2026-09-20_1131`, `2026-09-20_2324` (497/494/495
   запросов, queue_empty). Протокол и факты — CIAN_CALIBRATION_TASK_2 v1.0.
-- **Smoke-запрос и `spent` (v1.6, по коду сборщика):** `done` в plan.json пополняет
-  только обход (`Crawl.step`); smoke-запрос (`Crawl.smoke`) тратит `spent` и пишет в
+- **Smoke-запрос и `spent` (v1.6, по коду сборщика; до block/simplify-2 — с PR #4
+  проба — стр. 1 первой клетки очереди, обычный запрос `kind=ssr` в `done`, `len(done)` =
+  `spent`, раздел 6 PR #4, допущение; старые прогоны читаются по описанию ниже):**
+  `done` в plan.json пополнял только обход (`Crawl.try_page`); smoke-запрос (прежний
+  `Crawl.smoke`) тратил `spent` и писал в
   night.log строку `kind=smoke`, но в `done` не попадает. Инвариант: `len(done)` +
   число строк `kind=smoke` в night.log = `spent` (`spent` в summary.json = `spent` в
   plan.json). Если первый smoke-сектор пуст, берётся следующий — smoke-строк две.
