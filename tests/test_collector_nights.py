@@ -4,14 +4,19 @@
 Ночь проигрывается боевым main() сборщика (collector/cian_collect.py) на
 ответах ЦИАН настоящей ночи из tests/fixtures/collector/nights/<метка>/input
 (выборка клеток, scripts/collector_fixtures.py). Папка прогона сверяется
-файл за файлом с эталоном expected/ (записан один раз до рефакторинга
-разовым скриптом, решение Андрея 10.11) и с тем, что настоящая ночь
-записала про эти клетки. Контракт формата (21.79) проверяет папки
-проигрываний по разделу 7 docs/reference/collector_architecture.md, без
-загрузчика land-monitor; проба контракта портит чистую папку. Сети нет:
+файл за файлом с эталоном expected/ (пересобирается
+scripts/rebuild_expected.py только по решению о смене поведения) и с тем,
+что настоящая ночь записала про эти клетки. Контракт формата (21.79)
+проверяет папки проигрываний по разделу 7
+docs/reference/collector_architecture.md, без загрузчика land-monitor;
+проба контракта портит чистую папку. Сети нет:
 main получает фабрику player_transport — настоящий UrllibTransport, в opener
 которого вместо сети CianPlayer; часы cc.time (сон, возраст кук и
 monotonic — длительность запроса) — один FakeTime.
+
+Помощниками replay_night, compare_with_expected, compare_text,
+compare_with_real, mask_unstable, forbid_network пользуется
+scripts/rebuild_expected.py — их имена и смысл менять вместе со скриптом.
 """
 
 import gzip
@@ -47,10 +52,14 @@ NIGHTS_DIR = FIXTURES / "nights"
 # Потолок всех фикстур сборщика (решение Андрея 10.11).
 FIXTURES_SIZE_LIMIT = 3_000_000
 
-# Поля строки night.log, которые не сравниваются с настоящей ночью: номер
-# запроса, вид (проба может попасть на другую клетку), размер, длительность
-# и пауза — их дают сеть и часы, а не логика сборщика. Тот же список — в
-# scripts/collector_fixtures.py (скрипт не импортирует tests/).
+# Поля строки night.log, которые не сравниваются с настоящей ночью:
+# - sector — ключ группировки: строки уже разложены по клеткам;
+# - kind — его даёт логика пробы: у настоящей ночи проба — отдельный запрос
+#   kind=smoke, у проигрывания — страница 1 первой клетки, kind=ssr;
+# - n, bytes, ms, after_s — номер запроса, размер, длительность и пауза: их
+#   дают сеть и часы, а не логика сборщика.
+# Тот же список — в scripts/collector_fixtures.py (скрипт не импортирует
+# tests/).
 NOT_COMPARED_FIELDS = ("n", "sector", "kind", "bytes", "ms", "after_s")
 
 # Файлы эталона, которые сравниваются текстом после маски времени.
@@ -59,7 +68,7 @@ TEXT_FILES = ("night.log", "plan.json", "summary.json")
 RUN_FILES = ["night.log", "plan.json", "polygons.geojson.gz", "raw", "summary.json"]
 
 # Тело синтетических ответов-ошибок. Почему синтетическое (data-checker
-# 10.11): HTML сохраняется только при OK (Crawl.request); тел
+# 10.11): HTML сохраняется только при OK (Crawl.request_page); тел
 # 301/500/553 и тайм-аутов в 101 прогоне data/runs нет. Сборщику важен код.
 ERROR_BODY = b"<html>error</html>"
 
@@ -152,7 +161,7 @@ def replay_night(
     player = CianPlayer(tiles, replies)
     monkeypatch.chdir(work_dir)
     # одни часы на всё: monotonic (ms= в night.log) main передаёт в
-    # PageFetcher, time и sleep — свои у cc
+    # CianSite, time и sleep — свои у cc
     monkeypatch.setattr(cc, "time", FakeTime(start.timestamp()))
     monkeypatch.setattr(cc, "datetime", frozen_datetime(start))
     argv = night_argv(night.meta, tiles, work_dir / "runs")
@@ -679,7 +688,9 @@ def ids_violations(run_dir: Path, summary: dict) -> list[str]:
 
 def spent_violations(summary: dict, plan: dict, log: list[dict]) -> list[str]:
     """len(done) + строк kind=smoke = spent и в summary.json, и в plan.json
-    (CIAN_DATA_FORMAT.md §8: оба spent равны)."""
+    (CIAN_DATA_FORMAT.md §8: оба spent равны). У прогонов после
+    block/simplify-2 строк kind=smoke нет (проба — обычная задача done), у
+    старых прогонов есть: контракт читает оба (21.79)."""
     smoke = sum(1 for record in log if record.get("kind") == "smoke")
     spent = len(plan["done"]) + smoke
     return [
@@ -1048,7 +1059,9 @@ SPOILS = {
     ),
     "page=x в строке OK": (
         lambda d: edit_text(
-            d / "night.log", "page=1\tkind=smoke", "page=x\tkind=smoke"
+            d / "night.log",
+            "sector=T0611\tpage=1\tkind=ssr",
+            "sector=T0611\tpage=x\tkind=ssr",
         ),
         ("raw/T0611_p1.json.gz:", "файл есть"),
     ),

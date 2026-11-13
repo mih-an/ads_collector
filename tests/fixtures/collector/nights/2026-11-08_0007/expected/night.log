@@ -1,18 +1,18 @@
 2026-11-08T00:07:12+03:00	event=start	budget=550	sectors=5	window_h=7.0	mean_interval_s=45	ticket=1	cookie_age_h=1206.8	order=sectors_shuffled_pages_sequential	dry_run=0
-2026-11-08T00:07:12+03:00	n=1	sector=T1307	page=1	kind=smoke	http=200	ms=250	offers=26	bytes=60852	total=26	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	event=sector_end	sector=T1307	why=short_page
-2026-11-08T00:07:12+03:00	n=2	sector=T0710	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=72844	total=57	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	n=3	sector=T0710	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=65865	total=57	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	n=4	sector=T0710	page=3	kind=ssr	http=301	ms=250	offers=0	bytes=0	total=-	verdict=PAGE_END	err=redirect_to_p1_301
+2026-11-08T00:07:12+03:00	n=1	sector=T0710	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=72844	total=57	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=2	sector=T0710	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=65865	total=57	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=3	sector=T0710	page=3	kind=ssr	http=301	ms=250	offers=0	bytes=0	total=-	verdict=PAGE_END	err=redirect_to_p1_301
 2026-11-08T00:07:12+03:00	event=sector_end	sector=T0710	why=redirect_to_p1_301
-2026-11-08T00:07:12+03:00	n=5	sector=T1210	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=59749	total=44	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	n=6	sector=T1210	page=2	kind=ssr	http=200	ms=250	offers=15	bytes=37391	total=44	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=4	sector=T1210	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=59749	total=44	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=5	sector=T1210	page=2	kind=ssr	http=200	ms=250	offers=15	bytes=37391	total=44	verdict=OK	err=-
 2026-11-08T00:07:12+03:00	event=sector_end	sector=T1210	why=short_page
-2026-11-08T00:07:12+03:00	n=7	sector=T0712	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=58056	total=87	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	n=8	sector=T0712	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=60521	total=87	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	n=9	sector=T0712	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=53300	total=87	verdict=OK	err=-
-2026-11-08T00:07:12+03:00	n=10	sector=T0712	page=4	kind=ssr	http=200	ms=250	offers=3	bytes=7925	total=87	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=6	sector=T0712	page=1	kind=ssr	http=200	ms=250	offers=28	bytes=58056	total=87	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=7	sector=T0712	page=2	kind=ssr	http=200	ms=250	offers=28	bytes=60521	total=87	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=8	sector=T0712	page=3	kind=ssr	http=200	ms=250	offers=28	bytes=53300	total=87	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=9	sector=T0712	page=4	kind=ssr	http=200	ms=250	offers=3	bytes=7925	total=87	verdict=OK	err=-
 2026-11-08T00:07:12+03:00	event=sector_end	sector=T0712	why=short_page
-2026-11-08T00:07:12+03:00	n=11	sector=T0713cac	page=1	kind=ssr	http=200	ms=250	offers=5	bytes=275361	total=443	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	n=10	sector=T0713cac	page=1	kind=ssr	http=200	ms=250	offers=5	bytes=275361	total=443	verdict=OK	err=-
 2026-11-08T00:07:12+03:00	event=sector_end	sector=T0713cac	why=short_page
 2026-11-08T00:07:12+03:00	event=split_floor	sector=T0713cac	level=3	total=443	note=дно деления: листаем
+2026-11-08T00:07:12+03:00	n=11	sector=T1307	page=1	kind=ssr	http=200	ms=250	offers=26	bytes=60852	total=26	verdict=OK	err=-
+2026-11-08T00:07:12+03:00	event=sector_end	sector=T1307	why=short_page

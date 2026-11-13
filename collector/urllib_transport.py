@@ -75,7 +75,7 @@ class UrllibTransport:
             urllib.request.HTTPCookieProcessor(jar), NoRedirect()
         )
         # заголовков opener по умолчанию не шлём: иначе при неполном наборе
-        # от PageFetcher уходит свой User-Agent Python-urllib (21.80)
+        # от CianSite уходит свой User-Agent Python-urllib (21.80)
         self.opener.addheaders = []
 
     def get(self, url: str, headers: dict[str, str]) -> HttpReply:
@@ -85,7 +85,7 @@ class UrllibTransport:
         Две оговорки к «заголовки ровно как переданы» — свойства библиотеки
         (21.80): urllib в do_open подменяет любой Connection на close; без
         Accept-Encoding в наборе http.client сам шлёт Accept-Encoding: identity.
-        В боевом пути PageFetcher всегда передаёт Accept-Encoding."""
+        В боевом пути CianSite всегда передаёт Accept-Encoding."""
         request = urllib.request.Request(url, headers=headers)
         try:
             with self._open(request) as response:

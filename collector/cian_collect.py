@@ -4,7 +4,7 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 Получает argv (read_settings → Settings). build_crawl собирает обход
 crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
 в stdout), часы crawl.Clock. enter_cian — билет (read_ticket → Ticket),
-транспорт (make_transport) и page_fetch.PageFetcher; его зовёт сам обход
+транспорт (make_transport) → page_fetch.CianSite; его зовёт сам обход
 после паузы старта. main запускает обход и печатает итог. Сети здесь нет
 (она в транспорте); сервер и запуск — collector/README.md.
 """
@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
-from collector.crawl import Clock, Crawl, Settings, Ticket
+from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
-from collector.page_fetch import PageFetcher
+from collector.page_fetch import CianSite, Ticket
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
@@ -149,7 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--runs-dir", default=RUNS_DIR)
     ap.add_argument("--window-hours", type=float, default=WINDOW_HOURS)
     ap.add_argument(
-        "--smoke-only", action="store_true", help="1 запрос: жив ли контракт"
+        "--smoke-only",
+        action="store_true",
+        help="страница 1 первой клетки; при сбое сети — повторы",
     )
     ap.add_argument("--no-start-delay", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
@@ -166,7 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
-    паузы старта (21.81, 21.82)."""
+    паузы старта (21.45, 21.81, 21.82)."""
+    # прогона без запросов нет: smoke в законченном прогоне — всегда словарь
+    # (21.45; DECISIONS, block/simplify-2, ревью PR #4)
+    if args.budget < 1:
+        ap.error(f"--budget {args.budget}: нужен хотя бы 1 запрос")
     library = TRANSPORTS[args.transport].library
     if library is not None and importlib.util.find_spec(library) is None:
         ap.error(
@@ -218,13 +224,12 @@ def print_grid(grid: dict, settings: Settings) -> None:
 
 def enter_cian(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
-) -> tuple[Ticket, PageFetcher]:
-    """Вход на ЦИАН: билет (куки, UA, возраст кук) и запрос страницы на
-    выбранном транспорте."""
+) -> CianSite:
+    """Вход на ЦИАН: сайт с билетом (куки, UA, возраст кук) на выбранном
+    транспорте."""
     ticket = read_ticket(settings, time.time(), rnd)
     transport = transport_factory(settings.transport, ticket.cookie_header)
-    fetcher = PageFetcher(transport, ticket.ua, ticket.has_ticket, time.monotonic)
-    return ticket, fetcher
+    return CianSite(transport, ticket, time.monotonic)
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:

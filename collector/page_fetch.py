@@ -1,11 +1,12 @@
 """
 page_fetch.py — запрос страницы поиска над транспортом: наша логика, одна для всех.
 
-Получает транспорт (transport.Transport), UA, признак билета и часы
-monotonic (PageFetcher). Отдаёт FetchedPage на каждый запрос: заголовки как
-у браузера, распаковка тела (битое сжатие ответа 2xx — сбой сети, З167),
-длительность запроса; сбой сети — код 0 с деталью. Повторов нет — они в
-crawl.Crawl. Без сети, диска и часов: сжатие — только в памяти.
+CianSite получает транспорт, билет Ticket и часы monotonic; из билета берёт UA
+и признак билета, Cookie кладёт транспорт, собранный из того же билета (21.23).
+Отдаёт FetchedPage на каждый запрос: заголовки как у браузера, распаковка тела
+(битое сжатие ответа 2xx — сбой сети, З167), длительность; сбой сети — код 0
+с деталью. Повторов нет — они в crawl.Crawl. Без сети, диска и часов.
+Здесь же входной билет Ticket (куки, UA, возраст кук).
 """
 
 from __future__ import annotations
@@ -13,10 +14,24 @@ from __future__ import annotations
 import gzip
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from collector.search_page import CIAN_BASE_URL
 from collector.transport import HttpReply, NetworkFailure, Transport
+
+
+@dataclass(frozen=True)
+class Ticket:
+    """Входной билет: строка Cookie (нет или пусто — None), UA и возраст кук, ч."""
+
+    cookie_header: str | None
+    ua: str
+    age_h: float | None
+
+    @property
+    def has_ticket(self) -> bool:
+        return bool(self.cookie_header)
 
 
 class FetchedPage(NamedTuple):
@@ -89,27 +104,27 @@ def reply_text(reply: HttpReply) -> str:
         return reply.body.decode("utf-8", errors="replace")
 
 
-class PageFetcher:
-    """Запрос страницы поиска: заголовки браузера, транспорт, распаковка,
-    длительность. Один fetch — один вызов транспорта (повторы — в Crawl)."""
+class CianSite:
+    """Сайт ЦИАН для обхода: сходить за страницей поиска с заголовками браузера,
+    распаковать тело, замерить длительность; сбой сети — код 0. Из билета
+    берёт UA и признак билета; Cookie кладёт транспорт, собранный из того же
+    билета (21.23). Один fetch — один вызов транспорта (повторы — в Crawl)."""
 
     def __init__(
         self,
         transport: Transport,
-        user_agent: str,
-        has_ticket: bool,
+        ticket: Ticket,
         monotonic: Callable[[], float],
     ) -> None:
         self.transport = transport
-        self.user_agent = user_agent
-        self.has_ticket = has_ticket
+        self.ticket = ticket
         self.monotonic = monotonic
 
     def fetch(self, url: str, referer: str | None = None) -> FetchedPage:
         """→ FetchedPage(code, body, size, ms, neterr, headers). Ровно два
         вызова monotonic — до запроса и после разбора тела: на них стоит ms=
         в night.log эталонных ночей (21.30)."""
-        headers = browser_headers(self.user_agent, referer, self.has_ticket)
+        headers = browser_headers(self.ticket.ua, referer, self.ticket.has_ticket)
         started = self.monotonic()
         try:
             reply = self.transport.get(url, headers)

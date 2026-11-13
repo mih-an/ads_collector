@@ -1,13 +1,13 @@
 """
 crawl.py — обход выдачи ЦИАН: данные, правила обхода и класс обхода Crawl.
 
-Данные: Settings, Ticket, Clock (часы и сон), TileState, PageTask, CrawlState.
-Правила — функции без внешнего мира: интервал и паузы, пул пробы, деление
-[E-42], «билет сгорел», учёт страницы, дочитанность [E-21], ступень, повторы,
-словари plan.json и summary.json, текст итога. Crawl ведёт прогон: проба,
-очередь, листание, деление, бюджет, стоп; внешний мир — только вход на ЦИАН
-(enter_cian), запрос страницы (page_fetch.PageFetcher), Clock, rnd,
-run_folder (запись и печать run_folder.say) и TilesFile.record_split.
+Данные: Settings, Clock (часы и сон), TileState, PageTask, CrawlState.
+Правила — функции без внешнего мира: интервал и паузы, деление [E-42],
+«билет сгорел», итог пробы, учёт страницы, дочитанность [E-21], ступень,
+повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
+очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
+внешний мир — только вход на ЦИАН (enter_cian), сайт ЦИАН (page_fetch.CianSite),
+Clock, rnd, run_folder (запись и печать say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -58,32 +58,12 @@ class Settings:
         (150, 240),
         (300, 420),
     )
-    # клетку пробы берём случайно из N самых мелких: постоянная была бы паттерном
-    smoke_pool_size: int = 5
-    # пустая клетка пробы — одна вторая попытка
-    smoke_max_tries: int = 2
-    # мельче в пул пробы не берём: крохи после нарезок легитимно пусты
-    # (T0713caa: 0 лотов), а пустая выдача — провал пробы; ложная тревога 22.09
-    smoke_min_area_km2: float = 15
 
     @property
     def tile_mode(self) -> bool:
         """[E-42] режим сетки — пока порог деления включён (файл секторов без
         level убран решением Андрея 10.11)."""
         return self.split_threshold > 0
-
-
-@dataclass(frozen=True)
-class Ticket:
-    """Входной билет: строка Cookie (нет или пусто — None), UA и возраст кук, ч."""
-
-    cookie_header: str | None
-    ua: str
-    age_h: float | None
-
-    @property
-    def has_ticket(self) -> bool:
-        return bool(self.cookie_header)
 
 
 @dataclass(frozen=True)
@@ -159,18 +139,6 @@ def pause_bounds(mean: float, factor: float, spread: float) -> tuple[float, floa
     return low, high
 
 
-def smoke_pool(
-    tiles: dict[str, TileState], min_area_km2: float, size: int
-) -> list[str]:
-    """Кандидаты пробы: size самых мелких клеток не мельче min_area_km2
-    (таких нет — из всех); порядок — по площади, перемешивает ночь."""
-    eligible = [
-        (key, tile) for key, tile in tiles.items() if tile.area_km2 >= min_area_km2
-    ] or list(tiles.items())
-    pool = sorted(eligible, key=lambda item: item[1].area_km2)[:size]
-    return [key for key, _ in pool]
-
-
 def split_decision(tile: TileState, tile_mode: bool, threshold: int, floor: int) -> str:
     """[E-42] решение после стр. 1: "split" — делить, "floor" — дно деления,
     клетку листаем, "no" — не делить."""
@@ -194,6 +162,20 @@ def burned_mark(verdict: str, detail: str, has_ticket: bool) -> str:
     if verdict == search_page.BLOCK and has_ticket and refused:
         return detail + "|cookie_expired_or_burned"
     return detail
+
+
+def smoke_entry(answer: run_folder.PageAnswer, stop_detail: str | None) -> dict:
+    """Итог пробы (ключ smoke) по окончательному ответу стр. 1 первой клетки:
+    стоп — вердикт и деталь стопа; иначе OK или EMPTY (пустая выдача), число
+    объявлений и totalOffers (21.32, 21.33)."""
+    if stop_detail is not None:
+        return {"sector": answer.key, "verdict": answer.verdict, "detail": stop_detail}
+    return {
+        "sector": answer.key,
+        "verdict": search_page.OK if answer.ids else "EMPTY",
+        "offers": len(answer.ids),
+        "total": answer.total,
+    }
 
 
 def absorb_page(tile: TileState, page: int, total: int | None, ids: list[int]) -> bool:
@@ -335,7 +317,7 @@ def task_entry(task: PageTask) -> dict:
 def plan_payload(
     state: CrawlState,
     settings: Settings,
-    ticket: Ticket,
+    ticket: page_fetch.Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -381,7 +363,7 @@ def _stateless_ok(full: list[dict]) -> bool | None:
 def summary_report(
     state: CrawlState,
     settings: Settings,
-    ticket: Ticket,
+    ticket: page_fetch.Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -427,7 +409,7 @@ LADDER_VERDICTS = {
 }
 
 
-def summary_text(report: dict, folder: str) -> str:
+def summary_text(report: dict, path: str) -> str:
     """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
     ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
     # первая строка пустая: она отделяет итог от строк stdout выше
@@ -452,7 +434,7 @@ def summary_text(report: dict, folder: str) -> str:
         f"дублей id {report['duplicate_ids_total']}, "
         f"stateless-пагинация {report['stateless_pagination_ok']}"
     )
-    lines.append(f"файлы: {folder}")
+    lines.append(f"файлы: {path}")
     lines.append("─" * 64)
     by_total = sorted(
         report["sectors"].items(), key=lambda kv: -(kv[1]["total_offers"] or 0)
@@ -475,14 +457,14 @@ def summary_text(report: dict, folder: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); вход на ЦИАН — enter_cian, сеть — только через fetcher, часы и сон —
+    (say); вход на ЦИАН — enter_cian, сеть — только через site, часы и сон —
     через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        enter_cian: Callable[[], tuple[Ticket, page_fetch.PageFetcher]],
+        enter_cian: Callable[[], page_fetch.CianSite],
         clock: Clock,
         rnd: random.Random,
     ) -> None:
@@ -497,19 +479,18 @@ class Crawl:
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # появляются в open_run
-        self.ticket: Ticket
-        self.fetcher: page_fetch.PageFetcher
+        self.site: page_fetch.CianSite
         self.started_at: datetime
-        self.run_folder: run_folder.RunFolder
+        self.folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
         """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
         прогона, клетки в работу, очередь вперемешку."""
         # билет — после паузы старта: возраст кук и UA (порядок случайности)
-        self.ticket, self.fetcher = self.enter_cian()
+        self.site = self.enter_cian()
         self.started_at = self.clock.now()
-        self.run_folder = run_folder.RunFolder.create(
+        self.folder = run_folder.RunFolder.create(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only
         )
         # джиттер — один раз на (клетка, ночь), в порядке файла
@@ -537,81 +518,40 @@ class Crawl:
     # ── главный цикл ──────────────────────────────────────────────
 
     def collect(self) -> None:
-        """Прогон целиком: пауза старта → открыть прогон → строка start → проба →
-        обход → итог (словарь summary.json) в self.report, папка —
-        self.run_folder.folder. Порядок вызовов случайности — часть поведения
-        (его задают collect и open_run): seed → пауза старта → UA → джиттер
-        клеток → перемешивание."""
+        """Прогон целиком: пауза старта → открыть прогон → строка start → обход
+        (проба — стр. 1 первой клетки очереди, 21.32) → итог (словарь
+        summary.json) в self.report, папка — self.folder.path. Порядок вызовов
+        случайности — часть поведения (его задают collect и open_run): seed →
+        пауза старта → UA → джиттер клеток → перемешивание."""
         state = self.state
         self.pause_before_start()
         self.open_run()
         self._log_start()
         self.save_plan()
-        # проба провалена или режим «только проба» — обхода нет
-        if not self.smoke() or self.settings.smoke_only:
+        if self.settings.smoke_only:
+            # только проба: стр. 1 первой клетки без деления и листания (21.57);
+            # очередь не пуста — файл клеток без двух клеток не читается (21.60)
+            key = state.pending.pop(0)
+            self.download_page(key, 1)
             self.finish()
             return
-        # пауза после пробы: иначе первая страница обхода уходит через секунду
-        # после неё (человек так быстро не листает; мини-тест 15.09). Стоит до
-        # try: Ctrl+C в этой паузе — выход без сводки (collector_architecture.md
-        # 3.2, тест 21.51)
-        self.pause_between_pages()
         try:
             while state.pending and self.budget_left():
                 key = state.pending.pop(0)
                 self.download_tile(key)
                 if state.stopped:
-                    break  # прогон остановлен (блок, сеть, бюджет)
+                    break  # прогон остановлен (провал пробы, блок, сеть, бюджет)
                 self.save_plan()
                 self.pause_between_tiles()
         except KeyboardInterrupt:
+            if self.smoke_unanswered():
+                raise  # Ctrl+C до итога пробы — выход без сводки (21.51)
             state.stopped, state.stop_class = "interrupted", "interrupted"
         self.finish()
 
-    # ── проба ─────────────────────────────────────────────────────
-
-    def smoke(self) -> bool:
-        """Контрольный запрос по мелкой клетке до обхода. Тратит бюджет: IP его
-        видит, измерение должно быть честным. Клетка случайная из самых
-        мелких — постоянная была бы паттерном. → прошла ли проба; провал —
-        причина в состоянии и строка STOP."""
-        settings, state = self.settings, self.state
-        candidates = smoke_pool(
-            self.tiles, settings.smoke_min_area_km2, settings.smoke_pool_size
-        )
-        self.rnd.shuffle(candidates)
-        for key in candidates[: settings.smoke_max_tries]:
-            answer = self.request(key, 1, "smoke")
-            state.spent += 1
-            self._log_request(answer)
-            if answer.verdict != search_page.OK:
-                self._smoke_failed(key, answer)
-                return False
-            # пустая выдача — тот же словарь с вердиктом EMPTY и offers = 0
-            state.smoke = {
-                "sector": key,
-                "verdict": search_page.OK if answer.ids else "EMPTY",
-                "offers": len(answer.ids),
-                "total": answer.total,
-            }
-            self._absorb(answer)
-            if answer.ids:
-                return True  # страница учтена: обход клетки — со стр. 2
-            self.mark_end(key, "smoke_empty")
-            self.log(event="smoke_empty", sector=key, note="сектор пуст, беру другой")
-        state.stop_detail = "все smoke-сектора пусты"
-        state.stopped = "smoke_failed"
-        self._log_stop()
-        return False
-
-    def _smoke_failed(self, key: str, answer: run_folder.PageAnswer) -> None:
-        """Проба не прошла (не OK): итог пробы и стоп ночи."""
-        state = self.state
-        detail = burned_mark(answer.verdict, answer.detail, self.ticket.has_ticket)
-        state.smoke = {"sector": key, "verdict": answer.verdict, "detail": detail}
-        state.stop_class, state.stop_detail = answer.verdict, detail
-        state.stopped = "smoke_failed"
-        self._log_stop()
+    def smoke_unanswered(self) -> bool:
+        """Итога пробы ещё нет — идёт стр. 1 первой клетки (21.32)."""
+        return self.state.smoke is None
 
     # ── клетка ────────────────────────────────────────────────────
 
@@ -619,10 +559,7 @@ class Crawl:
         """Клетка целиком: стр. 1 → стоп / деление на четверти / стр. 2…N до
         конца набора; между страницами — пауза. Стоп прогона — в state.stopped."""
         tile = self.tiles[key]
-        smoke_took_page_1 = 1 in tile.pages_done
-        page = 2 if smoke_took_page_1 else 1
-        if smoke_took_page_1 and self.split_into_quarters(key):
-            return  # клетку-переросток сняла проба
+        page = 1
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
@@ -650,37 +587,56 @@ class Crawl:
             task = PageTask(
                 sector=key, page=page, kind="ssr", origin=origin, attempts=attempts
             )
-            verdict = self.step(task)
+            verdict = self.try_page(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
-            if task.state != "net_error":
+            answered = task.state != "net_error"  # окончательный ответ страницы
+            if answered:
                 return
             self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
 
-    def step(self, task: PageTask) -> str:
-        """Один запрос обхода. → вердикт; стоп-вердикты попутно ставят stopped."""
-        answer = self.request(task.sector, task.page, task.kind)
+    def try_page(self, task: PageTask) -> str:
+        """Одна попытка страницы — решение обхода: зовёт `request_page`, тратит
+        единицу бюджета, пишет строку night.log и задачу в done, по состоянию
+        задачи (вердикт и число попыток) учитывает страницу или ставит стоп,
+        на стр. 1 первой клетки пишет итог пробы (ключ smoke), сохраняет
+        plan.json. → вердикт"""
+        on_smoke = self.smoke_unanswered()  # эта попытка — проба (21.32)
+        answer = self.request_page(task.sector, task.page, task.kind)
         self.state.spent += 1
         task.attempts += 1
         task.detail = answer.detail
         self._log_request(answer)
         retries = len(self.settings.net_retry_pauses)
         task.state = task_state(answer.verdict, task.attempts, retries)
+        # бюджет кончился на повторах пробы — провал пробы, задача failed,
+        # как при любом стопе (21.46, 21.55)
+        if on_smoke and task.state == "net_error" and not self.budget_left():
+            task.state = "failed"
         self.state.done.append(task)
         if task.state == "done":
             self._absorb(answer)
+        stop_detail = None
         if task.state == "failed":
-            self._stop(answer)
+            stop_detail = self._stop(answer, on_smoke)
+        answered = task.state != "net_error"  # окончательный ответ страницы
+        if on_smoke and answered:
+            self.state.smoke = smoke_entry(answer, stop_detail)
         self.save_plan()
         return answer.verdict
 
-    def _stop(self, answer: run_folder.PageAnswer) -> None:
-        """Стоп ночи по ответу обхода: итог и строка STOP в night.log."""
-        detail = burned_mark(answer.verdict, answer.detail, self.ticket.has_ticket)
+    def _stop(self, answer: run_folder.PageAnswer, on_smoke: bool) -> str:
+        """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
+        пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
+        «билет сгорел»)."""
+        detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
-        state.stopped = answer.verdict.lower()
+        if on_smoke:
+            state.stopped = "smoke_failed"
+        else:
+            state.stopped = answer.verdict.lower()
         self.log(
             event="STOP",
             reason=state.stopped,
@@ -688,6 +644,7 @@ class Crawl:
             detail=detail,
             spent=state.spent,
         )
+        return detail
 
     def _absorb(self, answer: run_folder.PageAnswer) -> None:
         """Учёт страницы ответа в её клетке; короткая страница — конец клетки."""
@@ -705,12 +662,14 @@ class Crawl:
 
     # ── один запрос ───────────────────────────────────────────────
 
-    def request(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
-        """Один запрос выдачи; пишет страницу, _broken_* или _block_*."""
+    def request_page(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
+        """Сам запрос, без решений: ссылка и Referer, сайт (`site.fetch`),
+        разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
+        Бюджет, очередь и стоп не трогает."""
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
         referer = search_page.page_url(ring, page - 1) if page > 1 else None
-        response = self.fetcher.fetch(search_page.page_url(ring, page), referer)
+        response = self.site.fetch(search_page.page_url(ring, page), referer)
         headers = response.headers
         verdict, detail, total, offers = search_page.classify_page(
             response.code,
@@ -746,19 +705,19 @@ class Crawl:
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
         if answer.verdict == search_page.OK:
             # HTML каждой страницы [E-22]
-            self.run_folder.write_page(
+            self.folder.write_page(
                 answer.key,
                 answer.page,
                 {"totalOffers": answer.total, "offers": offers},
                 answer.body,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
-            name = self.run_folder.write_broken(
-                answer, self.ticket.ua, self._stamp_hms()
+            name = self.folder.write_broken(
+                answer, self.site.ticket.ua, self._stamp_hms()
             )
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            self.run_folder.write_block(answer, self.ticket.ua, self._stamp_hms())
+            self.folder.write_block(answer, self.site.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -886,7 +845,7 @@ class Crawl:
     def log(self, **fields: object) -> None:
         """Строка night.log с эхом в stdout; время — часы машины с поясом."""
         stamp = self.clock.now().isoformat(timespec="seconds")
-        self.run_folder.append_log(stamp, fields)
+        self.folder.append_log(stamp, fields)
 
     def _log_start(self) -> None:
         """Первая строка night.log: с чем прогон стартует."""
@@ -896,21 +855,10 @@ class Crawl:
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.ticket.has_ticket),
-            cookie_age_h=self.ticket.age_h,
+            ticket=int(self.site.ticket.has_ticket),
+            cookie_age_h=self.site.ticket.age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
-        )
-
-    def _log_stop(self) -> None:
-        """Строка STOP в night.log по причине остановки, записанной в состоянии."""
-        state = self.state
-        self.log(
-            event="STOP",
-            reason=state.stopped,
-            cls=state.stop_class or "-",
-            detail=state.stop_detail,
-            spent=state.spent,
         )
 
     def _log_request(self, answer: run_folder.PageAnswer) -> None:
@@ -931,9 +879,9 @@ class Crawl:
         )
 
     def save_plan(self) -> None:
-        self.run_folder.write_plan(
+        self.folder.write_plan(
             plan_payload(
-                self.state, self.settings, self.ticket, self.started_at, self.tiles
+                self.state, self.settings, self.site.ticket, self.started_at, self.tiles
             ),
         )
 
@@ -942,16 +890,16 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.site.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
         # sectors сводки; перед summary.json, всегда (и у пробы)
         rings = {key: self.tiles[key].ring_canonical for key in report["sectors"]}
-        self.run_folder.write_polygons(rings)
-        self.run_folder.write_summary(report)
+        self.folder.write_polygons(rings)
+        self.folder.write_summary(report)
         self.report = report
 
     def print_summary(self) -> None:
         """Итог прогона в stdout."""
-        run_folder.say(summary_text(self.report, self.run_folder.folder))
+        run_folder.say(summary_text(self.report, self.folder.path))

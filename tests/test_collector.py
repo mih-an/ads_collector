@@ -3,24 +3,24 @@
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
-геометрия и ссылка на выдачу, логика запроса страницы над транспортом
-(PageFetcher), сценарии прогона, main; в конце — страж 21.78 (кто что
+геометрия и ссылка на выдачу, сайт ЦИАН над транспортом
+(CianSite), сценарии прогона, main; в конце — страж 21.78 (кто что
 импортирует, модули правил без внешнего мира). Сети нет: main получает
 фабрику фальшивого транспорта FakeTransport (tests/collector_support.py),
-обход — тот же транспорт через PageFetcher; urllib и подмены сети здесь не
+обход — тот же транспорт через CianSite; urllib и подмены сети здесь не
 нужны (сами транспорты — tests/test_collector_transport.py). Часы и сон
 подменены, случайность — --seed, папки и билет — во временной папке теста.
 Имена берутся из своих модулей: search_page (разбор ответа), geometry
-(клетки), page_fetch (запрос страницы), crawl (обход); через cc — только
+(клетки), page_fetch (сайт ЦИАН), crawl (обход); через cc — только
 запуск и края.
 
 Точки подмены, которые код обязан сохранить:
 - cc.main(transport_factory=...) — разбор sys.argv и весь прогон; фабрика
   зовётся как factory(имя транспорта, строка Cookie или None);
-- page_fetch.PageFetcher(transport, user_agent, has_ticket, monotonic) и
-  page_fetch.decode_body(raw, content_encoding) — PageFetcher зовёт её по
+- page_fetch.CianSite(transport, ticket, monotonic) и
+  page_fetch.decode_body(raw, content_encoding) — CianSite зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
-- cc.time (time, sleep, monotonic — enter_cian передаёт его в PageFetcher) и
+- cc.time (time, sleep, monotonic — enter_cian передаёт его в CianSite) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
 - crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
@@ -103,9 +103,9 @@ GRID = {
     "pady": 0.00022,
 }
 
-# Клетки сценариев: A — единственная годная для пробы (площадь ≥ 15 км²),
-# B — обычная клетка обхода. Обе целые, в разных рядах и колонках: main()
-# восстанавливает по ним сетку (infer_tile_grid).
+# Клетки сценариев A и B. Обе целые, в разных рядах и колонках: main()
+# восстанавливает по ним сетку (infer_tile_grid). При seed 1 очередь — B, A:
+# проба — страница 1 клетки B (21.32), A идёт второй.
 A, B = "T0507", "T0608"
 
 
@@ -186,14 +186,15 @@ def page(first_id: int, count: int, total) -> Reply:
 
 
 def short_a(total: int = 6) -> dict:
-    """Проба по A: 5 объявлений — короткая страница, A больше не листается."""
+    """A: 5 объявлений — короткая страница, A больше не листается."""
     return {(A, 1): [page(1, 5, total)]}
 
 
-# Две клетки сценария: A годна для пробы, B (10 км²) — нет, только обход.
+# Две клетки сценария (площади — как в файле клеток, на пробу не влияют).
 CELLS = [tile(A), tile(B, area=10.0)]
-# Проба по A проваливается (403): прогон кончается сразу, без пауз обхода.
-FAILED_SMOKE = {(A, 1): [Reply(403, b"no")]}
+# Страница 1 любой клетки — 403: проба (первая клетка очереди при любом seed)
+# проваливается, прогон кончается сразу, без пауз обхода.
+FAILED_SMOKE = {(A, 1): [Reply(403, b"no")], (B, 1): [Reply(403, b"no")]}
 # B: totalOffers 60 — три страницы, третья короткая (4 объявления).
 B_60 = {
     (B, 1): [page(100, 28, 60)],
@@ -221,7 +222,7 @@ def env(tmp_path, monkeypatch) -> Env:
     tiles = tmp_path / "tiles.geojson"
     fake = FakeTransport(tiles, {})
     # одни часы на всё: time, sleep и monotonic (его main передаёт в
-    # PageFetcher) — у cc; now — для обхода без main (make_crawl)
+    # CianSite) — у cc; now — для обхода без main (make_crawl)
     clock = FakeTime(EPOCH, zone=MSK)
     monkeypatch.setattr(cc, "time", clock)
     monkeypatch.setattr(cc, "datetime", frozen_datetime(MOMENT))
@@ -292,25 +293,25 @@ def tile_state(**changes):
 
 def fake_ticket():
     """Билет сценария: кука, UA и возраст — как у билета в папке env."""
-    return crawl.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
+    return page_fetch.Ticket(
+        cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H
+    )
 
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile); enter_cian отдаёт билет как в env и PageFetcher
+    features (TilesFile); enter_cian отдаёт CianSite с билетом как в env
     над фальшивым транспортом env; часы и сон — FakeTime env,
     случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
-    fetcher = page_fetch.PageFetcher(
-        env.transport, USER_AGENT, True, env.clock.monotonic
-    )
+    site = page_fetch.CianSite(env.transport, fake_ticket(), env.clock.monotonic)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
         tiles_file,
-        lambda: (fake_ticket(), fetcher),
+        lambda: site,
         clock,
         random.Random(1),
     )
@@ -336,6 +337,11 @@ def log_records(run_dir: Path) -> list[dict[str, str]]:
 
 def events(run_dir: Path, name: str) -> list[dict[str, str]]:
     return [r for r in log_records(run_dir) if r.get("event") == name]
+
+
+def sector_ends(run_dir: Path, cell: str) -> list[dict[str, str]]:
+    """Строки sector_end клетки cell в night.log."""
+    return [r for r in events(run_dir, "sector_end") if r["sector"] == cell]
 
 
 def pages_asked(env, cell: str) -> list[int]:
@@ -885,7 +891,7 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
 
 
-def test_21_14_load_sectors_fields(tmp_path):
+def test_21_14_tiles_file_fields(tmp_path):
     """21.14 TilesFile: ключ строкой, поля клетки; у сектора без полей
     клетки — name "", status "", area 0.0, level/parent/clipped/base None.
     Модуль 21."""
@@ -924,7 +930,7 @@ def test_21_14_load_sectors_fields(tmp_path):
     ]
 
 
-def test_21_14_load_sectors_skips_collect_false(tmp_path):
+def test_21_14_tiles_file_skips_collect_false(tmp_path):
     """21.14 Клетка с collect=false (разрезанный родитель) не грузится.
     Модуль 21."""
     path = tmp_path / "tiles.geojson"
@@ -932,7 +938,7 @@ def test_21_14_load_sectors_skips_collect_false(tmp_path):
     assert [s["sector"] for s in geometry.TilesFile(str(path)).tiles] == [B]
 
 
-def test_21_14_load_sectors_rejects_non_polygon(tmp_path):
+def test_21_14_tiles_file_rejects_non_polygon(tmp_path):
     """21.14 Не Polygon — ValueError с ключом сектора и типом. Модуль 21."""
     path = tmp_path / "tiles.geojson"
     feature = tile(A)
@@ -1337,7 +1343,7 @@ def tiles_file(tmp_path) -> Path:
     return path
 
 
-def test_21_22_update_tiles_file_parent_and_children(tmp_path):
+def test_21_22_record_split_parent_and_children(tmp_path):
     """21.22 TilesFile.record_split: родитель collect=false, status=split,
     split_at, children; дети — фичами с полями клетки; сосед не тронут.
     Модуль 21."""
@@ -1378,7 +1384,7 @@ def test_21_22_update_tiles_file_parent_and_children(tmp_path):
     )
 
 
-def test_21_22_update_tiles_file_format(tmp_path):
+def test_21_22_record_split_format(tmp_path):
     """21.22 Файл клеток пишется с отступом 1 и русскими буквами как есть,
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
@@ -1394,7 +1400,7 @@ def test_21_22_update_tiles_file_format(tmp_path):
     )
 
 
-def test_21_22_update_tiles_file_key_collision(tmp_path):
+def test_21_22_record_split_key_collision(tmp_path):
     """21.22 Ключ ребёнка уже есть в файле — ValueError с ключом и путём,
     файл цел. Модуль 21."""
     path = tiles_file(tmp_path)
@@ -1407,7 +1413,7 @@ def test_21_22_update_tiles_file_key_collision(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_21_22_update_tiles_file_parent_missing(tmp_path):
+def test_21_22_record_split_parent_missing(tmp_path):
     """21.22 Родителя нет в файле — ValueError с ключом и путём, файл цел,
     .tmp не остаётся. Модуль 21."""
     path = tiles_file(tmp_path)
@@ -1422,7 +1428,7 @@ def test_21_22_update_tiles_file_parent_missing(tmp_path):
     )
 
 
-# ═══════════════ В. Запрос страницы над транспортом (PageFetcher) ═══════════════
+# ═══════════════════ В. Сайт ЦИАН над транспортом (CianSite) ════════════════════
 # Сами транспорты (куки, редирект, сбои, тайм-аут) —
 # tests/test_collector_transport.py.
 
@@ -1440,13 +1446,16 @@ def fetch_env(tmp_path):
     )
 
 
-def fetcher(fetch_env, has_ticket=True, replies=()):
-    """PageFetcher сборщика над фальшивым транспортом; replies — ответы на
+def cian_site(fetch_env, has_ticket=True, replies=()):
+    """CianSite сборщика над фальшивым транспортом; replies — ответы на
     запросы страницы 1 клетки A по порядку."""
     fetch_env.transport.replies[A, 1] = list(replies)
-    return page_fetch.PageFetcher(
-        fetch_env.transport, USER_AGENT, has_ticket, fetch_env.clock.monotonic
+    ticket = page_fetch.Ticket(
+        cookie_header=FAKE_COOKIE if has_ticket else None,
+        ua=USER_AGENT,
+        age_h=TICKET_AGE_H,
     )
+    return page_fetch.CianSite(fetch_env.transport, ticket, fetch_env.clock.monotonic)
 
 
 # Заголовки браузера, имена в нижнем регистре (lower_keys).
@@ -1473,8 +1482,8 @@ def sent_headers(fetch_env, index: int = 0) -> dict[str, str]:
 def test_21_24_headers_with_ticket(fetch_env):
     """21.24 fetch страницы 1 с билетом: заголовки браузера, заход «с
     главной» (Referer https://www.cian.ru/, same-origin); Cookie кладёт
-    транспорт, PageFetcher его не передаёт. Модуль 21."""
-    fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    транспорт, CianSite его не передаёт. Модуль 21."""
+    cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     expected = BROWSER_HEADERS | {
         "sec-fetch-site": "same-origin",
         "referer": "https://www.cian.ru/",
@@ -1485,15 +1494,15 @@ def test_21_24_headers_with_ticket(fetch_env):
 def test_21_24_headers_without_ticket(fetch_env):
     """21.24 fetch без билета: заход из адресной строки (Sec-Fetch-Site
     none), без Referer. Модуль 21."""
-    session = fetcher(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
-    session.fetch(fetch_env.url)
+    site = cian_site(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    site.fetch(fetch_env.url)
     assert sent_headers(fetch_env) == BROWSER_HEADERS | {"sec-fetch-site": "none"}
 
 
 def test_21_24_headers_with_referer(fetch_env):
     """21.24 fetch с Referer: он и уходит, same-origin. Модуль 21."""
-    session = fetcher(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
-    session.fetch(fetch_env.url, referer="https://www.cian.ru/prev")
+    site = cian_site(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    site.fetch(fetch_env.url, referer="https://www.cian.ru/prev")
     headers = sent_headers(fetch_env)
     assert (headers["referer"], headers["sec-fetch-site"]) == (
         "https://www.cian.ru/prev",
@@ -1503,7 +1512,7 @@ def test_21_24_headers_with_referer(fetch_env):
 
 def test_21_24_request_goes_to_url(fetch_env):
     """21.24 fetch отдаёт транспорту ссылку как есть. Модуль 21."""
-    fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     assert fetch_env.transport.sent[0].url == fetch_env.url
 
 
@@ -1538,8 +1547,8 @@ def test_21_26_decode(fetch_env, encoding, raw, expected):
     Content-Encoding (регистр не важен), без сжатия — как есть, битый UTF-8
     — знаком замены. Модуль 21."""
     headers = {} if encoding is None else {"Content-Encoding": encoding}
-    session = fetcher(fetch_env, replies=[Reply(200, raw, headers)])
-    assert session.fetch(fetch_env.url).body == expected
+    site = cian_site(fetch_env, replies=[Reply(200, raw, headers)])
+    assert site.fetch(fetch_env.url).body == expected
 
 
 def test_21_26_fetched_page_ok(fetch_env):
@@ -1547,7 +1556,7 @@ def test_21_26_fetched_page_ok(fetch_env):
     провода (сжатого), ms, без сбоя сети, заголовки ответа. Модуль 21."""
     raw = gzip.compress("страница".encode(), mtime=0)
     reply = Reply(200, raw, {"Content-Encoding": "gzip"})
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == page_fetch.FetchedPage(
         200, "страница", len(raw), 250.0, None, {"content-encoding": "gzip"}
     )
@@ -1558,14 +1567,14 @@ def test_21_27_http_error_403(fetch_env):
     заголовки ответа транспорта — как есть (нижний регистр — забота
     транспорта, 21.31). Модуль 21."""
     reply = Reply(403, "запрет".encode(), {"Server": "nginx"})
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (403, "запрет", 12, 250.0, None, {"server": "nginx"})
 
 
 def test_21_27_http_error_gzip_body(fetch_env):
     """21.27 Ответ-ошибка 500 с gzip-телом: тело распаковано. Модуль 21."""
     reply = Reply(500, gzip.compress(b"oops", mtime=0), {"Content-Encoding": "gzip"})
-    code, body, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body) == (500, "oops")
 
 
@@ -1573,7 +1582,7 @@ def test_21_27_http_error_broken_gzip(fetch_env):
     """21.27 Ответ-ошибка с битым gzip: тело — сырые байты как текст.
     Модуль 21."""
     reply = Reply(500, b"not gzip", {"Content-Encoding": "gzip"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not gzip", 8)
 
 
@@ -1588,7 +1597,7 @@ def test_21_27_http_error_truncated_gzip(fetch_env):
     with pytest.raises(EOFError):
         gzip.decompress(TRUNCATED_GZIP)
     reply = Reply(500, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     expected = TRUNCATED_GZIP.decode("utf-8", errors="replace")
     assert (code, body, size) == (500, expected, len(TRUNCATED_GZIP))
 
@@ -1599,7 +1608,7 @@ def test_21_27_http_error_broken_deflate(fetch_env):
     with pytest.raises(zlib.error):
         zlib.decompress(b"not deflate", -zlib.MAX_WBITS)
     reply = Reply(500, b"not deflate", {"Content-Encoding": "deflate"})
-    code, body, size, *_ = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not deflate", 11)
 
 
@@ -1614,9 +1623,9 @@ def test_21_27_http_error_unexpected_decode_error_raises(fetch_env, monkeypatch)
     а не глотается: except сужен до OSError, EOFError, zlib.error (З164;
     «ошибки громко»). Модуль 21."""
     monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
-    session = fetcher(fetch_env, replies=[Reply(500, b"oops")])
+    site = cian_site(fetch_env, replies=[Reply(500, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
-        session.fetch(fetch_env.url)
+        site.fetch(fetch_env.url)
 
 
 @pytest.mark.parametrize("detail", ["urlerror:dns", "timeout", "oserror:reset"])
@@ -1624,7 +1633,7 @@ def test_21_29_network_failure_code_0(fetch_env, detail):
     """21.29 NetworkFailure транспорта → (0, "", 0, 250.0, деталь, {}): код 0,
     тело пусто, деталь — текст сбоя, заголовков нет. Модуль 21."""
     reply = Reply(error=transport.NetworkFailure(detail))
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (0, "", 0, 250.0, detail, {})
 
 
@@ -1632,7 +1641,7 @@ def test_21_29_failure_asks_transport_once(fetch_env):
     """21.29 После NetworkFailure fetch транспорт второй раз не зовёт:
     повторы — дело обхода (Crawl). Модуль 21."""
     reply = Reply(error=transport.NetworkFailure("timeout"))
-    fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert len(fetch_env.transport.sent) == 1
 
 
@@ -1668,7 +1677,7 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
     сбой сети: код 0, тело пусто, размер 0, деталь decode:<текст
     исключения>, заголовков нет (З167). Модуль 21."""
     reply = Reply(200, raw, {"Content-Encoding": encoding})
-    result = fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     detail = "decode:" + decompress_error(raw, encoding)
     assert result == (0, "", 0, 250.0, detail, {})
 
@@ -1676,7 +1685,7 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
 def broken_gzip_result(fetch_env, status: int):
     """FetchedPage ответа status с битым gzip («not gzip»)."""
     reply = Reply(status, b"not gzip", {"Content-Encoding": "gzip"})
-    return fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    return cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
 
 
 def test_21_29_broken_compression_in_204(fetch_env):
@@ -1711,15 +1720,15 @@ def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
     распаковки (ValueError из decode_body), — исключение летит из fetch,
     не глотается (З167, «ошибки громко»). Модуль 21."""
     monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
-    session = fetcher(fetch_env, replies=[Reply(200, b"oops")])
+    site = cian_site(fetch_env, replies=[Reply(200, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
-        session.fetch(fetch_env.url)
+        site.fetch(fetch_env.url)
 
 
 def test_21_30_ms_by_monotonic(fetch_env):
     """21.30 Длительность запроса — по переданным часам monotonic, в мс
     (подставные часы идут на 0,25 с за вызов). Модуль 21."""
-    result = fetcher(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    result = cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     assert result.ms == 250.0
 
 
@@ -1739,7 +1748,7 @@ def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
     держит test_21_30_ms_by_monotonic, а этот тест держит эталонное
     ms=250 в night.log ночей 21.68–21.70 — лишний вызов monotonic сдвинул
     бы его раньше, чем сравнение с эталоном укажет причину. Модуль 21."""
-    fetcher(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert fetch_env.clock.monotonic_calls == 2
 
 
@@ -1747,33 +1756,115 @@ def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
 
 
 def test_21_32_smoke_success(env, monkeypatch):
-    """21.32 Удачная проба: smoke = клетка, OK, объявления, total. Модуль 21."""
+    """21.32 Удачная проба — страница 1 первой клетки очереди (seed 1: B):
+    smoke = клетка, OK, объявления, total. Модуль 21."""
     replies = short_a() | {(B, 1): [page(100, 3, 3)]}
     run_dir = run_main(env, monkeypatch, CELLS, replies)
     assert summary_of(run_dir)["smoke"] == {
-        "sector": A,
+        "sector": B,
         "verdict": "OK",
-        "offers": 5,
-        "total": 6,
+        "offers": 3,
+        "total": 3,
     }
+
+
+# Клетки на диагонали решётки: шесть целых клеток в разных рядах и колонках,
+# площади разные, три мельче 15 км² (порог бывшего пула пробы) — площадь на
+# выбор пробы не влияет.
+QUEUE_KEYS = ["T0101", "T0202", "T0303", "T0404", "T0505", "T0606"]
+QUEUE_AREAS = [3.0, 8.0, 14.9, 15.0, 22.0, 40.0]
+QUEUE_SEEDS = 10
+
+
+def queue_run(env, monkeypatch, features, seed: int, *args):
+    """Прогон по клеткам QUEUE_KEYS с seed (папка runs/ и записанные запросы
+    — заново; у каждой клетки одна короткая страница). → папка прогона."""
+    shutil.rmtree(env.folder / "runs", ignore_errors=True)
+    env.transport.sent.clear()
+    replies = {(key, 1): [page(1, 3, 3)] for key in QUEUE_KEYS}
+    return run_main(env, monkeypatch, features, replies, *args, seed=str(seed))
+
+
+def queue_features() -> list[dict]:
+    """Клетки QUEUE_KEYS с площадями QUEUE_AREAS."""
+    pairs = zip(QUEUE_KEYS, QUEUE_AREAS, strict=True)
+    return [tile(key, area=area) for key, area in pairs]
+
+
+def budget_one_view(env, monkeypatch, seed: int) -> tuple:
+    """Прогон по клеткам очереди с --budget 1 и seed. → (клетки запросов,
+    клетка smoke, клетка первой задачи done, pending_sectors)."""
+    run_dir = queue_run(env, monkeypatch, queue_features(), seed, "--budget", "1")
+    plan = read_json(run_dir / "plan.json")
+    return (
+        [s.cell for s in env.transport.sent],
+        summary_of(run_dir)["smoke"]["sector"],
+        plan["done"][0]["sector"],
+        plan["pending_sectors"],
+    )
+
+
+def test_21_32_smoke_cell_is_first_in_queue(env, monkeypatch):
+    """21.32 Проба — первая клетка очереди после перемешивания, пула нет:
+    по seed 1–10 в прогоне с --budget 1 единственный запрос, клетка smoke и
+    первая задача done — первая клетка очереди того же seed, а
+    pending_sectors — остаток очереди в её порядке (эталон очереди — порядок
+    запросов полного прогона того же seed: у каждой клетки одна короткая
+    страница, деления нет). Модуль 21."""
+    got, expected = [], []
+    for seed in range(1, QUEUE_SEEDS + 1):
+        queue_run(env, monkeypatch, queue_features(), seed)
+        queue = [s.cell for s in env.transport.sent]
+        got.append((seed, *budget_one_view(env, monkeypatch, seed)))
+        expected.append((seed, [queue[0]], queue[0], queue[0], queue[1:]))
+    assert got == expected
+
+
+def test_21_32_smoke_cell_any_area(env, monkeypatch):
+    """21.32 Площадь клетки на выбор пробы не влияет: по seed 1–10 среди
+    клеток пробы есть клетка мельче 15 км² (порог бывшего пула пробы).
+    Модуль 21."""
+    areas = dict(zip(QUEUE_KEYS, QUEUE_AREAS, strict=True))
+    smoke_areas = []
+    for seed in range(1, QUEUE_SEEDS + 1):
+        smoke_areas.append(areas[budget_one_view(env, monkeypatch, seed)[1]])
+    assert min(smoke_areas) < 15.0
+
+
+def test_21_32_first_page_is_ordinary_request(env, monkeypatch):
+    """21.32 Запрос пробы — обычный запрос обхода: в night.log все строки
+    запросов kind=ssr (строк kind=smoke нет), первая задача done — страница 1
+    клетки пробы, состояние done. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    kinds = [r["kind"] for r in log_records(run_dir) if "kind" in r]
+    first_task = read_json(run_dir / "plan.json")["done"][0]
+    assert (kinds, first_task) == (
+        ["ssr", "ssr"],
+        {
+            "sector": B,
+            "page": 1,
+            "kind": "ssr",
+            "origin": "seed",
+            "attempts": 1,
+            "state": "done",
+            "detail": "-",
+        },
+    )
 
 
 def test_21_32_smoke_page_not_repeated(env, monkeypatch):
-    """21.32 Страница 1 пробы не запрашивается повторно: обход клетки
-    продолжается со страницы 2. Модуль 21."""
-    replies = {
-        (A, 1): [page(1, 28, 60)],
-        (A, 2): [page(29, 28, 60)],
-        (A, 3): [page(57, 4, 60)],
-        (B, 1): [page(100, 3, 3)],
-    }
-    run_main(env, monkeypatch, CELLS, replies)
-    assert pages_asked(env, A) == [1, 2, 3]
+    """21.32 Страница 1 пробы не запрашивается повторно: первая клетка
+    очереди (seed 1: B) листается дальше со страницы 2, потом A. Модуль 21."""
+    run_main(env, monkeypatch, CELLS, short_a() | B_60)
+    asked = [(s.cell, s.page) for s in env.transport.sent]
+    assert asked == [(B, 1), (B, 2), (B, 3), (A, 1)]
 
 
 def test_21_32_smoke_failed(env, monkeypatch):
-    """21.32 Проваленная проба (403 с билетом): обход не идёт, итог
-    smoke_failed, класс и деталь проваленного ответа. Модуль 21."""
+    """21.32 Проваленная проба (403 с билетом на странице 1 первой клетки):
+    обход не идёт, итог smoke_failed, класс и деталь проваленного ответа,
+    smoke вида «провал пробы». Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, FAILED_SMOKE)
     summary = summary_of(run_dir)
     detail = "http_403|cookie_expired_or_burned"
@@ -1787,14 +1878,15 @@ def test_21_32_smoke_failed(env, monkeypatch):
         "smoke_failed",
         "BLOCK",
         detail,
-        {"sector": A, "verdict": "BLOCK", "detail": detail},
+        {"sector": B, "verdict": "BLOCK", "detail": detail},
         1,
     )
 
 
 def test_21_32_smoke_failed_stop_line(env, monkeypatch):
     """21.32 Проваленная проба пишет в night.log строку STOP. Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [Reply(404, b"")]})
+    replies = {(A, 1): [Reply(404, b"")], (B, 1): [Reply(404, b"")]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
     assert events(run_dir, "STOP") == [
         {
             "event": "STOP",
@@ -1806,116 +1898,47 @@ def test_21_32_smoke_failed_stop_line(env, monkeypatch):
     ]
 
 
-def test_21_33_smoke_empty_takes_second(env, monkeypatch):
-    """21.33 Проба попала на пустую клетку: smoke_empty и конец клетки,
-    вторая попытка — по другой клетке пула (seed 1: первой проба берёт A).
-    Модуль 21."""
-    replies = {(A, 1): [page(1, 0, 0)], (B, 1): [page(100, 3, 3)]}
-    run_dir = run_main(env, monkeypatch, [tile(A), tile(B)], replies)
-    records = [
-        r
-        for r in log_records(run_dir)
-        if r.get("kind") == "smoke" or r.get("event") in ("smoke_empty", "sector_end")
-    ]
-    assert [(r.get("event") or "запрос", r["sector"]) for r in records] == [
-        ("запрос", A),
-        ("sector_end", A),
-        ("smoke_empty", A),
-        ("запрос", B),
-        ("sector_end", B),
-    ]
+def test_21_33_empty_first_cell_smoke_empty(env, monkeypatch):
+    """21.33 Первая клетка очереди (seed 1: B) пуста: smoke вида EMPTY —
+    клетка, вердикт EMPTY, 0 объявлений, total. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 0, 0)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    assert summary_of(run_dir)["smoke"] == {
+        "sector": B,
+        "verdict": "EMPTY",
+        "offers": 0,
+        "total": 0,
+    }
 
 
-def test_21_33_both_smoke_cells_empty(env, monkeypatch):
-    """21.33 Обе попытки пробы пусты: smoke_failed «все smoke-сектора пусты»,
-    вердикт пробы EMPTY. Модуль 21."""
+def test_21_33_empty_first_cell_crawl_goes_on(env, monkeypatch):
+    """21.33 Первая клетка пуста — прогон идёт дальше: вторая клетка (A)
+    запрошена, итог queue_empty, строки smoke_empty в night.log нет; конец
+    пустой клетки — как у любой пустой клетки обхода: страница 1 без
+    объявлений не короткая (crawl.absorb_page: 0 < len(ids)), строки
+    sector_end у B нет (и why=smoke_empty тоже). Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 0, 0)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    assert (
+        [(s.cell, s.page) for s in env.transport.sent],
+        summary_of(run_dir)["stopped"],
+        events(run_dir, "smoke_empty"),
+        sector_ends(run_dir, B),
+    ) == ([(B, 1), (A, 1)], "queue_empty", [], [])
+
+
+def test_21_33_both_cells_empty(env, monkeypatch):
+    """21.33 Обе клетки пусты: итог queue_empty (не smoke_failed), smoke
+    вида EMPTY по первой клетке. Модуль 21."""
     replies = {(A, 1): [page(1, 0, 0)], (B, 1): [page(100, 0, 0)]}
-    run_dir = run_main(env, monkeypatch, [tile(A), tile(B)], replies)
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
     summary = summary_of(run_dir)
     assert (
         summary["stopped"],
         summary["stop_class"],
-        summary["stop_detail"],
+        summary["smoke"]["sector"],
         summary["smoke"]["verdict"],
-    ) == ("smoke_failed", None, "все smoke-сектора пусты", "EMPTY")
-
-
-def smoke_cell(env, monkeypatch, area_a: float, area_b: float) -> str:
-    """Клетка пробы прогона --smoke-only по двум клеткам с площадями area_a
-    (A) и area_b (B). Если в пуле обе клетки, выбор решает перемешивание
-    пула: при seed 1 проба берёт самую мелкую клетку пула."""
-    replies = {(A, 1): [page(1, 3, 3)], (B, 1): [page(100, 3, 3)]}
-    features = [tile(A, area=area_a), tile(B, area=area_b)]
-    run_dir = run_main(env, monkeypatch, features, replies, "--smoke-only")
-    return summary_of(run_dir)["smoke"]["sector"]
-
-
-def test_21_34_smoke_pool_area_above_15(env, monkeypatch):
-    """21.34 Клетка 15,1 км² годна для пробы (вторая — 1 км², не годна).
-    Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 15.1, 1.0) == A
-
-
-def test_21_34_smoke_pool_area_exactly_15(env, monkeypatch):
-    """21.34 Клетка ровно 15 км² годна для пробы (граница включительно).
-    Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 15.0, 1.0) == A
-
-
-def test_21_34_smoke_pool_area_below_15(env, monkeypatch):
-    """21.34 Клетка 14,9 км² не годна: проба идёт по клетке 15 км².
-    Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 14.9, 15.0) == B
-
-
-def test_21_34_smoke_pool_all_small(env, monkeypatch):
-    """21.34 Все клетки мельче 15 км² — пул из всех (для seed 1 проба
-    попадает на B). Модуль 21."""
-    assert smoke_cell(env, monkeypatch, 14.9, 1.0) == B
-
-
-POOL_KEYS = ["T0101", "T0202", "T0303", "T0404", "T0505", "T0606"]
-
-
-POOL_SEEDS = 30
-
-
-def test_21_34_smoke_pool_five_smallest(env, monkeypatch):
-    """21.34 Пул пробы — ровно 5 самых мелких годных клеток: по seed 1–30
-    проба попадает на каждую из пяти (20–24 км²) и ни разу на шестую
-    (25 км²). Модуль 21."""
-    features = [tile(key, area=20.0 + i) for i, key in enumerate(POOL_KEYS)]
-    smoke_cells = set()
-    for seed in range(1, POOL_SEEDS + 1):
-        shutil.rmtree(env.folder / "runs", ignore_errors=True)
-        replies = {(key, 1): [page(1, 3, 3)] for key in POOL_KEYS}
-        run_dir = run_main(
-            env, monkeypatch, features, replies, "--smoke-only", seed=str(seed)
-        )
-        smoke_cells.add(summary_of(run_dir)["smoke"]["sector"])
-    assert sorted(smoke_cells) == POOL_KEYS[:5]
-
-
-def test_21_35_single_empty_cell_smoke_failed(env, monkeypatch):
-    """21.35 Одна годная клетка в пуле пробы (вторая мельче 15 км²) и проба
-    по ней пуста: smoke_failed «все smoke-сектора пусты», вердикт пробы
-    EMPTY — как при двух пустых попытках (З156). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [page(1, 0, 0)]})
-    summary = summary_of(run_dir)
-    assert (
-        summary["stopped"],
-        summary["stop_class"],
-        summary["stop_detail"],
-        summary["smoke"]["verdict"],
-    ) == ("smoke_failed", None, "все smoke-сектора пусты", "EMPTY")
-
-
-def test_21_35_single_empty_cell_no_second_try(env, monkeypatch):
-    """21.35 Одна годная клетка в пуле пробы и проба по ней пуста: второй
-    попытки нет — ровно один запрос, клетка вне пула (B) не запрашивается
-    (З156). Модуль 21."""
-    run_main(env, monkeypatch, CELLS, {(A, 1): [page(1, 0, 0)]})
-    assert [sent.cell for sent in env.transport.sent] == [A]
+    ) == ("queue_empty", None, B, "EMPTY")
 
 
 def test_21_36_pages_in_a_row(env, monkeypatch):
@@ -1963,18 +1986,19 @@ def pause_factors(env, monkeypatch, random_class) -> list[float]:
 
 
 def test_21_36_pause_factors_low(env, monkeypatch):
-    """21.36 Паузы: после пробы и между страницами — средний интервал
-    (множитель 1), между клетками — множитель от 1,5; после последней
-    клетки паузы нет (seed 1: B раньше A — две паузы листания B, потом
-    пауза между клетками). Модуль 21."""
+    """21.36 Паузы: между страницами — средний интервал (множитель 1), между
+    клетками — множитель от 1,5; отдельной паузы после пробы нет, после
+    последней клетки паузы нет (seed 1: B раньше A — две паузы листания B,
+    первая — после пробы-страницы 1, потом пауза между клетками).
+    Модуль 21."""
     factors = pause_factors(env, monkeypatch, LowRandom)
-    assert factors == [1.0, 1.0, 1.0, 1.5]
+    assert factors == [1.0, 1.0, 1.5]
 
 
 def test_21_36_pause_factors_high(env, monkeypatch):
     """21.36 Множитель паузы между клетками — до 3,0. Модуль 21."""
     factors = pause_factors(env, monkeypatch, HighRandom)
-    assert factors == [1.0, 1.0, 1.0, 3.0]
+    assert factors == [1.0, 1.0, 3.0]
 
 
 def test_21_36_pause_lower_bound():
@@ -1999,24 +2023,25 @@ def crawl_pages_pauses(env, monkeypatch, random_class) -> list[float]:
 
 def test_21_36_crawl_sleeps_lower_pauses(env, monkeypatch):
     """21.36 Обход спит паузы U(0,6; 1,4) × средний интервал × множитель; на
-    нижнем краю случайности: после пробы и между двумя страницами B —
+    нижнем краю случайности: между тремя страницами B (первая — проба) —
     0,6 × 72 = 43,2 с, между клетками (множитель 1,5) — 0,6 × 72 × 1,5 =
-    64,8 с; после последней клетки паузы нет. Модуль 21."""
+    64,8 с; отдельной паузы после пробы нет, после последней клетки паузы
+    нет. Модуль 21."""
     pauses = crawl_pages_pauses(env, monkeypatch, LowRandom)
-    assert pauses == pytest.approx([43.2, 43.2, 43.2, 64.8])
+    assert pauses == pytest.approx([43.2, 43.2, 64.8])
 
 
 def test_21_36_crawl_sleeps_upper_pauses(env, monkeypatch):
-    """21.36 На верхнем краю случайности: после пробы и между страницами —
-    1,4 × 72 = 100,8 с, между клетками (множитель 3,0) — 1,4 × 72 × 3 =
-    302,4 с. Модуль 21."""
+    """21.36 На верхнем краю случайности: между страницами — 1,4 × 72 =
+    100,8 с, между клетками (множитель 3,0) — 1,4 × 72 × 3 = 302,4 с.
+    Модуль 21."""
     pauses = crawl_pages_pauses(env, monkeypatch, HighRandom)
-    assert pauses == pytest.approx([100.8, 100.8, 100.8, 302.4])
+    assert pauses == pytest.approx([100.8, 100.8, 302.4])
 
 
 def test_21_36_total_28_one_page(env, monkeypatch):
     """21.36 totalOffers 28 и полная страница — одна страница, вторую не
-    спрашивает. Модуль 21."""
+    спрашивает (страница 1 клетки B — она же проба). Модуль 21."""
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 28, 28)]})
     assert pages_asked(env, B) == [1]
 
@@ -2026,14 +2051,6 @@ def test_21_36_total_29_two_pages(env, monkeypatch):
     replies = {(B, 1): [page(100, 28, 29)], (B, 2): [page(128, 1, 29)]}
     run_main(env, monkeypatch, CELLS, short_a() | replies)
     assert pages_asked(env, B) == [1, 2]
-
-
-def test_21_36_smoke_total_28_no_second_page(env, monkeypatch):
-    """21.36 Проба: totalOffers 28 и полная страница — обход клетки пробы
-    вторую страницу не спрашивает. Модуль 21."""
-    replies = {(A, 1): [page(1, 28, 28)], (B, 1): [page(100, 3, 3)]}
-    run_main(env, monkeypatch, CELLS, replies)
-    assert pages_asked(env, A) == [1]
 
 
 def test_21_36_page_saved_json_and_html(env, monkeypatch):
@@ -2066,9 +2083,9 @@ def test_21_37_short_page_27(env, monkeypatch):
     run_dir = run_main(
         env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 27, 100)]}
     )
-    assert (pages_asked(env, B), events(run_dir, "sector_end")[-1]) == (
+    assert (pages_asked(env, B), sector_ends(run_dir, B)) == (
         [1],
-        {"event": "sector_end", "sector": B, "why": "short_page"},
+        [{"event": "sector_end", "sector": B, "why": "short_page"}],
     )
 
 
@@ -2092,8 +2109,9 @@ def test_21_38_redirect_page_end(env, monkeypatch):
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [Reply(301, location_page1=True)]}
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | replies)
     done = read_json(run_dir / "plan.json")["done"]
-    assert (events(run_dir, "sector_end")[-1], done[-1]["state"]) == (
-        {"event": "sector_end", "sector": B, "why": "redirect_to_p1_301"},
+    last_b = [task for task in done if task["sector"] == B][-1]
+    assert (sector_ends(run_dir, B), last_b["state"]) == (
+        [{"event": "sector_end", "sector": B, "why": "redirect_to_p1_301"}],
         "page_end",
     )
 
@@ -2103,7 +2121,7 @@ def test_21_38_empty_page_end(env, monkeypatch):
     Модуль 21."""
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [page(1, 0, 100)]}
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | replies)
-    assert events(run_dir, "sector_end")[-1]["why"] == "empty_page"
+    assert [r["why"] for r in sector_ends(run_dir, B)] == ["empty_page"]
 
 
 def test_21_38_sector_end_logged_once(env):
@@ -2112,7 +2130,7 @@ def test_21_38_sector_end_logged_once(env):
     run = make_crawl(env, CELLS)
     run.mark_end(B, "short_page")
     run.mark_end(B, "page_end")
-    assert [r for r in log_records(Path(run.run_folder.folder)) if r.get("event")] == [
+    assert [r for r in log_records(Path(run.folder.path)) if r.get("event")] == [
         {"event": "sector_end", "sector": B, "why": "short_page"}
     ]
 
@@ -2130,17 +2148,17 @@ def test_21_39_no_total_54_pages(env, monkeypatch):
 
 def test_21_39_no_total_pause_after_page_54(env, monkeypatch):
     """21.39 Нет totalOffers, 54 полные страницы B: пауза есть и после 54-й
-    страницы (потолок проверяется в цикле клетки, после паузы). Пауз 56:
-    после пробы по A — 1, после каждой из 54 страниц B — 54, между B и A
-    (seed 1: B раньше A) — 1; у A страниц больше нет, после последней клетки
-    паузы нет. Модуль 21."""
+    страницы (потолок проверяется в цикле клетки, после паузы). Пауз 55:
+    после каждой из 54 страниц B (первая — проба, отдельной паузы после
+    пробы нет) — 54, между B и A (seed 1: B раньше A) — 1; A — одна короткая
+    страница, после последней клетки паузы нет. Модуль 21."""
     replies = {}
     for number in range(1, 55):
         offers = [offer(number * 100 + i) for i in range(28)]
         body = "<script>initialState=" + json.dumps({"results": {"offers": offers}})
         replies[B, number] = [Reply(200, (body + "</script>").encode())]
     run_main(env, monkeypatch, CELLS, short_a() | replies, "--budget", "100")
-    assert len(env.clock.pauses) == 56
+    assert len(env.clock.pauses) == 55
 
 
 def split_run(env, monkeypatch, total: int):
@@ -2213,13 +2231,19 @@ def test_21_40_children_crawled_same_run(env, monkeypatch):
 
 
 def test_21_41_smoke_oversized_cell_split_without_repeat(env, monkeypatch):
-    """21.41 Переросток пробы делится без повторного запроса страницы 1
-    [E-42]. Модуль 21."""
-    replies = {(A, 1): [page(1, 28, 760)], (B, 1): [page(100, 3, 3)]}
+    """21.41 Переросток пробы (страница 1 первой клетки, seed 1: B, total 760)
+    делится без повторного запроса страницы 1: проба по B, страница 1 B
+    запрошена один раз, деление B с total 760 [E-42]. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 28, 760)]}
     for letter in "abcd":
-        replies[A + letter, 1] = [page(1000 + ord(letter), 3, 3)]
+        replies[B + letter, 1] = [page(1000 + ord(letter), 3, 3)]
     run_dir = run_main(env, monkeypatch, CELLS, replies)
-    assert (pages_asked(env, A), events(run_dir, "split")[0]["total"]) == ([1], "760")
+    split = events(run_dir, "split")[0]
+    assert (
+        summary_of(run_dir)["smoke"]["sector"],
+        pages_asked(env, B),
+        (split["sector"], split["total"]),
+    ) == (B, [1], (B, "760"))
 
 
 FLOOR = "T0709aaa"
@@ -2346,32 +2370,139 @@ B_100 = {(B, n): [page(100 * n, 28, 100)] for n in range(1, 5)}
 
 def test_21_45_budget_inside_cell(env, monkeypatch):
     """21.45 Бюджет кончился посреди клетки: budget_exhausted, следующая
-    страница не запрошена. Модуль 21."""
+    страница не запрошена (бюджет 3: страницы 1–3 клетки B, первая — проба;
+    четвёртая не запрошена). Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | B_100, "--budget", "3")
     summary = summary_of(run_dir)
     assert (summary["stopped"], summary["spent"], pages_asked(env, B)) == (
         "budget_exhausted",
         3,
-        [1, 2],
+        [1, 2, 3],
     )
 
 
-def test_21_45_budget_spent_on_smoke(env, monkeypatch):
-    """21.45 Бюджет кончился на пробе: обход не начат, обе клетки в очереди.
-    Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--budget", "1")
+def test_21_45_budget_one_single_request(env, monkeypatch):
+    """21.45 Бюджет 1: один запрос — страница 1 первой клетки (проба);
+    итог budget_exhausted, клетка пробы ушла из очереди, вторая клетка в
+    очереди. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, short_a() | B_100, "--budget", "1")
     plan = read_json(run_dir / "plan.json")
-    assert (plan["stopped"], sorted(plan["pending_sectors"])) == (
-        "budget_exhausted",
-        [A, B],
-    )
+    assert (
+        [(s.cell, s.page) for s in env.transport.sent],
+        plan["stopped"],
+        plan["spent"],
+        plan["pending_sectors"],
+    ) == ([(B, 1)], "budget_exhausted", 1, [A])
+
+
+def test_21_45_budget_one_first_cell_read_out(env, monkeypatch):
+    """21.45 Бюджет 1, первая клетка (seed 1: B) — одна короткая страница,
+    дочитана единственным запросом; вторая клетка в очереди: stopped
+    budget_exhausted (бюджет кончился при непустой очереди, не посреди
+    клетки), pending_sectors [A], B дочитана (complete). Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--budget", "1")
+    summary = summary_of(run_dir)
+    plan = read_json(run_dir / "plan.json")
+    assert (
+        summary["stopped"],
+        plan["pending_sectors"],
+        summary["sectors"][B]["complete"],
+    ) == ("budget_exhausted", [A], True)
 
 
 def test_21_45_no_pause_when_budget_spent(env, monkeypatch):
     """21.45 Бюджет исчерпан — паузы нет (sleep_between выходит сразу).
     Модуль 21."""
-    run_main(env, monkeypatch, CELLS, short_a(), "--budget", "1")
+    run_main(env, monkeypatch, CELLS, short_a() | B_100, "--budget", "1")
     assert env.clock.pauses == []
+
+
+def budget_exit(env, monkeypatch, capsys, budget: str, *args) -> tuple:
+    """main с --budget budget (и args) и паузой старта, который обязан выйти.
+    → (код выхода, назван ли --budget в строке ошибки, число запросов,
+    паузы часов, есть ли папка runs/)."""
+    give(env, short_a() | B_100)
+    stop = main_exit(env, monkeypatch, *args, "--budget", budget)
+    error = error_line(capsys.readouterr().err)
+    return (
+        stop.code,
+        "--budget" in error,
+        len(env.transport.sent),
+        env.clock.pauses,
+        (env.folder / "runs").exists(),
+    )
+
+
+# Бюджет меньше 1 — ошибка запуска: smoke в законченном прогоне всегда
+# словарь, прогона без запросов не бывает; допущение (DECISIONS,
+# block/simplify-2, ревью PR #4).
+@pytest.mark.parametrize("budget", ["0", "-1"], ids=["на границе", "снаружи"])
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_45_budget_zero_rejected(env, monkeypatch, capsys, args, budget):
+    """21.45 Бюджет меньше 1 (0 — на границе, -1 — снаружи; 1 — внутри,
+    test_21_45_budget_one_single_request) — ошибка запуска: выход с кодом 2
+    до паузы старта, в строке ошибки назван параметр --budget, ни одного
+    запроса, папки прогона нет — и в боевом прогоне, и с --smoke-only.
+    Модуль 21."""
+    assert budget_exit(env, monkeypatch, capsys, budget, *args) == (
+        2,
+        True,
+        0,
+        [],
+        False,
+    )
+
+
+# Края бюджета 3. При seed 1 очередь — B, A; проба — страница 1 первой
+# клетки (21.32): (B, 1) → (A, 1) → (A, 2). B дочитана одной короткой
+# страницей, так что последним запросом бюджета дочитывается A. Написаны до
+# смены пробы (тогда проба шла по A: (A, 1) → (B, 1) → (A, 2)) и сторожат
+# её: итог тот же при обоих порядках.
+LAST_CELL_READ_OUT = {
+    (A, 1): [page(1, 28, 30)],
+    (A, 2): [page(29, 2, 30)],
+    (B, 1): [page(100, 3, 3)],
+}
+# A — четыре страницы (total 100): бюджет кончается после (A, 2), (A, 3) не
+# запрашивается.
+LAST_CELL_CUT = {
+    (A, 1): [page(1, 28, 100)],
+    (A, 2): [page(29, 28, 100)],
+    (B, 1): [page(100, 3, 3)],
+}
+
+
+def test_21_45_last_cell_read_by_last_request(env, monkeypatch):
+    """21.45 Последняя клетка очереди дочитана ровно последним запросом
+    бюджета: stopped queue_empty, очередь пуста, ступень passed, клетка
+    дочитана (complete). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, LAST_CELL_READ_OUT, "--budget", "3")
+    summary = summary_of(run_dir)
+    plan = read_json(run_dir / "plan.json")
+    assert (
+        summary["stopped"],
+        summary["spent"],
+        plan["pending_sectors"],
+        summary["ladder_result"],
+        summary["sectors"][A]["complete"],
+    ) == ("queue_empty", 3, [], "passed", True)
+
+
+def test_21_45_budget_ends_inside_last_cell(env, monkeypatch):
+    """21.45 Бюджет кончился посреди последней клетки (очередь пуста):
+    stopped budget_exhausted, следующая страница не запрошена, клетка не
+    дочитана. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, LAST_CELL_CUT, "--budget", "3")
+    summary = summary_of(run_dir)
+    plan = read_json(run_dir / "plan.json")
+    assert (
+        summary["stopped"],
+        summary["spent"],
+        plan["pending_sectors"],
+        pages_asked(env, A),
+        summary["sectors"][A]["complete"],
+    ) == ("budget_exhausted", 3, [], [1, 2], False)
 
 
 HTTP_500 = Reply(500, b"oops")
@@ -2380,12 +2511,13 @@ TRUNCATED_OK = Reply(200, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
 
 
 def retry_run(env, monkeypatch, failures: int, *args, failure: Reply = HTTP_500):
-    """Прогон: страница 1 клетки B отвечает failure (по умолчанию 500)
-    failures раз подряд, потом OK (B — две страницы, total 30). Окно
-    0,01 ч: средний интервал 0,72 с, паузы листания меньше 2 с — всё, что
-    от 60 с и больше в FakeTime.pauses, это паузы повторов (21.46)."""
+    """Прогон: страница 1 клетки B (проба, seed 1) — OK, 28 из 30; страница 2
+    отвечает failure (по умолчанию 500) failures раз подряд, потом OK —
+    сбой посреди обхода, не на пробе. Окно 0,01 ч: средний интервал 0,72 с,
+    паузы листания меньше 2 с — всё, что от 60 с и больше в FakeTime.pauses,
+    это паузы повторов (21.46)."""
     errors = [failure] * failures
-    replies = {(B, 1): errors + [page(100, 28, 30)], (B, 2): [page(128, 2, 30)]}
+    replies = {(B, 1): [page(100, 28, 30)], (B, 2): errors + [page(128, 2, 30)]}
     return run_main(
         env, monkeypatch, CELLS, short_a() | replies, "--window-hours", "0.01", *args
     )
@@ -2438,7 +2570,8 @@ def test_21_46_success_after_retry(env, monkeypatch):
 
 
 def test_21_46_fourth_failure_stops(env, monkeypatch):
-    """21.46 Четвёртый сбой подряд — STOP net_error. Модуль 21."""
+    """21.46 Четвёртый сбой подряд — STOP net_error (потрачено 5: проба и
+    четыре попытки страницы 2). Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 4)
     assert events(run_dir, "STOP") == [
         {
@@ -2452,7 +2585,7 @@ def test_21_46_fourth_failure_stops(env, monkeypatch):
 
 
 def test_21_46_broken_compression_retried(env, monkeypatch):
-    """21.46 Битое сжатие в ответе 200 на стр. 1 клетки B, затем страница:
+    """21.46 Битое сжатие в ответе 200 на стр. 2 клетки B, затем страница:
     один повтор (строка retry), клетка дочитана, ночь идёт дальше (З167).
     Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 1, failure=TRUNCATED_OK)
@@ -2483,16 +2616,134 @@ def test_21_46_broken_compression_fourth_stops(env, monkeypatch):
     )
 
 
+# Страница 1 обеих клеток — битое сжатие четыре раза подряд: какая бы клетка
+# ни стояла первой, проба исчерпывает повторы.
+FIRST_PAGE_BROKEN = {(A, 1): [TRUNCATED_OK] * 4, (B, 1): [TRUNCATED_OK] * 4}
+
+
 def test_21_46_broken_compression_on_smoke(env, monkeypatch):
-    """21.46 Битое сжатие на пробе — smoke_failed, класс NET_ERROR, без
-    повторов: один запрос (З167). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [TRUNCATED_OK]})
+    """21.46 Битое сжатие на пробе (страница 1 первой клетки) повторяется,
+    как везде: три повтора, после четвёртого сбоя — smoke_failed, класс
+    NET_ERROR; четыре запроса (З167). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_BROKEN)
     summary = summary_of(run_dir)
-    assert (summary["stopped"], summary["stop_class"], len(env.transport.sent)) == (
-        "smoke_failed",
-        "NET_ERROR",
+    assert (
+        summary["stopped"],
+        summary["stop_class"],
+        len(events(run_dir, "retry")),
+        len(env.transport.sent),
+    ) == ("smoke_failed", "NET_ERROR", 3, 4)
+
+
+def test_21_46_broken_compression_on_smoke_entry(env, monkeypatch):
+    """21.46 Повторы пробы исчерпаны: smoke вида «провал пробы» — клетка,
+    вердикт NET_ERROR, деталь decode:<текст> (окончательный ответ страницы
+    1). Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, FIRST_PAGE_BROKEN)
+    detail = "decode:" + decompress_error(TRUNCATED_GZIP, "gzip")
+    assert summary_of(run_dir)["smoke"] == {
+        "sector": B,
+        "verdict": "NET_ERROR",
+        "detail": detail,
+    }
+
+
+def test_21_46_first_page_recovers_after_retry(env, monkeypatch):
+    """21.46 Сбой сети на пробе, затем страница: один повтор, smoke вида OK
+    по ответу повтора, прогон идёт дальше до queue_empty. Модуль 21."""
+    replies = short_a() | {(B, 1): [TRUNCATED_OK, page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    summary = summary_of(run_dir)
+    assert (len(events(run_dir, "retry")), summary["smoke"], summary["stopped"]) == (
         1,
+        {"sector": B, "verdict": "OK", "offers": 3, "total": 3},
+        "queue_empty",
     )
+
+
+# Страница 1 обеих клеток — 500 четыре раза подряд; при бюджете 2 проба
+# успевает только два запроса: бюджет кончается на повторах, окончательного
+# ответа пробы нет.
+FIRST_PAGE_500 = {(A, 1): [HTTP_500] * 4, (B, 1): [HTTP_500] * 4}
+# Тот же путь — в боевом прогоне и с --smoke-only.
+RUN_MODES = pytest.mark.parametrize(
+    "args", [(), ("--smoke-only",)], ids=["боевой", "проба"]
+)
+
+
+def budget_two_run(env, monkeypatch, args):
+    """Прогон с --budget 2 на FIRST_PAGE_500 (и args). → папка прогона."""
+    return run_main(env, monkeypatch, CELLS, FIRST_PAGE_500, *args, "--budget", "2")
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries(env, monkeypatch, args):
+    """21.46 Бюджет (2) кончился на повторах страницы 1 первой клетки (сбой
+    сети, сбой сети): проба без окончательного ответа — провал пробы, итог
+    smoke_failed, класс NET_ERROR, spent 2, два запроса; допущение
+    (DECISIONS, block/simplify-2, ревью PR #4). Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    summary = summary_of(run_dir)
+    assert (
+        summary["stopped"],
+        summary["stop_class"],
+        summary["spent"],
+        len(env.transport.sent),
+    ) == ("smoke_failed", "NET_ERROR", 2, 2)
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_tasks(env, monkeypatch, args):
+    """21.46 Бюджет кончился на повторах пробы: в plan.json две задачи done
+    страницы 1 первой клетки — первая net_error, вторая (остановившая
+    прогон) failed, как в 21.55. Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    done = read_json(run_dir / "plan.json")["done"]
+    assert [(t["sector"], t["page"], t["attempts"], t["state"]) for t in done] == [
+        (B, 1, 1, "net_error"),
+        (B, 1, 2, "failed"),
+    ]
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_pauses(env, monkeypatch, args):
+    """21.46 Бюджет кончился на повторах пробы: одна строка retry, одна
+    пауза часов — пауза этого повтора; после обрыва паузы повтора нет.
+    Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    retries = [int(r["after_s"]) for r in events(run_dir, "retry")]
+    pauses = [int(p) for p in env.clock.pauses]
+    assert (len(retries), pauses) == (1, retries)
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_smoke(env, monkeypatch, args):
+    """21.46 Бюджет кончился на повторах пробы: smoke вида «провал пробы» —
+    клетка, вердикт NET_ERROR, деталь последнего сбоя (http_500), не null.
+    Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    assert summary_of(run_dir)["smoke"] == {
+        "sector": B,
+        "verdict": "NET_ERROR",
+        "detail": "http_500",
+    }
+
+
+@RUN_MODES
+def test_21_46_budget_ends_in_first_page_retries_stop_line(env, monkeypatch, args):
+    """21.46 Бюджет кончился на повторах пробы: в night.log строка STOP
+    smoke_failed, класс NET_ERROR, деталь последнего сбоя, spent 2.
+    Модуль 21."""
+    run_dir = budget_two_run(env, monkeypatch, args)
+    assert events(run_dir, "STOP") == [
+        {
+            "event": "STOP",
+            "reason": "smoke_failed",
+            "cls": "NET_ERROR",
+            "detail": "http_500",
+            "spent": "2",
+        }
+    ]
 
 
 BLOCK_HEADERS = {
@@ -2506,8 +2757,9 @@ BLOCK_HEADERS = {
 
 
 def page2_run(env, monkeypatch, reply: Reply):
-    """Прогон: проба по A, у B страница 1 — OK (28 из 100), на странице 2 —
-    ответ reply. → папка прогона."""
+    """Прогон: у B (seed 1 — первая клетка) страница 1 — проба, OK (28 из
+    100), на странице 2 — ответ reply, посреди обхода; до A прогон не
+    доходит, если reply его останавливает. → папка прогона."""
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [reply]}
     return run_main(env, monkeypatch, CELLS, short_a() | replies)
 
@@ -2526,7 +2778,8 @@ def test_21_47_block_stops_crawl(env, monkeypatch):
 
 def test_21_47_block_stop_line(env, monkeypatch):
     """21.47 BLOCK пишет в night.log строку STOP: reason=block, cls=BLOCK,
-    деталь с пометкой билета, потрачено запросов. Модуль 21."""
+    деталь с пометкой билета, потрачено запросов (2: страницы 1 и 2 B).
+    Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(403, b"<html>no</html>"))
     assert events(run_dir, "STOP") == [
         {
@@ -2534,7 +2787,7 @@ def test_21_47_block_stop_line(env, monkeypatch):
             "reason": "block",
             "cls": "BLOCK",
             "detail": "http_403|cookie_expired_or_burned",
-            "spent": "3",
+            "spent": "2",
         }
     ]
 
@@ -2612,9 +2865,15 @@ def test_21_48_burned_ticket(env, monkeypatch, ticket, reply, detail):
 
 
 def test_21_48_burned_ticket_on_smoke(env, monkeypatch):
-    """21.48 Пометка «билет сгорел» ставится и на пробе. Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [CAPTCHA_PAGE]})
-    assert summary_of(run_dir)["stop_detail"] == "captcha|cookie_expired_or_burned"
+    """21.48 Пометка «билет сгорел» ставится и на пробе (капча на странице 1
+    первой клетки): итог smoke_failed, деталь с пометкой. Модуль 21."""
+    replies = {(A, 1): [CAPTCHA_PAGE], (B, 1): [CAPTCHA_PAGE]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies)
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_detail"]) == (
+        "smoke_failed",
+        "captcha|cookie_expired_or_burned",
+    )
 
 
 BROKEN_NAME = f"_broken_{B}_p2_ssr_200_013140"
@@ -2653,12 +2912,13 @@ def test_21_49_api_changed_stop(env, monkeypatch):
 
 
 def test_21_49_api_changed_empty_body_not_saved(env, monkeypatch):
-    """21.49 API_CHANGED с пустым телом (404): файла _broken_ нет. Модуль 21."""
+    """21.49 API_CHANGED с пустым телом (404): файла _broken_ нет, в raw/
+    только страница 1 клетки B. Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(404, b""))
     names = sorted(p.name for p in (run_dir / "raw").iterdir())
     assert (summary_of(run_dir)["stop_detail"], names) == (
         "http_404",
-        [f"{A}_p1.html.gz", f"{A}_p1.json.gz", f"{B}_p1.html.gz", f"{B}_p1.json.gz"],
+        [f"{B}_p1.html.gz", f"{B}_p1.json.gz"],
     )
 
 
@@ -2670,12 +2930,12 @@ SERVICEPIPE_MOMENTS = {
 
 
 def servicepipe_smoke_run(env, monkeypatch, stamp: str):
-    """Прогон, как настоящая проба 10.11: проба по T1205 (15,3 км², B — мельче
-    15 км², в пул не входит), ответ — тело Servicepipe, UA и время — из
-    образца stamp. → папка прогона."""
+    """Прогон, как настоящая проба 10.11: проба по T1205 (клетки в файле —
+    B, T1205; при seed 1 очередь переставляет их, T1205 — первая), ответ —
+    тело Servicepipe, UA и время — из образца stamp. → папка прогона."""
     (env.folder / "ua.txt").write_text(servicepipe_ua(stamp), encoding="utf-8")
     monkeypatch.setattr(cc, "datetime", frozen_datetime(SERVICEPIPE_MOMENTS[stamp]))
-    features = [tile(SMOKE_CELL, area=15.3), tile(B, area=10.0)]
+    features = [tile(B, area=10.0), tile(SMOKE_CELL, area=15.3)]
     replies = {(SMOKE_CELL, 1): [Reply(200, servicepipe_body(stamp))]}
     return run_main(env, monkeypatch, features, replies)
 
@@ -2749,71 +3009,75 @@ def test_21_50_servicepipe_mid_crawl_stop_line(env, monkeypatch):
             "reason": "block",
             "cls": "BLOCK",
             "detail": "servicepipe",
-            "spent": "3",
+            "spent": "2",
         }
     ]
 
 
 def test_21_50_servicepipe_mid_crawl_block_file(env, monkeypatch):
-    """21.50 Страница Servicepipe посреди обхода: в raw/ рядом со страницами 1
-    клеток A и B — _block_T0608_p2_200_013140.txt, файла _broken_ нет
-    (З155). Модуль 21."""
+    """21.50 Страница Servicepipe посреди обхода: в raw/ рядом со страницей 1
+    клетки B — _block_T0608_p2_200_013140.txt, файла _broken_ нет (З155).
+    Модуль 21."""
     run_dir = page2_run(env, monkeypatch, Reply(200, servicepipe_body("013140")))
     names = sorted(p.name for p in (run_dir / "raw").iterdir())
     assert names == [
-        f"{A}_p1.html.gz",
-        f"{A}_p1.json.gz",
         f"{B}_p1.html.gz",
         f"{B}_p1.json.gz",
         f"_block_{B}_p2_200_013140.txt",
     ]
 
 
-SMOKE_BROKEN_NAME = f"_broken_{A}_p1_smoke_200_013140"
+SMOKE_BROKEN_NAME = f"_broken_{B}_p1_ssr_200_013140"
 UNKNOWN_PAGE = Reply(200, "<html>другое</html>".encode())
+# Непонятная страница 1 у обеих клеток: какая бы ни стояла первой, проба
+# кончается API_CHANGED (seed 1 — B).
+UNKNOWN_FIRST_PAGE = {(A, 1): [UNKNOWN_PAGE], (B, 1): [UNKNOWN_PAGE]}
 
 
 def test_21_50_unknown_page_on_smoke_html_gz(env, monkeypatch):
     """21.50 Непонятная страница на пробе (API_CHANGED) сохраняется, как у
-    обхода, в raw/_broken_<клетка>_p1_smoke_200_<ЧЧММСС>.html.gz рядом с
-    .note.txt (З157; решение Андрея 10.11). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    обхода, в raw/_broken_<клетка>_p1_ssr_200_<ЧЧММСС>.html.gz рядом с
+    .note.txt (З157; решение Андрея 10.11); запрос пробы — обычный, вид
+    ssr. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     names = sorted(p.name for p in (run_dir / "raw").iterdir())
     assert names == [f"{SMOKE_BROKEN_NAME}.html.gz", f"{SMOKE_BROKEN_NAME}.note.txt"]
 
 
 def test_21_50_unknown_page_on_smoke_detail(env, monkeypatch):
-    """21.50 Непонятная страница на пробе: деталь итога —
+    """21.50 Непонятная страница на пробе: итог smoke_failed, деталь итога —
     no_initial_state|saved:<имя>.html.gz (З157). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     detail = f"no_initial_state|saved:{SMOKE_BROKEN_NAME}.html.gz"
-    assert summary_of(run_dir)["stop_detail"] == detail
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_detail"]) == ("smoke_failed", detail)
 
 
 def test_21_50_unknown_page_on_smoke_saves_body(env, monkeypatch):
     """21.50 Непонятная страница на пробе: распакованный
-    _broken_<клетка>_p1_smoke_200_<ЧЧММСС>.html.gz — ответ целиком (З157).
+    _broken_<клетка>_p1_ssr_200_<ЧЧММСС>.html.gz — ответ целиком (З157).
     Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     saved = run_dir / "raw" / f"{SMOKE_BROKEN_NAME}.html.gz"
     assert gzip.decompress(saved.read_bytes()) == UNKNOWN_PAGE.body
 
 
 def test_21_50_unknown_page_on_smoke_note(env, monkeypatch):
     """21.50 Непонятная страница на пробе: рядом .note.txt с вердиктом,
-    деталью, кодом, видом smoke, клеткой и UA (формат run_folder.broken_note;
+    деталью, кодом, видом ssr, клеткой и UA (формат run_folder.broken_note;
     З157). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, {(A, 1): [UNKNOWN_PAGE]})
+    run_dir = run_main(env, monkeypatch, CELLS, UNKNOWN_FIRST_PAGE)
     note = run_dir / "raw" / f"{SMOKE_BROKEN_NAME}.note.txt"
     assert note.read_text(encoding="utf-8") == (
-        "verdict=API_CHANGED detail=no_initial_state http=200 kind=smoke\n"
-        f"sector={A} page=1 ua={USER_AGENT}\n"
+        "verdict=API_CHANGED detail=no_initial_state http=200 kind=ssr\n"
+        f"sector={B} page=1 ua={USER_AGENT}\n"
     )
 
 
 def test_21_51_ctrl_c_during_crawl(env, monkeypatch):
-    """21.51 Ctrl+C в обходе: stopped и класс interrupted, сводка и снимок
-    охвата записаны. Модуль 21."""
+    """21.51 Ctrl+C в обходе (страница 2 клетки B): stopped и класс
+    interrupted, сводка и снимок охвата записаны; в снимке — клетка со
+    страницами (B), A не запрошена. Модуль 21."""
     replies = {(B, 1): [page(100, 28, 100)], (B, 2): [Reply(error=KeyboardInterrupt())]}
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | replies)
     summary = summary_of(run_dir)
@@ -2824,15 +3088,24 @@ def test_21_51_ctrl_c_during_crawl(env, monkeypatch):
     assert (summary["stopped"], summary["stop_class"], keys) == (
         "interrupted",
         "interrupted",
-        [A, B],
+        [B],
     )
 
 
-def test_21_51_ctrl_c_during_smoke(env, monkeypatch):
-    """21.51 Ctrl+C на пробе: прерывание выходит из main, summary.json нет.
-    Модуль 21."""
+# Ctrl+C на странице 1 любой клетки: прерывается сама проба.
+FIRST_PAGE_CTRL_C = {
+    (A, 1): [Reply(error=KeyboardInterrupt())],
+    (B, 1): [Reply(error=KeyboardInterrupt())],
+}
+
+
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_51_ctrl_c_on_first_page(env, monkeypatch, args):
+    """21.51 Ctrl+C на пробе (запрос страницы 1 первой клетки, до её
+    окончательного ответа): прерывание выходит из main, summary.json нет —
+    и в боевом прогоне, и с --smoke-only. Модуль 21."""
     with pytest.raises(KeyboardInterrupt):
-        run_main(env, monkeypatch, CELLS, {(A, 1): [Reply(error=KeyboardInterrupt())]})
+        run_main(env, monkeypatch, CELLS, FIRST_PAGE_CTRL_C, *args)
     (run_dir,) = (env.folder / "runs").iterdir()
     assert sorted(p.name for p in run_dir.iterdir()) == [
         "night.log",
@@ -2841,20 +3114,44 @@ def test_21_51_ctrl_c_during_smoke(env, monkeypatch):
     ]
 
 
-def test_21_51_ctrl_c_in_pause_after_smoke(env, monkeypatch):
-    """21.51 Ctrl+C в паузе сразу после пробы (первый сон ночи): прерывание
-    выходит из main, summary.json нет — пауза стоит до перехвата Ctrl+C
-    обходом (collector_architecture.md, 3.2). Модуль 21."""
+def interrupt_sleep(env, monkeypatch) -> None:
+    """Любой сон ночи (пауза листания, повтора) — Ctrl+C. Ночь берёт сон из
+    cc.time в момент запуска: подмена на часах env."""
 
     def interrupted_sleep(seconds: float) -> None:
         raise KeyboardInterrupt
 
-    # Ночь берёт сон из cc.time в момент запуска: подмена на часах env.
     monkeypatch.setattr(env.clock, "sleep", interrupted_sleep)
+
+
+@pytest.mark.parametrize("args", [(), ("--smoke-only",)], ids=["боевой", "проба"])
+def test_21_51_ctrl_c_in_retry_pause_on_first_page(env, monkeypatch, args):
+    """21.51 Ctrl+C в паузе повтора страницы 1 первой клетки (сбой сети на
+    пробе, окончательного ответа ещё нет): прерывание выходит из main,
+    summary.json нет — и в боевом прогоне, и с --smoke-only. Модуль 21."""
+    interrupt_sleep(env, monkeypatch)
+    replies = {(A, 1): [HTTP_500, page(1, 5, 6)], (B, 1): [HTTP_500, page(100, 3, 3)]}
     with pytest.raises(KeyboardInterrupt):
-        run_main(env, monkeypatch, CELLS, short_a() | B_60)
+        run_main(env, monkeypatch, CELLS, replies, *args)
     (run_dir,) = (env.folder / "runs").iterdir()
     assert not (run_dir / "summary.json").exists()
+
+
+def test_21_51_ctrl_c_in_pause_after_first_page(env, monkeypatch):
+    """21.51 Ctrl+C в паузе сразу после пробы (первый сон ночи — пауза
+    листания после страницы 1 клетки B): итог пробы уже есть, прогон
+    кончается interrupted, сводка записана. Модуль 21."""
+    interrupt_sleep(env, monkeypatch)
+    # KeyboardInterrupt из теста оборвал бы весь прогон pytest — ловим здесь
+    try:
+        run_dir = run_main(env, monkeypatch, CELLS, short_a() | B_60)
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl+C после итога пробы вышел из main без сводки")
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["stop_class"]) == (
+        "interrupted",
+        "interrupted",
+    )
 
 
 def ticket_state(env) -> tuple:
@@ -2895,7 +3192,7 @@ def test_21_52_ticket_reaches_request(env, monkeypatch):
     получает строку Cookie из cookies.txt (её кладёт в запрос транспорт,
     21.23), у первого запроса (проба) User-Agent — строка из ua.txt и заход
     «с главной» (Referer https://www.cian.ru/, Sec-Fetch-Site same-origin):
-    признак билета доходит до PageFetcher. Значения отличны от умолчаний
+    признак билета доходит до CianSite. Значения отличны от умолчаний
     теста, чтобы было видно чтение файлов. Модуль 21."""
     (env.folder / "cookies.txt").write_text("sid=from-file\n", encoding="utf-8")
     (env.folder / "ua.txt").write_text("TestAgent/1.0 (ua.txt)\n", encoding="utf-8")
@@ -2918,7 +3215,7 @@ def test_21_52_no_cookie_without_ticket(env, monkeypatch):
     """21.52 Нет cookies.txt: фабрика транспорта получает строку Cookie
     None — у запросов полного запуска заголовка Cookie нет (21.23); первый
     запрос (проба) — заход из адресной строки: Sec-Fetch-Site none, без
-    Referer (признак «нет билета» доходит до PageFetcher). Модуль 21."""
+    Referer (признак «нет билета» доходит до CianSite). Модуль 21."""
     (env.folder / "cookies.txt").unlink()
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
     headers = lower_keys(env.transport.sent[0].headers)
@@ -2970,9 +3267,9 @@ SIMPLE = short_a() | {(B, 1): [page(100, 28, 56)], (B, 2): [page(128, 28, 56)]}
 
 
 def test_21_54_summary(env, monkeypatch):
-    """21.54 summary.json простой ночи: итог, лестница, клетки (полна по
-    короткой странице и по числу страниц [E-21]), served_vs_total и
-    медиана. Модуль 21."""
+    """21.54 summary.json простой ночи: итог, лестница, проба (страница 1
+    первой клетки, seed 1: B), клетки (полна по короткой странице и по
+    числу страниц [E-21]), served_vs_total и медиана. Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, SIMPLE)
     common = {
         "level": 0,
@@ -2990,7 +3287,7 @@ def test_21_54_summary(env, monkeypatch):
         "stopped": "queue_empty",
         "stop_class": None,
         "stop_detail": None,
-        "smoke": {"sector": A, "verdict": "OK", "offers": 5, "total": 6},
+        "smoke": {"sector": B, "verdict": "OK", "offers": 28, "total": 56},
         "ticket": True,
         "cookie_age_h": TICKET_AGE_H,
         "ladder_step_valid": True,
@@ -3118,7 +3415,7 @@ def test_21_54_printed_summary(env, monkeypatch, capsys):
         f"\n{line}\nночь 2026-11-10   бюджет 50   запросов 3   билет: есть, 5.7 ч\n"
         "стоп: queue_empty   класс: -   \n"
         "ИТОГ: ступень ПРОЙДЕНА — можно поднимать бюджет\n"
-        f"smoke: {{'sector': '{A}', 'verdict': 'OK', 'offers': 5, 'total': 6}}\n"
+        f"smoke: {{'sector': '{B}', 'verdict': 'OK', 'offers': 28, 'total': 56}}\n"
         "секторов затронуто 2, полностью выкачано 2, дублей id 0, "
         "stateless-пагинация True\n"
         f"файлы: {run_dir}\n{line}\n"
@@ -3147,10 +3444,11 @@ def test_21_54_printed_split_and_no_ticket(env, monkeypatch, capsys):
 
 
 def test_21_55_plan(env, monkeypatch):
-    """21.55 plan.json пробы: аргументы ночи, билет, проба, итог, клетки без
-    колец, очередь; started_at — время машины в МСК со смещением.
-    Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
+    """21.55 plan.json пробы (--smoke-only): аргументы ночи, билет, проба,
+    итог, клетки без колец, задача пробы в done, очередь без клетки пробы;
+    started_at — время машины в МСК со смещением. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
     plan = read_json(run_dir / "plan.json")
     sector_common = {
         "level": 0,
@@ -3172,7 +3470,7 @@ def test_21_55_plan(env, monkeypatch):
         "seed": 1,
         "ticket": True,
         "cookie_age_h": TICKET_AGE_H,
-        "smoke": {"sector": A, "verdict": "OK", "offers": 5, "total": 6},
+        "smoke": {"sector": B, "verdict": "OK", "offers": 3, "total": 3},
         "stopped": "smoke_only",
         "stop_class": None,
         "stop_detail": None,
@@ -3182,62 +3480,76 @@ def test_21_55_plan(env, monkeypatch):
                 "status": "collect",
                 "area_km2": 100.0,
                 **sector_common,
-                "total_offers": 6,
-                "pages_planned": 1,
-                "pages_done": [1],
-                "ids": [1, 2, 3, 4, 5],
-                "served_end": True,
-            },
-            B: {
-                "name": f"Сбор {B}",
-                "status": "collect",
-                "area_km2": 10.0,
-                **sector_common,
                 "total_offers": None,
                 "pages_planned": None,
                 "pages_done": [],
                 "ids": [],
                 "served_end": False,
             },
+            B: {
+                "name": f"Сбор {B}",
+                "status": "collect",
+                "area_km2": 10.0,
+                **sector_common,
+                "total_offers": 3,
+                "pages_planned": 1,
+                "pages_done": [1],
+                "ids": [100, 101, 102],
+                "served_end": True,
+            },
         },
         "split_events": [],
-        "done": [],
-        "pending_sectors": [B, A],
+        "done": [
+            {
+                "sector": B,
+                "page": 1,
+                "kind": "ssr",
+                "origin": "seed",
+                "attempts": 1,
+                "state": "done",
+                "detail": "-",
+            }
+        ],
+        "pending_sectors": [A],
     }
 
 
 def test_21_55_night_log_time_column(env, monkeypatch):
     """21.55 Первая колонка night.log — время машины в МСК со смещением
     +03:00 (datetime.now().astimezone()). Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
     lines = (run_dir / "night.log").read_text(encoding="utf-8").splitlines()
     assert {line.split("\t")[0] for line in lines} == {"2026-11-10T01:31:40+03:00"}
 
 
 def test_21_55_plan_tasks_after_retry(env, monkeypatch):
     """21.55 plan.json → done: задачи страниц с попытками, состоянием и
-    деталью; после сбоя — net_error, повтор — новая задача. Модуль 21."""
+    деталью; первая — страница 1 пробы; после сбоя — net_error, повтор —
+    новая задача. Модуль 21."""
     run_dir = retry_run(env, monkeypatch, 1)
     task = {"sector": B, "kind": "ssr"}
     assert read_json(run_dir / "plan.json")["done"] == [
         task
-        | {
-            "page": 1,
-            "origin": "seed",
-            "attempts": 1,
-            "state": "net_error",
-            "detail": "http_500",
-        },
-        task
-        | {"page": 1, "origin": "seed", "attempts": 2, "state": "done", "detail": "-"},
+        | {"page": 1, "origin": "seed", "attempts": 1, "state": "done", "detail": "-"},
         task
         | {
             "page": 2,
             "origin": "expanded",
             "attempts": 1,
+            "state": "net_error",
+            "detail": "http_500",
+        },
+        task
+        | {
+            "page": 2,
+            "origin": "expanded",
+            "attempts": 2,
             "state": "done",
             "detail": "-",
         },
+        {"sector": A, "kind": "ssr"}
+        | {"page": 1, "origin": "seed", "attempts": 1, "state": "done", "detail": "-"},
     ]
 
 
@@ -3263,21 +3575,81 @@ def test_21_56_run_folder_name(env, monkeypatch, args, name):
 
 
 def test_21_57_smoke_only(env, monkeypatch):
-    """21.57 --smoke-only: один запрос, обхода нет, итог smoke_only.
-    Модуль 21."""
-    run_dir = run_main(env, monkeypatch, CELLS, short_a(), "--smoke-only")
+    """21.57 --smoke-only: один запрос — страница 1 первой клетки очереди
+    (seed 1: B), обхода нет, итог smoke_only. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 3, 3)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
     summary = summary_of(run_dir)
-    assert (len(env.transport.sent), summary["stopped"], summary["ladder_result"]) == (
-        1,
-        "smoke_only",
-        "smoke_only",
-    )
+    assert (
+        [(s.cell, s.page) for s in env.transport.sent],
+        summary["stopped"],
+        summary["ladder_result"],
+    ) == ([(B, 1)], "smoke_only", "smoke_only")
+
+
+# Страница 1 обеих клеток — переросток: 28 объявлений из 401 (деление и
+# листание, если бы шёл обход).
+OVERSIZED_FIRST_PAGE = {(A, 1): [page(1, 28, 401)], (B, 1): [page(100, 28, 401)]}
+
+
+def test_21_57_smoke_only_no_split(env, monkeypatch):
+    """21.57 --smoke-only, на странице 1 total 401: деления нет — строк split
+    в night.log нет, запрошена одна страница 1. Модуль 21."""
+    run_dir = run_main(env, monkeypatch, CELLS, OVERSIZED_FIRST_PAGE, "--smoke-only")
+    assert (events(run_dir, "split"), len(env.transport.sent)) == ([], 1)
+
+
+def test_21_57_smoke_only_tiles_file_untouched(env, monkeypatch):
+    """21.57 --smoke-only, на странице 1 total 401: файл клеток не
+    переписан — байт в байт как до прогона. Модуль 21."""
+    set_argv(env, monkeypatch, CELLS, "--smoke-only")
+    before = env.tiles.read_bytes()
+    give(env, OVERSIZED_FIRST_PAGE)
+    cc.main(transport_factory=env.transport.factory)
+    assert env.tiles.read_bytes() == before
+
+
+def test_21_57_smoke_only_retries_network_failure(env, monkeypatch):
+    """21.57 --smoke-only, сбой сети на странице 1 первой клетки (500, потом
+    страница): повтор, как везде (21.46) — два запроса, одна строка retry,
+    итог smoke_only. Модуль 21."""
+    replies = {
+        (A, 1): [HTTP_500, page(1, 5, 6)],
+        (B, 1): [HTTP_500, page(100, 3, 3)],
+    }
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
+    assert (
+        len(env.transport.sent),
+        len(events(run_dir, "retry")),
+        summary_of(run_dir)["stopped"],
+    ) == (2, 1, "smoke_only")
+
+
+def test_21_57_smoke_only_no_pause(env, monkeypatch):
+    """21.57 --smoke-only, страница 1 полная (28 из 401 — было бы листание):
+    ни одной паузы. Модуль 21."""
+    run_main(env, monkeypatch, CELLS, OVERSIZED_FIRST_PAGE, "--smoke-only")
+    assert env.clock.pauses == []
 
 
 def test_21_57_smoke_only_failed(env, monkeypatch):
-    """21.57 --smoke-only с проваленной пробой — smoke_failed. Модуль 21."""
+    """21.57 --smoke-only с проваленной пробой (403 на странице 1 первой
+    клетки) — smoke_failed. Модуль 21."""
     run_dir = run_main(env, monkeypatch, CELLS, FAILED_SMOKE, "--smoke-only")
     assert summary_of(run_dir)["stopped"] == "smoke_failed"
+
+
+def test_21_57_smoke_only_empty_cell(env, monkeypatch):
+    """21.57 --smoke-only по пустой первой клетке (seed 1: B, 0 из 0): итог
+    smoke_only, smoke вида EMPTY, один запрос. Модуль 21."""
+    replies = short_a() | {(B, 1): [page(100, 0, 0)]}
+    run_dir = run_main(env, monkeypatch, CELLS, replies, "--smoke-only")
+    summary = summary_of(run_dir)
+    assert (summary["stopped"], summary["smoke"], len(env.transport.sent)) == (
+        "smoke_only",
+        {"sector": B, "verdict": "EMPTY", "offers": 0, "total": 0},
+        1,
+    )
 
 
 # ═══════════════════════════════ Д. main ═══════════════════════════════
@@ -3327,7 +3699,7 @@ def test_21_59_seed_random(env, monkeypatch):
     assert (read_json(run_dir / "plan.json")["seed"], asked) == (12345, [2**31])
 
 
-def test_21_59_parse_settings_defaults():
+def test_21_59_read_settings_defaults():
     """21.59 Умолчания read_settings: --budget 50, --runs-dir runs,
     --window-hours 8.0, без --smoke-only, с паузой старта (З158);
     --transport urllib, --cookies cookies.txt и --ua ua.txt — в папке
@@ -3356,7 +3728,7 @@ def test_21_59_parse_settings_defaults():
     )
 
 
-def test_21_59_parse_settings_requires_geojson(capsys):
+def test_21_59_read_settings_requires_geojson(capsys):
     """21.59 Без --geojson read_settings выходит с кодом 2 (argparse), в
     сообщении назван флаг --geojson (З158). Модуль 21."""
     with pytest.raises(SystemExit) as stop:
@@ -3742,7 +4114,7 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
 
 COLLECTOR_DIR = REPO_ROOT / "collector"
 # Без часов и сети: правила, интерфейс транспорта и логика запроса страницы
-# (monotonic приходит в PageFetcher аргументом).
+# (monotonic приходит в CianSite аргументом).
 RULE_MODULES = (
     "crawl.py",
     "search_page.py",
@@ -4177,7 +4549,7 @@ def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (crawl, search_page, geometry, run_folder),
     transport и page_fetch не импортируют time, socket, urllib.request,
     urllib.error, http: сеть — в реализациях транспорта, часы — в
-    cian_collect (monotonic приходит в PageFetcher аргументом). Модуль 21."""
+    cian_collect (monotonic приходит в CianSite аргументом). Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
 
 
@@ -4185,7 +4557,7 @@ def test_21_78_no_network_or_clock_imports(name):
 def test_21_78_transports_no_clock_imports(name):
     """21.78 Реализации транспорта (urllib_transport, httpx_transport) не
     импортируют time: сеть им можно, а часы — нет; длительность запроса
-    меряет PageFetcher переданным monotonic. Модуль 21."""
+    меряет CianSite переданным monotonic. Модуль 21."""
     assert clock_imports(collector_source(name)) == []
 
 
@@ -4380,7 +4752,7 @@ GUARD_SAMPLES = [
         "    httpx_transport = None",
     ),
     (transport_layer_imports, "from collector import crawl"),
-    (transport_layer_imports, "from collector.page_fetch import PageFetcher"),
+    (transport_layer_imports, "from collector.page_fetch import CianSite"),
     (transport_layer_imports, "import search_page"),
     # crawl импортирует transport или реализацию транспорта напрямую
     (crawl_layer_imports, "from collector.transport import HttpReply"),
@@ -4477,7 +4849,7 @@ def get(self, request) -> HttpReply:
 # через него), search_page, geometry, run_folder.
 CRAWL_CLEAN_SAMPLE = """
 from collector import geometry, page_fetch, run_folder, search_page
-from collector.page_fetch import PageFetcher
+from collector.page_fetch import CianSite
 """
 
 # Образец разрешённого cian_collect: httpx_transport — только внутри функции
