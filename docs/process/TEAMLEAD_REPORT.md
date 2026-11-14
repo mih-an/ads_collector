@@ -13,7 +13,7 @@
 
 **Решения уровня 1.** `docs/DECISIONS.md`, строки 2026-11-14 · block/simplify-3 (6 строк; 5-я и 6-я — допущения).
 
-**Вопросы уровня 2 — допущения** (раздел 6 PR, рекомендация А сделана):
+**Вопросы уровня 2 — допущения** (раздел 6 PR, рекомендация А сделана; Андрей согласен с обоими, 14.11):
 1. Картинка `collect` в CLAUDE.md — «открыть прогон → …; проба — страница 1 первой клетки, отдельного шага нет», а не дословно «проба → …» п. 4: так в коде с PR #4.
 2. `.claude/agents/data-checker.md` (вне «Общих файлов») — имя `page_fetch.py` → `browser.py` поправлено.
 
@@ -27,6 +27,6 @@
 - Единый класс «страница поиска», позднее падение при сломанной httpx — «Мелочи» ROADMAP.
 - `git checkout -b` не смог записать upstream в `.git/config` (песочница): ветка создана, push — без `-u`.
 
-**Рекомендация следующего шага.** Андрей отвечает на два допущения, читает `main`, `build_crawl`, `collect`, `Browser` в описании PR, сливает PR #5. Затем блок 2 ROADMAP «Описание формата»; тесты порядка «пауза → билет» — в очередь PM.
+**Рекомендация следующего шага.** Андрей читает `main`, `build_crawl`, `collect`, `Browser` в описании PR, сливает PR #5. Затем блок 2 ROADMAP «Описание формата»; тесты порядка «пауза → билет» — в очередь PM.
 
 **Какие docs/ менялись.** `docs/DECISIONS.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md` (имена и точки подмены), `docs/reference/collector_architecture.md` (раздел 2), `docs/process/CURRENT_TASK.md`, `docs/process/TEAMLEAD_REPORT.md`; вне `docs/` — `CLAUDE.md`, `README.md`, `collector/README.md`, `.claude/agents/data-checker.md`.
