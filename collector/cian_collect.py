@@ -3,9 +3,9 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 
 Получает argv (read_settings → Settings). build_crawl собирает обход
 crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
-в stdout), часы crawl.Clock. enter_cian — билет (read_ticket → Ticket),
-транспорт (make_transport) → page_fetch.CianSite; его зовёт сам обход
-после паузы старта. main запускает обход и печатает итог. Сети здесь нет
+в stdout), часы crawl.Clock, пауза старта, затем вход на ЦИАН. enter_cian —
+билет (read_ticket → Ticket), транспорт (make_transport) →
+браузер browser.Browser. main запускает обход и печатает итог. Сети здесь нет
 (она в транспорте); сервер и запуск — collector/README.md.
 """
 
@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from collector import urllib_transport
+from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
-from collector.page_fetch import CianSite, Ticket
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
@@ -222,20 +222,30 @@ def print_grid(grid: dict, settings: Settings) -> None:
     )
 
 
+def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> None:
+    """Случайное смещение старта U(0; start_jitter_max_s); нет у --smoke-only
+    и --no-start-delay — без вызова случайности (21.58)."""
+    if settings.smoke_only or not settings.start_delay:
+        return
+    delay = rnd.uniform(0, settings.start_jitter_max_s)
+    print(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …", flush=True)
+    clock.sleep(delay)
+
+
 def enter_cian(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
-) -> CianSite:
-    """Вход на ЦИАН: сайт с билетом (куки, UA, возраст кук) на выбранном
+) -> Browser:
+    """Вход на ЦИАН: браузер с билетом (куки, UA, возраст кук) на выбранном
     транспорте."""
     ticket = read_ticket(settings, time.time(), rnd)
     transport = transport_factory(settings.transport, ticket.cookie_header)
-    return CianSite(transport, ticket, time.monotonic)
+    return Browser(transport, ticket, time.monotonic)
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
-    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы;
-    случайность и часы здесь не вызываются — паузу старта и вход на ЦИАН
-    (билет, транспорт) обход делает сам в начале прогона."""
+    """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
+    пауза старта (первый вызов случайности после seed), затем вход на ЦИАН
+    (билет, транспорт) — готовый браузер для обхода."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -250,18 +260,16 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     # time берётся по имени модуля в момент вызова: так часы подменяют тесты
     # (cian_collect.time, cian_collect.datetime)
     clock = Clock(now=now_local, sleep=time.sleep)
-    return Crawl(
-        settings,
-        tiles_file,
-        lambda: enter_cian(settings, rnd, transport_factory),
-        clock,
-        rnd,
-    )
+    pause_before_start(settings, rnd, clock)
+    # билет — после паузы старта: возраст кук и UA (порядок случайности)
+    browser = enter_cian(settings, rnd, transport_factory)
+    return Crawl(settings, tiles_file, browser, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
     """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
     settings = read_settings(sys.argv[1:])
+    # вся сборка внешнего мира: часы, rnd, пауза старта, билет, транспорт
     crawl = build_crawl(settings, transport_factory)
     crawl.collect()
     crawl.print_summary()

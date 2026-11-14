@@ -3,28 +3,29 @@
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
-геометрия и ссылка на выдачу, сайт ЦИАН над транспортом
-(CianSite), сценарии прогона, main; в конце — страж 21.78 (кто что
+геометрия и ссылка на выдачу, браузер над транспортом
+(Browser), сценарии прогона, main; в конце — страж 21.78 (кто что
 импортирует, модули правил без внешнего мира). Сети нет: main получает
 фабрику фальшивого транспорта FakeTransport (tests/collector_support.py),
-обход — тот же транспорт через CianSite; urllib и подмены сети здесь не
+обход — тот же транспорт через Browser; urllib и подмены сети здесь не
 нужны (сами транспорты — tests/test_collector_transport.py). Часы и сон
 подменены, случайность — --seed, папки и билет — во временной папке теста.
 Имена берутся из своих модулей: search_page (разбор ответа), geometry
-(клетки), page_fetch (сайт ЦИАН), crawl (обход); через cc — только
+(клетки), browser (браузер), crawl (обход); через cc — только
 запуск и края.
 
 Точки подмены, которые код обязан сохранить:
 - cc.main(transport_factory=...) — разбор sys.argv и весь прогон; фабрика
   зовётся как factory(имя транспорта, строка Cookie или None);
-- page_fetch.CianSite(transport, ticket, monotonic) и
-  page_fetch.decode_body(raw, content_encoding) — CianSite зовёт её по
+- browser.Browser(transport, ticket, monotonic) и
+  browser.decode_body(raw, content_encoding) — Browser зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
-- cc.time (time, sleep, monotonic — enter_cian передаёт его в CianSite) и
+- cc.time (time, sleep, monotonic — enter_cian передаёт его в Browser) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(settings, tiles_file, enter_cian, Clock(now, sleep), rnd) —
-  так обход собирается без main (make_crawl);
+- crawl.Crawl(settings, tiles_file, browser, Clock(now, sleep), rnd) —
+  так обход собирается без main (make_crawl); паузы старта и входа на
+  ЦИАН при этом нет: их делает build_crawl;
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -71,10 +72,10 @@ from collector_support import (  # noqa: F401 — no_network: автофикст
 import collector
 import collector.cian_collect as cc
 from collector import (
+    browser,
     crawl,
     geometry,
     httpx_transport,
-    page_fetch,
     search_page,
     transport,
     urllib_transport,
@@ -222,7 +223,7 @@ def env(tmp_path, monkeypatch) -> Env:
     tiles = tmp_path / "tiles.geojson"
     fake = FakeTransport(tiles, {})
     # одни часы на всё: time, sleep и monotonic (его main передаёт в
-    # CianSite) — у cc; now — для обхода без main (make_crawl)
+    # Browser) — у cc; now — для обхода без main (make_crawl)
     clock = FakeTime(EPOCH, zone=MSK)
     monkeypatch.setattr(cc, "time", clock)
     monkeypatch.setattr(cc, "datetime", frozen_datetime(MOMENT))
@@ -293,25 +294,23 @@ def tile_state(**changes):
 
 def fake_ticket():
     """Билет сценария: кука, UA и возраст — как у билета в папке env."""
-    return page_fetch.Ticket(
-        cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H
-    )
+    return browser.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
 
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile); enter_cian отдаёт CianSite с билетом как в env
+    features (TilesFile); готовый браузер Browser с билетом как в env
     над фальшивым транспортом env; часы и сон — FakeTime env,
     случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
-    site = page_fetch.CianSite(env.transport, fake_ticket(), env.clock.monotonic)
+    site = browser.Browser(env.transport, fake_ticket(), env.clock.monotonic)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
         tiles_file,
-        lambda: site,
+        site,
         clock,
         random.Random(1),
     )
@@ -1428,7 +1427,7 @@ def test_21_22_record_split_parent_missing(tmp_path):
     )
 
 
-# ═══════════════════ В. Сайт ЦИАН над транспортом (CianSite) ════════════════════
+# ═══════════════════ В. Браузер над транспортом (Browser) ═══════════════════════
 # Сами транспорты (куки, редирект, сбои, тайм-аут) —
 # tests/test_collector_transport.py.
 
@@ -1446,16 +1445,16 @@ def fetch_env(tmp_path):
     )
 
 
-def cian_site(fetch_env, has_ticket=True, replies=()):
-    """CianSite сборщика над фальшивым транспортом; replies — ответы на
+def make_browser(fetch_env, has_ticket=True, replies=()):
+    """Browser сборщика над фальшивым транспортом; replies — ответы на
     запросы страницы 1 клетки A по порядку."""
     fetch_env.transport.replies[A, 1] = list(replies)
-    ticket = page_fetch.Ticket(
+    ticket = browser.Ticket(
         cookie_header=FAKE_COOKIE if has_ticket else None,
         ua=USER_AGENT,
         age_h=TICKET_AGE_H,
     )
-    return page_fetch.CianSite(fetch_env.transport, ticket, fetch_env.clock.monotonic)
+    return browser.Browser(fetch_env.transport, ticket, fetch_env.clock.monotonic)
 
 
 # Заголовки браузера, имена в нижнем регистре (lower_keys).
@@ -1482,8 +1481,8 @@ def sent_headers(fetch_env, index: int = 0) -> dict[str, str]:
 def test_21_24_headers_with_ticket(fetch_env):
     """21.24 fetch страницы 1 с билетом: заголовки браузера, заход «с
     главной» (Referer https://www.cian.ru/, same-origin); Cookie кладёт
-    транспорт, CianSite его не передаёт. Модуль 21."""
-    cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    транспорт, Browser его не передаёт. Модуль 21."""
+    make_browser(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     expected = BROWSER_HEADERS | {
         "sec-fetch-site": "same-origin",
         "referer": "https://www.cian.ru/",
@@ -1494,14 +1493,14 @@ def test_21_24_headers_with_ticket(fetch_env):
 def test_21_24_headers_without_ticket(fetch_env):
     """21.24 fetch без билета: заход из адресной строки (Sec-Fetch-Site
     none), без Referer. Модуль 21."""
-    site = cian_site(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    site = make_browser(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
     site.fetch(fetch_env.url)
     assert sent_headers(fetch_env) == BROWSER_HEADERS | {"sec-fetch-site": "none"}
 
 
 def test_21_24_headers_with_referer(fetch_env):
     """21.24 fetch с Referer: он и уходит, same-origin. Модуль 21."""
-    site = cian_site(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
+    site = make_browser(fetch_env, has_ticket=False, replies=[page(1, 1, 1)])
     site.fetch(fetch_env.url, referer="https://www.cian.ru/prev")
     headers = sent_headers(fetch_env)
     assert (headers["referer"], headers["sec-fetch-site"]) == (
@@ -1512,7 +1511,7 @@ def test_21_24_headers_with_referer(fetch_env):
 
 def test_21_24_request_goes_to_url(fetch_env):
     """21.24 fetch отдаёт транспорту ссылку как есть. Модуль 21."""
-    cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    make_browser(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     assert fetch_env.transport.sent[0].url == fetch_env.url
 
 
@@ -1547,7 +1546,7 @@ def test_21_26_decode(fetch_env, encoding, raw, expected):
     Content-Encoding (регистр не важен), без сжатия — как есть, битый UTF-8
     — знаком замены. Модуль 21."""
     headers = {} if encoding is None else {"Content-Encoding": encoding}
-    site = cian_site(fetch_env, replies=[Reply(200, raw, headers)])
+    site = make_browser(fetch_env, replies=[Reply(200, raw, headers)])
     assert site.fetch(fetch_env.url).body == expected
 
 
@@ -1556,8 +1555,8 @@ def test_21_26_fetched_page_ok(fetch_env):
     провода (сжатого), ms, без сбоя сети, заголовки ответа. Модуль 21."""
     raw = gzip.compress("страница".encode(), mtime=0)
     reply = Reply(200, raw, {"Content-Encoding": "gzip"})
-    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
-    assert result == page_fetch.FetchedPage(
+    result = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    assert result == browser.FetchedPage(
         200, "страница", len(raw), 250.0, None, {"content-encoding": "gzip"}
     )
 
@@ -1567,14 +1566,14 @@ def test_21_27_http_error_403(fetch_env):
     заголовки ответа транспорта — как есть (нижний регистр — забота
     транспорта, 21.31). Модуль 21."""
     reply = Reply(403, "запрет".encode(), {"Server": "nginx"})
-    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (403, "запрет", 12, 250.0, None, {"server": "nginx"})
 
 
 def test_21_27_http_error_gzip_body(fetch_env):
     """21.27 Ответ-ошибка 500 с gzip-телом: тело распаковано. Модуль 21."""
     reply = Reply(500, gzip.compress(b"oops", mtime=0), {"Content-Encoding": "gzip"})
-    code, body, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, *_ = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body) == (500, "oops")
 
 
@@ -1582,7 +1581,7 @@ def test_21_27_http_error_broken_gzip(fetch_env):
     """21.27 Ответ-ошибка с битым gzip: тело — сырые байты как текст.
     Модуль 21."""
     reply = Reply(500, b"not gzip", {"Content-Encoding": "gzip"})
-    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not gzip", 8)
 
 
@@ -1597,7 +1596,7 @@ def test_21_27_http_error_truncated_gzip(fetch_env):
     with pytest.raises(EOFError):
         gzip.decompress(TRUNCATED_GZIP)
     reply = Reply(500, TRUNCATED_GZIP, {"Content-Encoding": "gzip"})
-    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     expected = TRUNCATED_GZIP.decode("utf-8", errors="replace")
     assert (code, body, size) == (500, expected, len(TRUNCATED_GZIP))
 
@@ -1608,12 +1607,12 @@ def test_21_27_http_error_broken_deflate(fetch_env):
     with pytest.raises(zlib.error):
         zlib.decompress(b"not deflate", -zlib.MAX_WBITS)
     reply = Reply(500, b"not deflate", {"Content-Encoding": "deflate"})
-    code, body, size, *_ = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    code, body, size, *_ = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert (code, body, size) == (500, "not deflate", 11)
 
 
 def broken_decode(raw: bytes, content_encoding: str | None) -> str:
-    """Подмена page_fetch.decode_body: ошибка разбора тела, но не распаковки."""
+    """Подмена browser.decode_body: ошибка разбора тела, но не распаковки."""
     raise ValueError("неожиданная ошибка разбора тела")
 
 
@@ -1622,8 +1621,8 @@ def test_21_27_http_error_unexpected_decode_error_raises(fetch_env, monkeypatch)
     распаковки (ValueError из decode_body), — исключение летит из fetch,
     а не глотается: except сужен до OSError, EOFError, zlib.error (З164;
     «ошибки громко»). Модуль 21."""
-    monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
-    site = cian_site(fetch_env, replies=[Reply(500, b"oops")])
+    monkeypatch.setattr(browser, "decode_body", broken_decode)
+    site = make_browser(fetch_env, replies=[Reply(500, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
         site.fetch(fetch_env.url)
 
@@ -1633,7 +1632,7 @@ def test_21_29_network_failure_code_0(fetch_env, detail):
     """21.29 NetworkFailure транспорта → (0, "", 0, 250.0, деталь, {}): код 0,
     тело пусто, деталь — текст сбоя, заголовков нет. Модуль 21."""
     reply = Reply(error=transport.NetworkFailure(detail))
-    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert result == (0, "", 0, 250.0, detail, {})
 
 
@@ -1641,7 +1640,7 @@ def test_21_29_failure_asks_transport_once(fetch_env):
     """21.29 После NetworkFailure fetch транспорт второй раз не зовёт:
     повторы — дело обхода (Crawl). Модуль 21."""
     reply = Reply(error=transport.NetworkFailure("timeout"))
-    cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert len(fetch_env.transport.sent) == 1
 
 
@@ -1677,7 +1676,7 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
     сбой сети: код 0, тело пусто, размер 0, деталь decode:<текст
     исключения>, заголовков нет (З167). Модуль 21."""
     reply = Reply(200, raw, {"Content-Encoding": encoding})
-    result = cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    result = make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     detail = "decode:" + decompress_error(raw, encoding)
     assert result == (0, "", 0, 250.0, detail, {})
 
@@ -1685,7 +1684,7 @@ def test_21_29_broken_compression_in_ok(fetch_env, raw, encoding):
 def broken_gzip_result(fetch_env, status: int):
     """FetchedPage ответа status с битым gzip («not gzip»)."""
     reply = Reply(status, b"not gzip", {"Content-Encoding": "gzip"})
-    return cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    return make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
 
 
 def test_21_29_broken_compression_in_204(fetch_env):
@@ -1719,8 +1718,8 @@ def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
     """21.29 Ответ 200, при разборе тела которого случилась не ошибка
     распаковки (ValueError из decode_body), — исключение летит из fetch,
     не глотается (З167, «ошибки громко»). Модуль 21."""
-    monkeypatch.setattr(page_fetch, "decode_body", broken_decode)
-    site = cian_site(fetch_env, replies=[Reply(200, b"oops")])
+    monkeypatch.setattr(browser, "decode_body", broken_decode)
+    site = make_browser(fetch_env, replies=[Reply(200, b"oops")])
     with pytest.raises(ValueError, match="неожиданная ошибка разбора тела"):
         site.fetch(fetch_env.url)
 
@@ -1728,7 +1727,7 @@ def test_21_29_ok_unexpected_decode_error_raises(fetch_env, monkeypatch):
 def test_21_30_ms_by_monotonic(fetch_env):
     """21.30 Длительность запроса — по переданным часам monotonic, в мс
     (подставные часы идут на 0,25 с за вызов). Модуль 21."""
-    result = cian_site(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
+    result = make_browser(fetch_env, replies=[page(1, 1, 1)]).fetch(fetch_env.url)
     assert result.ms == 250.0
 
 
@@ -1748,7 +1747,7 @@ def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
     держит test_21_30_ms_by_monotonic, а этот тест держит эталонное
     ms=250 в night.log ночей 21.68–21.70 — лишний вызов monotonic сдвинул
     бы его раньше, чем сравнение с эталоном укажет причину. Модуль 21."""
-    cian_site(fetch_env, replies=[reply]).fetch(fetch_env.url)
+    make_browser(fetch_env, replies=[reply]).fetch(fetch_env.url)
     assert fetch_env.clock.monotonic_calls == 2
 
 
@@ -3192,7 +3191,7 @@ def test_21_52_ticket_reaches_request(env, monkeypatch):
     получает строку Cookie из cookies.txt (её кладёт в запрос транспорт,
     21.23), у первого запроса (проба) User-Agent — строка из ua.txt и заход
     «с главной» (Referer https://www.cian.ru/, Sec-Fetch-Site same-origin):
-    признак билета доходит до CianSite. Значения отличны от умолчаний
+    признак билета доходит до Browser. Значения отличны от умолчаний
     теста, чтобы было видно чтение файлов. Модуль 21."""
     (env.folder / "cookies.txt").write_text("sid=from-file\n", encoding="utf-8")
     (env.folder / "ua.txt").write_text("TestAgent/1.0 (ua.txt)\n", encoding="utf-8")
@@ -3215,7 +3214,7 @@ def test_21_52_no_cookie_without_ticket(env, monkeypatch):
     """21.52 Нет cookies.txt: фабрика транспорта получает строку Cookie
     None — у запросов полного запуска заголовка Cookie нет (21.23); первый
     запрос (проба) — заход из адресной строки: Sec-Fetch-Site none, без
-    Referer (признак «нет билета» доходит до CianSite). Модуль 21."""
+    Referer (признак «нет билета» доходит до Browser). Модуль 21."""
     (env.folder / "cookies.txt").unlink()
     run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(100, 3, 3)]})
     headers = lower_keys(env.transport.sent[0].headers)
@@ -4114,14 +4113,14 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
 
 COLLECTOR_DIR = REPO_ROOT / "collector"
 # Без часов и сети: правила, интерфейс транспорта и логика запроса страницы
-# (monotonic приходит в CianSite аргументом).
+# (monotonic приходит в Browser аргументом).
 RULE_MODULES = (
     "crawl.py",
     "search_page.py",
     "geometry.py",
     "run_folder.py",
     "transport.py",
-    "page_fetch.py",
+    "browser.py",
 )
 # Реализации транспорта: сеть живёт только в них.
 TRANSPORT_MODULES = ("urllib_transport.py", "httpx_transport.py")
@@ -4130,13 +4129,13 @@ NO_DISK_MODULES = ("crawl.py", "search_page.py", "transport.py")
 LEAF_MODULES = ("search_page.py", "geometry.py", "run_folder.py", "transport.py")
 # Все модули пакета, кроме файла запуска cian_collect.py.
 PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, *TRANSPORT_MODULES, "status.py")
-# Порядок слоёв (crawl → page_fetch → transport, search_page; циклов нет):
+# Порядок слоёв (crawl → browser → transport, search_page; циклов нет):
 # что модуль может взять из пакета. crawl до транспорта доходит только через
-# page_fetch: transport и реализации транспорта ему напрямую нельзя (решение
+# browser: transport и реализации транспорта ему напрямую нельзя (решение
 # Андрея 12.11, DECISIONS).
 LAYER_IMPORTS = {
-    "crawl.py": frozenset({"page_fetch", "search_page", "geometry", "run_folder"}),
-    "page_fetch.py": frozenset({"transport", "search_page"}),
+    "crawl.py": frozenset({"browser", "search_page", "geometry", "run_folder"}),
+    "browser.py": frozenset({"transport", "search_page"}),
     "urllib_transport.py": frozenset({"transport"}),
     "httpx_transport.py": frozenset({"transport"}),
 }
@@ -4151,7 +4150,7 @@ ALLOWED_OS = {"os", "os.path", "os.path.basename"}
 # Модули пакета по голому имени: так их видно в «from . import search_page» и
 # «from .search_page import x» (imported_modules отбрасывает точки).
 PACKAGE_NAMES = {"collector", "crawl", "search_page", "geometry", "run_folder"}
-PACKAGE_NAMES |= {"transport", "page_fetch", "urllib_transport", "httpx_transport"}
+PACKAGE_NAMES |= {"transport", "browser", "urllib_transport", "httpx_transport"}
 PACKAGE_NAMES |= {"cian_collect", "status"}
 CLOCK_CLASSES = {"datetime", "date"}
 WALL_CLOCK_ATTRS = {"now", "today", "utcnow"}
@@ -4377,7 +4376,7 @@ def disk_imports(source: str, allowed: frozenset[str] = frozenset()) -> list[str
     ]
 
 
-# page_fetch из «дисковых» модулей можно только gzip: распаковка тела ответа
+# browser из «дисковых» модулей можно только gzip: распаковка тела ответа
 # в памяти.
 memory_disk_imports = functools.partial(disk_imports, allowed=frozenset({"gzip"}))
 
@@ -4396,7 +4395,7 @@ def is_http_open(func: ast.expr) -> bool:
 def disk_calls(source: str, http_allowed: bool = False) -> list[str]:
     """Вызовы open (и .open), обращения к os.* кроме os.path.basename;
     http_allowed — не считать диском <что-то>.opener.open. Отдельно от
-    импортов: page_fetch gzip нужен для тела ответа в памяти."""
+    импортов: browser gzip нужен для тела ответа в памяти."""
     tree = ast.parse(source)
     os_names = module_bindings(tree, "os")
     found = []
@@ -4438,8 +4437,8 @@ def is_stdout_use(node: ast.expr, sys_names: dict[str, str]) -> bool:
 
 def stdout_use(source: str) -> list[str]:
     """Печать в stdout: print и sys.stdout (таблица 2.4 документа: stdout —
-    только run_folder.say — эхо night.log, строка паузы старта и итог — и
-    cian_collect)."""
+    только run_folder.say — эхо night.log и итог — и cian_collect: строка
+    паузы старта и печать сетки)."""
     tree = ast.parse(source)
     sys_names = module_bindings(tree, "sys")
     found = []
@@ -4516,7 +4515,7 @@ def foreign_package_imports(source: str, allowed: frozenset[str]) -> list[str]:
 
 
 # Образцы слоёв: реализациям транспорта из пакета можно только transport;
-# crawl — только page_fetch, search_page, geometry, run_folder.
+# crawl — только browser, search_page, geometry, run_folder.
 transport_layer_imports = functools.partial(
     foreign_package_imports, allowed=LAYER_IMPORTS["urllib_transport.py"]
 )
@@ -4547,9 +4546,9 @@ def test_21_78_package_modules_listed():
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (crawl, search_page, geometry, run_folder),
-    transport и page_fetch не импортируют time, socket, urllib.request,
+    transport и browser не импортируют time, socket, urllib.request,
     urllib.error, http: сеть — в реализациях транспорта, часы — в
-    cian_collect (monotonic приходит в CianSite аргументом). Модуль 21."""
+    cian_collect (monotonic приходит в Browser аргументом). Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
 
 
@@ -4557,13 +4556,13 @@ def test_21_78_no_network_or_clock_imports(name):
 def test_21_78_transports_no_clock_imports(name):
     """21.78 Реализации транспорта (urllib_transport, httpx_transport) не
     импортируют time: сеть им можно, а часы — нет; длительность запроса
-    меряет CianSite переданным monotonic. Модуль 21."""
+    меряет Browser переданным monotonic. Модуль 21."""
     assert clock_imports(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", (*RULE_MODULES, *TRANSPORT_MODULES))
 def test_21_78_no_wall_clock_or_random_calls(name):
-    """21.78 Модули правил, transport, page_fetch и реализации транспорта не
+    """21.78 Модули правил, transport, browser и реализации транспорта не
     обращаются к часам стены (datetime.now, .today, .utcnow) и к модулю
     random — ни вызовом, ни ссылкой: время и случайность приходят через
     Clock и аргумент rnd; подсказка типа random.Random можно. Модуль 21."""
@@ -4582,17 +4581,16 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
     """21.78 crawl, search_page и transport не печатают в stdout (print,
     sys.stdout): по таблице 2.4 документа stdout — только run_folder.say
-    (через него обход печатает эхо строк night.log, строку паузы старта и
-    итог) и cian_collect
-    (печать сетки). Модуль 21."""
+    (через него обход печатает эхо строк night.log и итог) и cian_collect
+    (строка паузы старта и печать сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 
-def test_21_78_page_fetch_memory_only():
-    """21.78 page_fetch не зовёт open и os.*, не импортирует io, pathlib,
+def test_21_78_browser_memory_only():
+    """21.78 browser не зовёт open и os.*, не импортирует io, pathlib,
     shutil и имён из os, не печатает в stdout: gzip и zlib — только
     распаковка тела в памяти. Модуль 21."""
-    source = collector_source("page_fetch.py")
+    source = collector_source("browser.py")
     found = memory_disk_imports(source) + disk_calls(source) + stdout_use(source)
     assert found == []
 
@@ -4611,7 +4609,7 @@ def test_21_78_transports_no_disk_no_stdout(name):
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
 def test_21_78_cian_collect_not_imported(name):
     """21.78 cian_collect никем в пакете не импортируется (__init__, crawl,
-    search_page, geometry, run_folder, transport, page_fetch, транспорты,
+    search_page, geometry, run_folder, transport, browser, транспорты,
     status). Модуль 21."""
     assert module_imports(collector_source(name), "cian_collect") == []
 
@@ -4630,7 +4628,7 @@ def test_21_78_transports_imported_only_by_cian_collect(name, implementation):
 )
 def test_21_78_network_only_in_urllib_transport(name):
     """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
-    __init__, правила, transport, page_fetch, httpx_transport, status), не
+    __init__, правила, transport, browser, httpx_transport, status), не
     импортирует socket, urllib.request, urllib.error, http: сеть stdlib — в
     urllib_transport. Модуль 21."""
     assert network_imports(collector_source(name)) == []
@@ -4654,10 +4652,10 @@ def test_21_78_httpx_transport_imported_lazily():
 
 @pytest.mark.parametrize("name", list(LAYER_IMPORTS))
 def test_21_78_layer_order(name):
-    """21.78 Порядок слоёв без циклов (crawl → page_fetch → transport,
-    search_page): crawl берёт из пакета только page_fetch, search_page,
+    """21.78 Порядок слоёв без циклов (crawl → browser → transport,
+    search_page): crawl берёт из пакета только browser, search_page,
     geometry и run_folder — transport и реализации транспорта напрямую не
-    импортирует, только через page_fetch; page_fetch берёт только transport
+    импортирует, только через browser; browser берёт только transport
     и search_page, реализации транспорта — только transport. Модуль 21."""
     source = collector_source(name)
     assert foreign_package_imports(source, LAYER_IMPORTS[name]) == []
@@ -4752,11 +4750,11 @@ GUARD_SAMPLES = [
         "    httpx_transport = None",
     ),
     (transport_layer_imports, "from collector import crawl"),
-    (transport_layer_imports, "from collector.page_fetch import CianSite"),
+    (transport_layer_imports, "from collector.browser import Browser"),
     (transport_layer_imports, "import search_page"),
     # crawl импортирует transport или реализацию транспорта напрямую
     (crawl_layer_imports, "from collector.transport import HttpReply"),
-    (crawl_layer_imports, "from collector import page_fetch, transport"),
+    (crawl_layer_imports, "from collector import browser, transport"),
     (crawl_layer_imports, "import collector.urllib_transport as ut"),
     (crawl_layer_imports, "from collector.httpx_transport import HttpxTransport as H"),
     (package_imports, "from collector import transport"),
@@ -4810,10 +4808,10 @@ import math
 from dataclasses import dataclass
 """
 
-# Образец разрешённого page_fetch: часы — переданная функция monotonic,
+# Образец разрешённого browser: часы — переданная функция monotonic,
 # сжатие — в памяти (gzip.decompress, zlib), из пакета — transport и
 # search_page.
-PAGE_FETCH_CLEAN_SAMPLE = """
+BROWSER_CLEAN_SAMPLE = """
 import gzip
 import zlib
 from collections.abc import Callable
@@ -4845,11 +4843,11 @@ def get(self, request) -> HttpReply:
         return HttpReply(response.status, {}, response.read())
 """
 
-# Образец разрешённого crawl: из пакета — page_fetch (до транспорта — только
+# Образец разрешённого crawl: из пакета — browser (до транспорта — только
 # через него), search_page, geometry, run_folder.
 CRAWL_CLEAN_SAMPLE = """
-from collector import geometry, page_fetch, run_folder, search_page
-from collector.page_fetch import CianSite
+from collector import browser, geometry, run_folder, search_page
+from collector.browser import Browser, Ticket
 """
 
 # Образец разрешённого cian_collect: httpx_transport — только внутри функции
@@ -4881,16 +4879,16 @@ TRANSPORTS = {
         (cian_collect_imports, CLEAN_SAMPLE),
         (relative_imports, CLEAN_SAMPLE),
         (package_imports, LEAF_CLEAN_SAMPLE),
-        (network_or_clock_imports, PAGE_FETCH_CLEAN_SAMPLE),
-        (wall_clock_or_random_uses, PAGE_FETCH_CLEAN_SAMPLE),
-        (memory_disk_imports, PAGE_FETCH_CLEAN_SAMPLE),
-        (disk_calls, PAGE_FETCH_CLEAN_SAMPLE),
-        (stdout_use, PAGE_FETCH_CLEAN_SAMPLE),
+        (network_or_clock_imports, BROWSER_CLEAN_SAMPLE),
+        (wall_clock_or_random_uses, BROWSER_CLEAN_SAMPLE),
+        (memory_disk_imports, BROWSER_CLEAN_SAMPLE),
+        (disk_calls, BROWSER_CLEAN_SAMPLE),
+        (stdout_use, BROWSER_CLEAN_SAMPLE),
         (
             functools.partial(
-                foreign_package_imports, allowed=LAYER_IMPORTS["page_fetch.py"]
+                foreign_package_imports, allowed=LAYER_IMPORTS["browser.py"]
             ),
-            PAGE_FETCH_CLEAN_SAMPLE,
+            BROWSER_CLEAN_SAMPLE,
         ),
         (transport_disk_calls, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (disk_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
@@ -4910,19 +4908,19 @@ TRANSPORTS = {
         "cian_collect",
         "абсолютные импорты",
         "лист",
-        "page_fetch: monotonic аргументом",
-        "page_fetch: время стены и random",
-        "page_fetch: импорт gzip",
-        "page_fetch: gzip и zlib в памяти",
-        "page_fetch: stdout",
-        "page_fetch: transport и search_page",
+        "browser: monotonic аргументом",
+        "browser: время стены и random",
+        "browser: импорт gzip",
+        "browser: gzip и zlib в памяти",
+        "browser: stdout",
+        "browser: transport и search_page",
         "urllib_transport: opener.open",
         "urllib_transport: импорты не диск",
         "urllib_transport: время стены и random",
         "urllib_transport: без httpx",
         "urllib_transport: только transport",
         "urllib_transport: без time",
-        "crawl: page_fetch, search_page, geometry, run_folder",
+        "crawl: browser, search_page, geometry, run_folder",
         "cian_collect: httpx_transport внутри функции",
         "cian_collect: без httpx",
     ],
@@ -4932,9 +4930,9 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     rnd, время через переданную now и методы переданного времени
     (fromisoformat, astimezone), urllib.parse, os.path.basename, импорт
     соседних модулей, без печати в stdout; у листа — импорты стандартной
-    библиотеки; у page_fetch — переданный monotonic, gzip и zlib в памяти,
+    библиотеки; у browser — переданный monotonic, gzip и zlib в памяти,
     импорт transport и search_page; у urllib_transport — сеть stdlib,
-    self.opener.open, импорт transport; у crawl — импорт page_fetch,
+    self.opener.open, импорт transport; у crawl — импорт browser,
     search_page, geometry, run_folder; у cian_collect — импорт
     httpx_transport внутри функции. Модуль 21."""
     assert check(sample) == []

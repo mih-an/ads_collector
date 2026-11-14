@@ -6,8 +6,9 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 «билет сгорел», итог пробы, учёт страницы, дочитанность [E-21], ступень,
 повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
 очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
-внешний мир — только вход на ЦИАН (enter_cian), сайт ЦИАН (page_fetch.CianSite),
-Clock, rnd, run_folder (запись и печать say) и TilesFile.record_split.
+пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
+внешний мир — только браузер (browser.Browser), Clock, rnd,
+run_folder (запись и печать say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from collector import geometry, page_fetch, run_folder, search_page
+from collector import geometry, run_folder, search_page
+from collector.browser import Browser, Ticket
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -99,11 +101,11 @@ class TileState:
 
 @dataclass
 class PageTask:
-    """Задача обхода: поля в порядке ключей задачи в done (plan.json)."""
+    """Задача обхода: поля в порядке ключей задачи в done (plan.json); ключ
+    kind в done не поле задачи, а run_folder.PAGE_KIND (task_entry)."""
 
     sector: str
     page: int
-    kind: str
     origin: str
     attempts: int = 0
     state: str = "pending"
@@ -306,7 +308,7 @@ def task_entry(task: PageTask) -> dict:
     return {
         "sector": task.sector,
         "page": task.page,
-        "kind": task.kind,
+        "kind": run_folder.PAGE_KIND,
         "origin": task.origin,
         "attempts": task.attempts,
         "state": task.state,
@@ -317,7 +319,7 @@ def task_entry(task: PageTask) -> dict:
 def plan_payload(
     state: CrawlState,
     settings: Settings,
-    ticket: page_fetch.Ticket,
+    ticket: Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -363,7 +365,7 @@ def _stateless_ok(full: list[dict]) -> bool | None:
 def summary_report(
     state: CrawlState,
     settings: Settings,
-    ticket: page_fetch.Ticket,
+    ticket: Ticket,
     started_at: datetime,
     tiles: dict[str, TileState],
 ) -> dict:
@@ -457,21 +459,21 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); вход на ЦИАН — enter_cian, сеть — только через site, часы и сон —
-    через clock, случайность — rnd."""
+    (say); сеть — только через browser (готовый браузер из
+    cian_collect.build_crawl), часы и сон — через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        enter_cian: Callable[[], page_fetch.CianSite],
+        browser: Browser,
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
-        self.enter_cian = enter_cian
+        self.browser = browser
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -479,16 +481,13 @@ class Crawl:
         self.mean_interval_s = mean_interval(settings.window_hours, settings.budget)
         self.tiles: dict[str, TileState] = {}
         # появляются в open_run
-        self.site: page_fetch.CianSite
         self.started_at: datetime
         self.folder: run_folder.RunFolder
         self.report: dict  # итог прогона (summary.json), появляется в finish
 
     def open_run(self) -> None:
-        """Начало прогона: вход на ЦИАН (билет, транспорт), время старта, папка
-        прогона, клетки в работу, очередь вперемешку."""
-        # билет — после паузы старта: возраст кук и UA (порядок случайности)
-        self.site = self.enter_cian()
+        """Начало прогона: время старта, папка прогона, клетки в работу,
+        очередь вперемешку."""
         self.started_at = self.clock.now()
         self.folder = run_folder.RunFolder.create(
             self.settings.runs_dir, self.started_at, self.settings.smoke_only
@@ -518,13 +517,12 @@ class Crawl:
     # ── главный цикл ──────────────────────────────────────────────
 
     def collect(self) -> None:
-        """Прогон целиком: пауза старта → открыть прогон → строка start → обход
-        (проба — стр. 1 первой клетки очереди, 21.32) → итог (словарь
-        summary.json) в self.report, папка — self.folder.path. Порядок вызовов
-        случайности — часть поведения (его задают collect и open_run): seed →
+        """Прогон целиком: открыть прогон → строка start → обход (проба — стр. 1
+        первой клетки очереди, 21.32) → итог (словарь summary.json) в
+        self.report, папка — self.folder.path. Порядок вызовов случайности —
+        часть поведения (его задают cian_collect.build_crawl и open_run): seed →
         пауза старта → UA → джиттер клеток → перемешивание."""
         state = self.state
-        self.pause_before_start()
         self.open_run()
         self._log_start()
         self.save_plan()
@@ -582,11 +580,8 @@ class Crawl:
             if not self.budget_left():
                 self.state.stopped = "budget_exhausted"
                 return
-            # с 11.09 все страницы — GET cat.php (вид ssr)
             origin = "seed" if page == 1 else "expanded"
-            task = PageTask(
-                sector=key, page=page, kind="ssr", origin=origin, attempts=attempts
-            )
+            task = PageTask(sector=key, page=page, origin=origin, attempts=attempts)
             verdict = self.try_page(task)
             if verdict == search_page.PAGE_END:
                 self.mark_end(key, task.detail)
@@ -603,7 +598,7 @@ class Crawl:
         на стр. 1 первой клетки пишет итог пробы (ключ smoke), сохраняет
         plan.json. → вердикт"""
         on_smoke = self.smoke_unanswered()  # эта попытка — проба (21.32)
-        answer = self.request_page(task.sector, task.page, task.kind)
+        answer = self.request_page(task.sector, task.page)
         self.state.spent += 1
         task.attempts += 1
         task.detail = answer.detail
@@ -630,7 +625,9 @@ class Crawl:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
         пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
         «билет сгорел»)."""
-        detail = burned_mark(answer.verdict, answer.detail, self.site.ticket.has_ticket)
+        detail = burned_mark(
+            answer.verdict, answer.detail, self.browser.ticket.has_ticket
+        )
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
         if on_smoke:
@@ -662,14 +659,14 @@ class Crawl:
 
     # ── один запрос ───────────────────────────────────────────────
 
-    def request_page(self, key: str, page: int, kind: str) -> run_folder.PageAnswer:
-        """Сам запрос, без решений: ссылка и Referer, сайт (`site.fetch`),
+    def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
+        """Сам запрос, без решений: ссылка и Referer, браузер (`browser.fetch`),
         разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
         Бюджет, очередь и стоп не трогает."""
         ring = self.tiles[key].ring
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером
         referer = search_page.page_url(ring, page - 1) if page > 1 else None
-        response = self.site.fetch(search_page.page_url(ring, page), referer)
+        response = self.browser.fetch(search_page.page_url(ring, page), referer)
         headers = response.headers
         verdict, detail, total, offers = search_page.classify_page(
             response.code,
@@ -682,7 +679,6 @@ class Crawl:
         answer = run_folder.PageAnswer(
             key=key,
             page=page,
-            kind=kind,
             verdict=verdict,
             detail=detail,
             code=response.code,
@@ -713,11 +709,11 @@ class Crawl:
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
             name = self.folder.write_broken(
-                answer, self.site.ticket.ua, self._stamp_hms()
+                answer, self.browser.ticket.ua, self._stamp_hms()
             )
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            self.folder.write_block(answer, self.site.ticket.ua, self._stamp_hms())
+            self.folder.write_block(answer, self.browser.ticket.ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -793,16 +789,6 @@ class Crawl:
         """Остался ли бюджет запросов прогона."""
         return self.state.spent < self.settings.budget
 
-    def pause_before_start(self) -> None:
-        """Случайное смещение старта U(0; start_jitter_max_s); нет у --smoke-only
-        и --no-start-delay (21.58)."""
-        settings = self.settings
-        if settings.smoke_only or not settings.start_delay:
-            return
-        delay = self.rnd.uniform(0, settings.start_jitter_max_s)
-        run_folder.say(f"старт окна: ждём {int(delay // 60)} мин {int(delay % 60)} с …")
-        self.clock.sleep(delay)
-
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
         случайности (точка подмены теста 21.36); общий помощник
@@ -855,8 +841,8 @@ class Crawl:
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.site.ticket.has_ticket),
-            cookie_age_h=self.site.ticket.age_h,
+            ticket=int(self.browser.ticket.has_ticket),
+            cookie_age_h=self.browser.ticket.age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
         )
@@ -868,7 +854,7 @@ class Crawl:
             n=self.state.spent,
             sector=answer.key,
             page=answer.page,
-            kind=answer.kind,
+            kind=run_folder.PAGE_KIND,
             http=answer.code,
             ms=int(answer.ms),
             offers=len(answer.ids),
@@ -881,7 +867,11 @@ class Crawl:
     def save_plan(self) -> None:
         self.folder.write_plan(
             plan_payload(
-                self.state, self.settings, self.site.ticket, self.started_at, self.tiles
+                self.state,
+                self.settings,
+                self.browser.ticket,
+                self.started_at,
+                self.tiles,
             ),
         )
 
@@ -890,7 +880,7 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.site.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.browser.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам

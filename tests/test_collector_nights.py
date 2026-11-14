@@ -161,7 +161,7 @@ def replay_night(
     player = CianPlayer(tiles, replies)
     monkeypatch.chdir(work_dir)
     # одни часы на всё: monotonic (ms= в night.log) main передаёт в
-    # CianSite, time и sleep — свои у cc
+    # Browser, time и sleep — свои у cc
     monkeypatch.setattr(cc, "time", FakeTime(start.timestamp()))
     monkeypatch.setattr(cc, "datetime", frozen_datetime(start))
     argv = night_argv(night.meta, tiles, work_dir / "runs")
