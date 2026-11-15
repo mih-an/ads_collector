@@ -5,10 +5,11 @@ tests/test_collector_transport.py и tests/test_collector_status.py. Здесь
 две группы. Общее для нескольких файлов: запрет сети, подставные часы
 (FakeTime, frozen_datetime), билет во временной папке, ответ ЦИАН Reply.
 И подмены сети одного файла, собранные рядом с общими: фальшивый
-транспорт FakeTransport — только сценарии обхода test_collector.py;
-проигрыватель ответов ЦИАН CianPlayer с фабрикой player_transport — только
-эталонные ночи test_collector_nights.py (на настоящем UrllibTransport).
-Кода сборщика не меняет.
+транспорт FakeTransport и подделка источника страниц FakePageSource —
+только сценарии обхода test_collector.py; проигрыватель ответов ЦИАН
+CianPlayer с фабрикой player_transport — только эталонные ночи
+test_collector_nights.py (на настоящем UrllibTransport). Кода сборщика не
+меняет.
 
 Что сборщик обязан сохранить, чтобы эти подмены работали (cc —
 collector.cian_collect): cc.main(transport_factory=...) — фабрика зовётся
@@ -23,8 +24,8 @@ Browser) и cc.datetime (now, astimezone, strftime, isoformat).
 test_collector_status.py, а status.py — отдельный скрипт, который пакет не
 импортирует (CLAUDE.md §6); его тесты берут отсюда только запрет сети и
 часы и не должны падать оттого, что пакет collector сломан или не
-собирается. Подсказка типа HttpReply — только для проверки типов
-(TYPE_CHECKING), при запуске тестов не импортируется.
+собирается. Подсказки типов HttpReply, Ticket и PageAnswer — только для
+проверки типов (TYPE_CHECKING), при запуске тестов не импортируются.
 """
 
 import http.client
@@ -43,6 +44,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
+    from collector.browser import Ticket
+    from collector.run_folder import PageAnswer
     from collector.transport import HttpReply
 
 # Допуск сверки вершин ссылки с кольцом клетки. Почему 2e-5: jitter_ring
@@ -284,6 +287,32 @@ class FakeTransport:
         if reply.location_page1:
             lowered["location"] = page_one_url(url)
         return HttpReply(status=reply.status, headers=lowered, body=reply.body)
+
+
+class FakePageSource:
+    """Подделка источника страниц (page_source.PageSource) для обхода над
+    любым источником (21.85): готовые ответы run_folder.PageAnswer по
+    (ключ клетки, страница) вместо ссылок, браузера и разбора.
+
+    get_page(key, ring, page) записывает вызов в asked — (ключ, страница,
+    кольцо) по порядку — и отдаёт первый ответ из очереди (key, page);
+    очередь пуста — AssertionError с ключом и страницей. ticket — билет,
+    который обход читает у источника (source.ticket).
+    """
+
+    def __init__(
+        self, ticket: "Ticket", pages: dict[tuple[str, int], list["PageAnswer"]]
+    ) -> None:
+        self.ticket = ticket
+        self.pages = pages
+        self.asked: list[tuple[str, int, list]] = []
+
+    def get_page(self, key: str, ring: list, page: int) -> "PageAnswer":
+        self.asked.append((key, page, ring))
+        queue = self.pages.get((key, page))
+        if not queue:
+            raise AssertionError(f"у подделки источника нет ответа на {key} p{page}")
+        return queue.pop(0)
 
 
 class CianPlayer(urllib.request.BaseHandler):
