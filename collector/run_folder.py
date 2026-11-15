@@ -145,9 +145,9 @@ class RunFolder:
         """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
         объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
         ответа целиком, как есть (страховка от тихой поломки вырезки). Тело —
-        любой текст, не обязательно HTML (п. 6 задания block/page-source);
-        имя файла — по формату. Прогоны до 18.09 — исторический формат (.json,
-        HTML только у p1)."""
+        любой текст, не обязательно HTML (решение Андрея 15.11; DECISIONS,
+        block/page-source); имя файла — по формату. Прогоны до 18.09 —
+        исторический формат (.json, HTML только у p1)."""
         base = os.path.join(self.raw, f"{key}_p{page}")
         with gzip.open(base + ".json.gz", "wt", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False)

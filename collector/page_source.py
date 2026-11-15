@@ -18,8 +18,9 @@ from collector.browser import Browser, Ticket
 
 
 class PageSource(Protocol):
-    """Источник страниц для обхода: вторая реализация встаёт своим файлом и
-    строкой cian_collect.PAGE_SOURCES (решение Андрея 15.11)."""
+    """Источник страниц для обхода: вторая реализация — новый файл; в
+    cian_collect.py — строка PAGE_SOURCES, флаг, проверка библиотеки и сборка
+    источника; crawl.py не трогается (решение Андрея 15.11)."""
 
     ticket: Ticket
 
