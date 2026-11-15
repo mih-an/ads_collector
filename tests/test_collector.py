@@ -32,8 +32,8 @@ tests/test_collector_transport.py). Часы и сон подменены, сл�
 - page_source.UrlPageSource(browser) с атрибутом ticket и методом
   get_page(ключ клетки, кольцо, страница) → run_folder.PageAnswer;
 - cc.PAGE_SOURCES — словарь «имя → создатель источника страниц» и
-  умолчание cc.PAGE_SOURCE; словарь читается в момент вызова: 21.84
-  подставляет на место url свой создатель;
+  умолчание cc.PAGE_SOURCE; словарь и умолчание читаются в момент
+  вызова: 21.84 подставляет свой создатель и своё имя;
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -5032,8 +5032,8 @@ def test_21_78_transports_no_clock_imports(name):
 
 @pytest.mark.parametrize("name", (*RULE_MODULES, *TRANSPORT_MODULES))
 def test_21_78_no_wall_clock_or_random_calls(name):
-    """21.78 Модули правил, transport, browser и реализации транспорта не
-    обращаются к часам стены (datetime.now, .today, .utcnow) и к модулю
+    """21.78 Модули правил, transport, browser, page_source и реализации
+    транспорта не обращаются к часам стены (datetime.now, .today, .utcnow) и к модулю
     random — ни вызовом, ни ссылкой: время и случайность приходят через
     Clock и аргумент rnd; подсказка типа random.Random можно. Модуль 21."""
     assert wall_clock_or_random_uses(collector_source(name)) == []
@@ -5098,7 +5098,8 @@ def test_21_78_transports_imported_only_by_cian_collect(name, implementation):
 )
 def test_21_78_network_only_in_urllib_transport(name):
     """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
-    __init__, правила, transport, browser, httpx_transport, status), не
+    __init__, правила, transport, browser, page_source, httpx_transport,
+    status), не
     импортирует socket, urllib.request, urllib.error, http: сеть stdlib — в
     urllib_transport. Модуль 21."""
     assert network_imports(collector_source(name)) == []
