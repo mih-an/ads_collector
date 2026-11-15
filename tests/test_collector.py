@@ -1776,10 +1776,10 @@ def test_21_30_monotonic_twice_per_fetch(fetch_env, reply):
 # ответа — внутри него; обходу он отдаёт run_folder.PageAnswer.
 
 
-def url_source(fetch_env, page_no: int = 1, replies=(), has_ticket=True):
-    """UrlPageSource над браузером make_browser; replies — ответы на запросы
-    страницы page_no клетки A по порядку."""
-    site = make_browser(fetch_env, has_ticket=has_ticket)
+def url_source(fetch_env, page_no: int, replies: list):
+    """UrlPageSource над браузером make_browser (с билетом); replies — ответы
+    на запросы страницы page_no клетки A по порядку."""
+    site = make_browser(fetch_env)
     fetch_env.transport.replies[A, page_no] = list(replies)
     return page_source_module().UrlPageSource(site)
 
@@ -1802,6 +1802,8 @@ def answer_view(answer) -> tuple:
 
 
 PAGE_HTML = search_page_html([offer(1), offer(2)], 60)
+# Отвод не на капчу и не на p=1: по одной ссылке это BLOCK redirect_302.
+OTHER_URL = "https://www.cian.ru/other/"
 
 
 @pytest.mark.parametrize(
@@ -1842,8 +1844,22 @@ PAGE_HTML = search_page_html([offer(1), offer(2)], 60)
             Reply(error=transport.NetworkFailure("timeout")),
             (A, 1, 0, "NET_ERROR", "timeout", None, [], [], ""),
         ),
+        (
+            # без waf-verdict тот же ответ — BLOCK redirect_302: вердикт
+            # держит передачу заголовка waf-verdict в classify_page
+            1,
+            Reply(302, b"", {"WAF-Verdict": "challenge", "Location": OTHER_URL}),
+            (A, 1, 302, "BLOCK", "captcha_redirect", None, [], [], ""),
+        ),
     ],
-    ids=["страница выдачи", "403", "стр. 2: 301 на p=1", "без initialState", "сбой"],
+    ids=[
+        "страница выдачи",
+        "403",
+        "стр. 2: 301 на p=1",
+        "без initialState",
+        "сбой",
+        "302 с waf-verdict challenge",
+    ],
 )
 def test_21_83_answer_by_reply(fetch_env, page_no, reply, expected):
     """21.83 Источник «по ссылке» отдаёт PageAnswer с ключом клетки и
@@ -1853,33 +1869,43 @@ def test_21_83_answer_by_reply(fetch_env, page_no, reply, expected):
     http_403, total None, объявлений нет, тело ответа; стр. 2, 301 на p=1 →
     PAGE_END redirect_to_p1_301, объявлений нет; 200 без initialState →
     API_CHANGED no_initial_state, тело целиком; сбой сети → код 0,
-    NET_ERROR, деталь — текст сбоя, тело пусто. Модуль 21."""
+    NET_ERROR, деталь — текст сбоя, тело пусто; 302 с waf-verdict challenge
+    → BLOCK captcha_redirect. Модуль 21."""
     source = url_source(fetch_env, page_no, [reply])
     answer = source.get_page(A, rect_ring(A), page_no)
     assert answer_view(answer) == expected
 
 
-def test_21_83_url_and_referer_page_1(fetch_env):
-    """21.83 Страница 1: запрос уходит по page_url(ring, 1); с билетом —
-    заход «с главной» (Referer https://www.cian.ru/). Модуль 21."""
-    source = url_source(fetch_env, 1, [page(1, 1, 1)])
-    source.get_page(A, rect_ring(A), 1)
-    sent = fetch_env.transport.sent[0]
-    assert (sent.url, lower_keys(sent.headers)["referer"]) == (
-        search_page.page_url(rect_ring(A), 1),
-        "https://www.cian.ru/",
+def test_21_83_size_ms_headers(fetch_env):
+    """21.83 Размер, длительность и заголовки ответа источник берёт у
+    браузера: 403 «запрет» — 12 байт с провода, 250 мс по часам браузера,
+    заголовки ответа как отдал транспорт (имена в нижнем регистре).
+    Модуль 21."""
+    source = url_source(
+        fetch_env, 1, [Reply(403, "запрет".encode(), {"Server": "nginx"})]
     )
+    answer = source.get_page(A, rect_ring(A), 1)
+    assert (answer.size, answer.ms, answer.headers) == (12, 250.0, {"server": "nginx"})
 
 
-def test_21_83_url_and_referer_page_3(fetch_env):
-    """21.83 Страница 3: запрос уходит по page_url(ring, 3), Referer —
-    page_url(ring, 2) того же кольца. Модуль 21."""
-    source = url_source(fetch_env, 3, [page(1, 1, 60)])
-    source.get_page(A, rect_ring(A), 3)
+@pytest.mark.parametrize(
+    ("page_no", "referer"),
+    [
+        (1, "https://www.cian.ru/"),
+        (3, search_page.page_url(rect_ring(A), 2)),
+    ],
+    ids=["страница 1", "страница 3"],
+)
+def test_21_83_url_and_referer(fetch_env, page_no, referer):
+    """21.83 Запрос страницы N уходит по page_url(ring, N); Referer
+    страницы 1 с билетом — заход «с главной» (https://www.cian.ru/), у
+    страницы 3 — page_url(ring, 2) того же кольца. Модуль 21."""
+    source = url_source(fetch_env, page_no, [page(1, 1, 60)])
+    source.get_page(A, rect_ring(A), page_no)
     sent = fetch_env.transport.sent[0]
     assert (sent.url, lower_keys(sent.headers)["referer"]) == (
-        search_page.page_url(rect_ring(A), 3),
-        search_page.page_url(rect_ring(A), 2),
+        search_page.page_url(rect_ring(A), page_no),
+        referer,
     )
 
 
@@ -3808,8 +3834,9 @@ def test_21_57_smoke_only_empty_cell(env, monkeypatch):
 
 # Длительность и размер в ответах подделки — выдуманные и не совпадают ни с
 # часами теста (250 мс), ни с длиной тела: строка night.log обязана взять их
-# из ответа источника.
-SOURCE_MS = 1234.0
+# из ответа источника. Дробная часть 0,6: в night.log ms= — целая часть
+# (int), не округление.
+SOURCE_MS = 1234.6
 SOURCE_SIZE = 777
 # Билет подделки — не тот, что в папке env: обход обязан взять его у
 # источника.
@@ -3846,27 +3873,6 @@ def source_answer(key: str, page_no: int, **changes):
     return run_folder.PageAnswer(**(fields | changes))
 
 
-def full_source_page(key: str, page_no: int, total: int):
-    """Ответ подделки: полная страница (28 объявлений) из total."""
-    offers = [offer(1000 * page_no + i) for i in range(28)]
-    return source_answer(key, page_no, total=total, offers=offers)
-
-
-def source_failure(key: str, page_no: int):
-    """Ответ подделки: сбой сети — код 0, NET_ERROR, тело пусто."""
-    return source_answer(
-        key,
-        page_no,
-        verdict="NET_ERROR",
-        detail="timeout",
-        code=0,
-        total=None,
-        offers=[],
-        size=0,
-        body="",
-    )
-
-
 def source_crawl(env, pages: dict, **changes):
     """Обход без main() над подделкой источника FakePageSource(source_ticket(),
     pages) по клеткам CELLS (Random(1): очередь B, A); прогон не начат —
@@ -3887,13 +3893,6 @@ def source_crawl(env, pages: dict, **changes):
     return run, source, slept
 
 
-def collected_run_dir(env, run) -> Path:
-    """collect() обхода и единственная папка прогона в runs/."""
-    run.collect()
-    (run_dir,) = (env.folder / "runs").iterdir()
-    return run_dir
-
-
 def test_21_85_files_from_source_answer(env):
     """21.85 Обход над подделкой источника (без ссылок, тело — текст JSON):
     страница OK записана из ответа источника — <клетка>_p1.json.gz с его
@@ -3903,7 +3902,8 @@ def test_21_85_files_from_source_answer(env):
     answer_b = source_answer(B, 1)
     pages = {(B, 1): [answer_b], (A, 1): [source_answer(A, 1)]}
     run, _, _ = source_crawl(env, pages)
-    run_dir = collected_run_dir(env, run)
+    run.collect()
+    run_dir = Path(run.folder.path)
     raw = run_dir / "raw"
     saved = json.loads(gzip.decompress((raw / f"{B}_p1.json.gz").read_bytes()))
     body = gzip.decompress((raw / f"{B}_p1.html.gz").read_bytes()).decode("utf-8")
@@ -3928,23 +3928,39 @@ def test_21_85_one_call_per_attempt(env):
     клетки с джиттером, номер) на попытку: страницы клетки подряд с одним
     кольцом; после сбоя сети — пауза повтора и второй вызов с теми же
     ключом, кольцом и номером. Модуль 21."""
+    full_page = [offer(1000 + i) for i in range(28)]
+    failure = {
+        "verdict": "NET_ERROR",
+        "detail": "timeout",
+        "code": 0,
+        "total": None,
+        "offers": [],
+        "size": 0,
+        "body": "",
+    }
     pages = {
-        (B, 1): [full_source_page(B, 1, 30)],
-        (B, 2): [source_failure(B, 2), source_answer(B, 2, total=30)],
+        (B, 1): [source_answer(B, 1, total=30, offers=full_page)],
+        (B, 2): [source_answer(B, 2, **failure), source_answer(B, 2, total=30)],
         (A, 1): [source_answer(A, 1)],
     }
-    # окно 0,01 ч: паузы листания меньше 2 с, всё от 60 с — паузы повтора
+    # окно 0,01 ч: паузы листания и между клетками — до ~3 с, всё от 60 с —
+    # паузы повтора
     run, source, slept = source_crawl(env, pages, window_hours=0.01)
     run.collect()
     rings_b = [ring for key, _, ring in source.asked if key == B]
     (ring_a,) = [ring for key, _, ring in source.asked if key == A]
+    # кольцо с джиттером не равно каноническому вершина в вершину (сравнение
+    # кортежами координат: список списков и список кортежей не равны всегда)
+    canonical_b = [tuple(vertex) for vertex in rect_ring(B)]
+    jittered = [tuple(vertex) for vertex in rings_b[0]] != canonical_b
     assert (
         [(key, page_no) for key, page_no, _ in source.asked],
         all(ring == rings_b[0] for ring in rings_b),
         same_ring(rings_b[0], rect_ring(B)),
+        jittered,
         same_ring(ring_a, rect_ring(A)),
         [asked for asked, seconds in slept if seconds >= 60],
-    ) == ([(B, 1), (B, 2), (B, 2), (A, 1)], True, True, True, [2])
+    ) == ([(B, 1), (B, 2), (B, 2), (A, 1)], True, True, True, True, [2])
 
 
 @pytest.mark.parametrize(
@@ -3973,7 +3989,8 @@ def test_21_85_ticket_from_source(env, changes, pattern):
     cookie_age_h — из source.ticket. Модуль 21."""
     answer = source_answer(B, 1, total=None, **changes)
     run, _, _ = source_crawl(env, {(B, 1): [answer]})
-    run_dir = collected_run_dir(env, run)
+    run.collect()
+    run_dir = Path(run.folder.path)
     (path,) = (run_dir / "raw").glob(pattern)
     plan = read_json(run_dir / "plan.json")
     assert (
@@ -4916,20 +4933,16 @@ page_source_layer_imports = functools.partial(
 
 
 def forbidden_page_names(source: str) -> list[str]:
-    """Имена CRAWL_FORBIDDEN_NAMES в коде (не в строках): голое имя,
-    атрибут (search_page.page_url, self.browser.fetch) и имя в импорте."""
+    """Имена CRAWL_FORBIDDEN_NAMES в коде (не в строках): голое имя
+    (page_url(ring, 1)) и атрибут (search_page.page_url, self.browser.fetch).
+    Импорт из browser ловит browser_beyond_ticket; импортированное имя,
+    если его зовут, видно здесь как голое имя."""
     found = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Name) and node.id in CRAWL_FORBIDDEN_NAMES:
             found.append(f"строка {node.lineno}: {node.id}")
         elif isinstance(node, ast.Attribute) and node.attr in CRAWL_FORBIDDEN_NAMES:
             found.append(f"строка {node.lineno}: {ast.unparse(node)}")
-        elif isinstance(node, ast.ImportFrom):
-            found += [
-                f"строка {node.lineno}: import {alias.name}"
-                for alias in node.names
-                if alias.name in CRAWL_FORBIDDEN_NAMES
-            ]
     return found
 
 
@@ -5200,11 +5213,20 @@ GUARD_SAMPLES = [
     (crawl_layer_imports, "from collector import browser, transport"),
     (crawl_layer_imports, "import collector.urllib_transport as ut"),
     (crawl_layer_imports, "from collector.httpx_transport import HttpxTransport as H"),
-    # crawl строит ссылку, разбирает ответ или ходит в браузер сам
-    (crawl_page_knowledge, "url = search_page.page_url(ring, 1)"),
-    (crawl_page_knowledge, "verdict = search_page.classify_page(200, body)"),
-    (crawl_page_knowledge, "from collector.browser import Browser, Ticket"),
-    (crawl_page_knowledge, "fetched = self.browser.fetch(url)"),
+    # crawl строит ссылку, разбирает ответ или ходит в браузер сам: каждая
+    # ветка forbidden_page_names (голое имя, атрибут) и browser_beyond_ticket
+    # (import, from collector import, from collector.browser import) — своим
+    # образцом, который ловит только она
+    (forbidden_page_names, "url = page_url(ring, 1)"),
+    (forbidden_page_names, "url = search_page.page_url(ring, 1)"),
+    (forbidden_page_names, "verdict = search_page.classify_page(200, body)"),
+    (forbidden_page_names, "fetched = self.browser.fetch(url)"),
+    (browser_beyond_ticket, "import collector.browser"),
+    (browser_beyond_ticket, "from collector import browser"),
+    (browser_beyond_ticket, "from collector.browser import browser_headers"),
+    (browser_beyond_ticket, "from collector.browser import Browser, Ticket"),
+    (crawl_page_knowledge, "url = page_url(ring, 1)"),
+    (crawl_page_knowledge, "from collector import browser"),
     # page_source импортирует transport или обход
     (page_source_layer_imports, "from collector import transport"),
     (page_source_layer_imports, "from collector import crawl"),
@@ -5310,6 +5332,21 @@ def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
     return replace(answer, ids=search_page.offer_ids(answer.offers))
 """
 
+# Образцы нарушений из GUARD_SAMPLES, которые ловит только одна из двух
+# проверок crawl_page_knowledge: запрещённые имена без импорта browser и
+# импорты browser без запрещённых имён.
+NAMES_ONLY_SAMPLE = """
+url = page_url(ring, 1)
+url = search_page.page_url(ring, 1)
+verdict = search_page.classify_page(200, body)
+fetched = self.browser.fetch(url)
+"""
+BROWSER_IMPORTS_ONLY_SAMPLE = """
+import collector.browser
+from collector import browser
+from collector.browser import browser_headers
+"""
+
 # Образец разрешённого page_source: из пакета — browser, search_page,
 # run_folder.
 PAGE_SOURCE_CLEAN_SAMPLE = """
@@ -5365,6 +5402,8 @@ TRANSPORTS = {
         (clock_imports, URLLIB_TRANSPORT_CLEAN_SAMPLE),
         (crawl_layer_imports, CRAWL_CLEAN_SAMPLE),
         (crawl_page_knowledge, CRAWL_CLEAN_SAMPLE),
+        (browser_beyond_ticket, NAMES_ONLY_SAMPLE),
+        (forbidden_page_names, BROWSER_IMPORTS_ONLY_SAMPLE),
         (page_source_layer_imports, PAGE_SOURCE_CLEAN_SAMPLE),
         (eager_httpx_transport_imports, LAZY_CLEAN_SAMPLE),
         (httpx_imports, LAZY_CLEAN_SAMPLE),
@@ -5391,6 +5430,8 @@ TRANSPORTS = {
         "urllib_transport: без time",
         "crawl: page_source, Ticket, search_page, geometry, run_folder",
         "crawl: get_page и offer_ids",
+        "browser_beyond_ticket: имена — не его ветка",
+        "forbidden_page_names: импорты browser — не его ветка",
         "page_source: browser, search_page, run_folder",
         "cian_collect: httpx_transport внутри функции",
         "cian_collect: без httpx",
@@ -5405,7 +5446,8 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     импорт transport и search_page; у urllib_transport — сеть stdlib,
     self.opener.open, импорт transport; у crawl — импорт page_source, типа
     Ticket из browser, search_page, geometry, run_folder, вызов
-    self.source.get_page и search_page.offer_ids; у page_source — импорт
+    self.source.get_page и search_page.offer_ids (а каждая из двух
+    проверок знания обхода не ловит нарушения другой); у page_source — импорт
     browser, search_page, run_folder; у cian_collect — импорт
     httpx_transport внутри функции. Модуль 21."""
     assert check(sample) == []
