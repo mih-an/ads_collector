@@ -7,7 +7,7 @@ crawl.py — обход выдачи ЦИАН: данные, правила об
 повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
 очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
 пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
-внешний мир — только браузер (browser.Browser), Clock, rnd,
+внешний мир — только источник страниц (page_source.PageSource), Clock, rnd,
 run_folder (запись и печать say) и TilesFile.record_split.
 """
 
@@ -20,7 +20,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from collector import geometry, run_folder, search_page
-from collector.browser import Browser, Ticket
+from collector.browser import Ticket
+from collector.page_source import PageSource
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -459,21 +460,22 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); сеть — только через browser (готовый браузер из
-    cian_collect.build_crawl), часы и сон — через clock, случайность — rnd."""
+    (say); страницы и билет — только у источника страниц source (готовый
+    источник из cian_collect.build_crawl), часы и сон — через clock,
+    случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        browser: Browser,
+        source: PageSource,
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
-        self.browser = browser
+        self.source = source
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -626,7 +628,7 @@ class Crawl:
         пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
         «билет сгорел»)."""
         detail = burned_mark(
-            answer.verdict, answer.detail, self.browser.ticket.has_ticket
+            answer.verdict, answer.detail, self.source.ticket.has_ticket
         )
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
@@ -660,60 +662,32 @@ class Crawl:
     # ── один запрос ───────────────────────────────────────────────
 
     def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
-        """Сам запрос, без решений: ссылка и Referer, браузер (`browser.fetch`),
-        разбор ответа, запись файла страницы, `_broken_*` или `_block_*`.
-        Бюджет, очередь и стоп не трогает."""
-        ring = self.tiles[key].ring
-        # Referer страницы N — ссылка страницы N-1 с тем же джиттером
-        referer = search_page.page_url(ring, page - 1) if page > 1 else None
-        response = self.browser.fetch(search_page.page_url(ring, page), referer)
-        headers = response.headers
-        verdict, detail, total, offers = search_page.classify_page(
-            response.code,
-            response.body,
-            response.neterr,
-            page=page,
-            location=headers.get("location"),
-            waf=headers.get("waf-verdict"),
-        )
-        answer = run_folder.PageAnswer(
-            key=key,
-            page=page,
-            verdict=verdict,
-            detail=detail,
-            code=response.code,
-            total=total,
-            ids=[],  # заполняется после записи файла
-            size=response.size,
-            ms=response.ms,
-            body=response.body,
-            headers=headers,
-        )
-        answer = self._write_answer(answer, offers)
+        """Сам запрос, без решений: страница у источника одним вызовом
+        (`source.get_page`), запись файла страницы, `_broken_*` или `_block_*`,
+        id объявлений. Бюджет, очередь и стоп не трогает."""
+        answer = self.source.get_page(key, self.tiles[key].ring, page)
+        answer = self._write_answer(answer)
         # id считаются после записи: сбой разбора id не отменяет уже
         # записанный файл (тест 21.36)
-        return replace(answer, ids=search_page.offer_ids(offers))
+        return replace(answer, ids=search_page.offer_ids(answer.offers))
 
-    def _write_answer(
-        self, answer: run_folder.PageAnswer, offers: list
-    ) -> run_folder.PageAnswer:
+    def _write_answer(self, answer: run_folder.PageAnswer) -> run_folder.PageAnswer:
         """Файл ответа: страница у OK, _broken_* у API_CHANGED с телом (к детали —
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
+        ua = self.source.ticket.ua
         if answer.verdict == search_page.OK:
-            # HTML каждой страницы [E-22]
+            # тело каждой страницы как есть [E-22]
             self.folder.write_page(
                 answer.key,
                 answer.page,
-                {"totalOffers": answer.total, "offers": offers},
+                {"totalOffers": answer.total, "offers": answer.offers},
                 answer.body,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
-            name = self.folder.write_broken(
-                answer, self.browser.ticket.ua, self._stamp_hms()
-            )
+            name = self.folder.write_broken(answer, ua, self._stamp_hms())
             answer = replace(answer, detail=answer.detail + "|saved:" + name)
         elif answer.verdict == search_page.BLOCK:
-            self.folder.write_block(answer, self.browser.ticket.ua, self._stamp_hms())
+            self.folder.write_block(answer, ua, self._stamp_hms())
         return answer
 
     def _stamp_hms(self) -> str:
@@ -841,8 +815,8 @@ class Crawl:
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.browser.ticket.has_ticket),
-            cookie_age_h=self.browser.ticket.age_h,
+            ticket=int(self.source.ticket.has_ticket),
+            cookie_age_h=self.source.ticket.age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
         )
@@ -869,7 +843,7 @@ class Crawl:
             plan_payload(
                 self.state,
                 self.settings,
-                self.browser.ticket,
+                self.source.ticket,
                 self.started_at,
                 self.tiles,
             ),
@@ -880,7 +854,7 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.browser.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.source.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам

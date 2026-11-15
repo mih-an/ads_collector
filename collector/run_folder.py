@@ -2,9 +2,9 @@
 run_folder.py — папка прогона сборщика ЦИАН: имена, кодировки, порядок записи.
 
 Создаёт папку прогона (RunFolder.create), получает готовые словари и ответ на
-запрос (PageAnswer); пишет папку <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log
-(say — печать обхода в stdout: эхо night.log, итог),
-plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
+запрос (PageAnswer, его создаёт источник страниц); пишет папку
+<runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log (say — печать обхода в stdout: эхо
+night.log, итог), plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
 _broken_* с .note.txt, _block_*.txt, снимок охвата polygons.geojson.gz и
 summary.json (последним). Тексты служебных файлов — чистыми функциями;
 время модуль сам не берёт: метка и штамп приходят аргументом.
@@ -26,11 +26,14 @@ PAGE_KIND = "ssr"
 
 @dataclass(frozen=True)
 class PageAnswer:
-    """Ответ на один запрос выдачи: строка лога, учёт страницы и вход записи
-    _broken_* и _block_*. На входе записи detail — деталь разбора ответа, без
-    хвоста «|saved:<имя файла>» и без пометки «|cookie_expired_or_burned».
-    Хвост ночь добавляет к ответу после записи _broken_* (Crawl._write_answer),
-    пометку — только к итогу при стопе (crawl.burned_mark)."""
+    """Ответ на один запрос выдачи: создаёт источник страниц (page_source),
+    обход пишет по нему файлы, строку лога и учитывает страницу. offers —
+    объявления как отдал ЦИАН; ids у источника пусты — их заполняет обход
+    после записи файла (21.36). На входе записи detail — деталь разбора
+    ответа, без хвоста «|saved:<имя файла>» и без пометки
+    «|cookie_expired_or_burned». Хвост ночь добавляет к ответу после записи
+    _broken_* (Crawl._write_answer), пометку — только к итогу при стопе
+    (crawl.burned_mark)."""
 
     key: str
     page: int
@@ -38,6 +41,7 @@ class PageAnswer:
     detail: str
     code: int
     total: int | None
+    offers: list
     ids: list[int]
     size: int
     ms: float
@@ -137,16 +141,18 @@ class RunFolder:
             json.dump(payload, fh, ensure_ascii=False, indent=1)
         os.replace(tmp, self.plan)
 
-    def write_page(self, key: str, page: int, data: dict, html: str) -> None:
+    def write_page(self, key: str, page: int, data: dict, body: str) -> None:
         """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
         объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
-        ответа целиком (страховка от тихой поломки вырезки). Прогоны до 18.09 —
-        исторический формат (.json, HTML только у p1)."""
+        ответа целиком, как есть (страховка от тихой поломки вырезки). Тело —
+        любой текст, не обязательно HTML (п. 6 задания block/page-source);
+        имя файла — по формату. Прогоны до 18.09 — исторический формат (.json,
+        HTML только у p1)."""
         base = os.path.join(self.raw, f"{key}_p{page}")
         with gzip.open(base + ".json.gz", "wt", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False)
         with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as fh:
-            fh.write(html)
+            fh.write(body)
 
     def write_broken(self, answer: PageAnswer, ua: str, hms: str) -> str:
         """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
