@@ -14,9 +14,7 @@ tests/test_collector_transport.py). Часы и сон подменены, сл�
 --seed, папки и билет — во временной папке теста. Имена берутся из своих
 модулей: search_page (разбор ответа), geometry (клетки), browser
 (браузер), page_source (источник страниц), crawl (обход); через cc —
-только запуск и края. Модуль collector.page_source берётся внутри
-помощника page_source_module: пока его нет, красные только тесты, которые
-его зовут, а не сбор всего файла.
+только запуск и края.
 
 Точки подмены, которые код обязан сохранить:
 - cc.main(transport_factory=...) — разбор sys.argv и весь прогон; фабрика
@@ -88,6 +86,7 @@ from collector import (
     crawl,
     geometry,
     httpx_transport,
+    page_source,
     run_folder,
     search_page,
     transport,
@@ -310,12 +309,6 @@ def fake_ticket():
     return browser.Ticket(cookie_header=FAKE_COOKIE, ua=USER_AGENT, age_h=TICKET_AGE_H)
 
 
-def page_source_module():
-    """Модуль collector.page_source — импортом в момент вызова: пока модуля
-    нет, падают только тесты, которые его зовут, а не сбор файла."""
-    return importlib.import_module("collector.page_source")
-
-
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
     features (TilesFile); источник страниц «по ссылке» UrlPageSource над
@@ -326,7 +319,7 @@ def make_crawl(env, features, **changes):
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
     site = browser.Browser(env.transport, fake_ticket(), env.clock.monotonic)
-    source = page_source_module().UrlPageSource(site)
+    source = page_source.UrlPageSource(site)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
@@ -1781,7 +1774,7 @@ def url_source(fetch_env, page_no: int, replies: list):
     на запросы страницы page_no клетки A по порядку."""
     site = make_browser(fetch_env)
     fetch_env.transport.replies[A, page_no] = list(replies)
-    return page_source_module().UrlPageSource(site)
+    return page_source.UrlPageSource(site)
 
 
 def answer_view(answer) -> tuple:
@@ -1925,7 +1918,7 @@ def test_21_83_two_calls_same_url(fetch_env):
 def test_21_83_ticket_is_browser_ticket(fetch_env):
     """21.83 ticket источника — билет его браузера. Модуль 21."""
     site = make_browser(fetch_env)
-    source = page_source_module().UrlPageSource(site)
+    source = page_source.UrlPageSource(site)
     assert source.ticket is site.ticket
 
 
@@ -4340,15 +4333,13 @@ def test_21_84_page_sources_only_url():
     ключом url → page_source.UrlPageSource; умолчание cc.PAGE_SOURCE — url.
     Модуль 21."""
     sources, default = cc.PAGE_SOURCES, cc.PAGE_SOURCE
-    url_source_class = page_source_module().UrlPageSource
-    assert (sources, default) == ({"url": url_source_class}, "url")
+    assert (sources, default) == ({"url": page_source.UrlPageSource}, "url")
 
 
-def test_21_84_main_takes_source_from_dict(env, monkeypatch):
-    """21.84 main с прежними аргументами берёт источник из словаря в момент
-    вызова: создатель, подставленный на место url, получает браузер с
-    билетом из файлов и транспортом фабрики; обход берёт страницы у
-    созданного источника, транспорт напрямую не зовётся. Модуль 21."""
+def fake_source_maker():
+    """Создатель источника страниц для 21.84: запоминает полученные браузеры
+    (sites) и созданные подделки FakePageSource (sources); у подделки —
+    страница 1 обеих клеток CELLS."""
     sites: list = []
     sources: list = []
 
@@ -4358,6 +4349,15 @@ def test_21_84_main_takes_source_from_dict(env, monkeypatch):
         sources.append(FakePageSource(site.ticket, pages))
         return sources[-1]
 
+    return make_source, sites, sources
+
+
+def test_21_84_main_takes_source_from_dict(env, monkeypatch):
+    """21.84 main с прежними аргументами берёт источник из словаря в момент
+    вызова: создатель, подставленный на место url, получает браузер с
+    билетом из файлов и транспортом фабрики; обход берёт страницы у
+    созданного источника, транспорт напрямую не зовётся. Модуль 21."""
+    make_source, sites, sources = fake_source_maker()
     monkeypatch.setitem(cc.PAGE_SOURCES, "url", make_source)
     run_main(env, monkeypatch, CELLS, {})
     (site,), (source,) = sites, sources
@@ -4368,6 +4368,19 @@ def test_21_84_main_takes_source_from_dict(env, monkeypatch):
         [(key, page_no) for key, page_no, _ in source.asked],
         env.transport.sent,
     ) == (True, FAKE_COOKIE, USER_AGENT, [(B, 1), (A, 1)], [])
+
+
+def test_21_84_page_source_picks_creator(env, monkeypatch):
+    """21.84 main берёт создателя по имени PAGE_SOURCE: в словаре
+    PAGE_SOURCES рядом с url есть второй ключ, PAGE_SOURCE указывает на
+    него — main с прежними аргументами зовёт именно этот создатель, обход
+    берёт страницы у его источника, транспорт напрямую не зовётся. Модуль 21."""
+    make_source, _, sources = fake_source_maker()
+    monkeypatch.setitem(cc.PAGE_SOURCES, "fake", make_source)
+    monkeypatch.setattr(cc, "PAGE_SOURCE", "fake")
+    run_main(env, monkeypatch, CELLS, {})
+    asked = [[(key, page_no) for key, page_no, _ in s.asked] for s in sources]
+    assert (asked, env.transport.sent) == ([[(B, 1), (A, 1)]], [])
 
 
 def test_21_82_ticket_flags_paths(env, monkeypatch):
@@ -4554,7 +4567,7 @@ PACKAGE_NAMES |= {"transport", "browser", "urllib_transport", "httpx_transport"}
 PACKAGE_NAMES |= {"cian_collect", "status", "page_source"}
 # Имена ссылки, разбора и браузера, которых обход не называет: страницу ему
 # отдаёт источник страниц одним вызовом get_page (DECISIONS,
-# block/page-source; критерий «Готово» задания).
+# block/page-source; кейс 21.78).
 CRAWL_FORBIDDEN_NAMES = {"page_url", "classify_page", "Browser", "FetchedPage", "fetch"}
 CLOCK_CLASSES = {"datetime", "date"}
 WALL_CLOCK_ATTRS = {"now", "today", "utcnow"}
@@ -4934,15 +4947,23 @@ page_source_layer_imports = functools.partial(
 
 def forbidden_page_names(source: str) -> list[str]:
     """Имена CRAWL_FORBIDDEN_NAMES в коде (не в строках): голое имя
-    (page_url(ring, 1)) и атрибут (search_page.page_url, self.browser.fetch).
-    Импорт из browser ловит browser_beyond_ticket; импортированное имя,
-    если его зовут, видно здесь как голое имя."""
+    (page_url(ring, 1)), атрибут (search_page.page_url, self.browser.fetch)
+    и импорт имени из любого модуля, в том числе под псевдонимом
+    (from collector.search_page import page_url as link): псевдоним
+    дальше виден как голое имя, которого нет в списке. Импорт модуля
+    browser целиком ловит browser_beyond_ticket."""
     found = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Name) and node.id in CRAWL_FORBIDDEN_NAMES:
             found.append(f"строка {node.lineno}: {node.id}")
         elif isinstance(node, ast.Attribute) and node.attr in CRAWL_FORBIDDEN_NAMES:
             found.append(f"строка {node.lineno}: {ast.unparse(node)}")
+        elif isinstance(node, ast.ImportFrom):
+            found += [
+                f"строка {node.lineno}: импорт {alias.name}"
+                for alias in node.names
+                if alias.name in CRAWL_FORBIDDEN_NAMES
+            ]
     return found
 
 
@@ -5214,13 +5235,14 @@ GUARD_SAMPLES = [
     (crawl_layer_imports, "import collector.urllib_transport as ut"),
     (crawl_layer_imports, "from collector.httpx_transport import HttpxTransport as H"),
     # crawl строит ссылку, разбирает ответ или ходит в браузер сам: каждая
-    # ветка forbidden_page_names (голое имя, атрибут) и browser_beyond_ticket
-    # (import, from collector import, from collector.browser import) — своим
-    # образцом, который ловит только она
+    # ветка forbidden_page_names (голое имя, атрибут, импорт имени под
+    # псевдонимом) и browser_beyond_ticket (import, from collector import,
+    # from collector.browser import) — своим образцом, который ловит только она
     (forbidden_page_names, "url = page_url(ring, 1)"),
     (forbidden_page_names, "url = search_page.page_url(ring, 1)"),
     (forbidden_page_names, "verdict = search_page.classify_page(200, body)"),
     (forbidden_page_names, "fetched = self.browser.fetch(url)"),
+    (forbidden_page_names, "from collector.search_page import page_url as link"),
     (browser_beyond_ticket, "import collector.browser"),
     (browser_beyond_ticket, "from collector import browser"),
     (browser_beyond_ticket, "from collector.browser import browser_headers"),
@@ -5340,6 +5362,7 @@ url = page_url(ring, 1)
 url = search_page.page_url(ring, 1)
 verdict = search_page.classify_page(200, body)
 fetched = self.browser.fetch(url)
+from collector.search_page import page_url as link
 """
 BROWSER_IMPORTS_ONLY_SAMPLE = """
 import collector.browser
