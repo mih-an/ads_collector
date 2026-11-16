@@ -3435,6 +3435,16 @@ def test_21_52_start_line_without_ticket(env, monkeypatch):
     assert (start["ticket"], start["cookie_age_h"]) == ("0", "")
 
 
+def test_21_52_start_line_zero_age(env, monkeypatch):
+    """21.52 Билет с возрастом 0 ч (куки только что): строка start —
+    ticket=1, cookie_age_h=0.0, не пусто — пустое значение только у
+    отсутствующего возраста. Модуль 21."""
+    write_ticket(env.folder, EPOCH, 0.0)
+    run_dir = run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(1, 3, 3)]})
+    start = log_records(run_dir)[0]
+    assert (start["ticket"], start["cookie_age_h"]) == ("1", "0.0")
+
+
 def test_21_53_duplicate_ids(env, monkeypatch):
     """21.53 Дубли id между страницами клетки считаются: unique_ids,
     duplicate_ids, итог по ночи, stateless-пагинация false. Модуль 21."""
@@ -4106,8 +4116,17 @@ def opened_loader_crawl(env, pages: dict, **changes):
         ("page_end", None, ("end", "")),
         ("failed", "block", ("stop", "block")),
         ("failed", "net_error", ("stop", "net_error")),
+        ("failed", "smoke_failed", ("stop", "smoke_failed")),
+        ("failed", "api_changed", ("stop", "api_changed")),
     ],
-    ids=["done", "page_end", "failed block", "failed net_error"],
+    ids=[
+        "done",
+        "page_end",
+        "failed block",
+        "failed net_error",
+        "failed smoke_failed",
+        "failed api_changed",
+    ],
 )
 def test_21_91_page_outcome_rule(task_state, stopped, expected):
     """21.91 Правило итога страницы page_outcome(состояние задачи, stopped):
@@ -4165,6 +4184,13 @@ def test_21_91_download_page_stop_block(env):
     assert run.download_page(B, 2) == crawl.PageOutcome("stop", "block")
 
 
+def test_21_91_download_page_stop_on_smoke(env):
+    """21.91 BLOCK на странице 1 первой клетки (проба) — download_page отдаёт
+    стоп с причиной smoke_failed (21.50). Внутреннее. Модуль 21."""
+    run, _ = opened_loader_crawl(env, {(B, 1): [loader_answer(B, 1, **LOADER_BLOCK)]})
+    assert run.download_page(B, 1) == crawl.PageOutcome("stop", "smoke_failed")
+
+
 def test_21_91_download_page_stop_budget(env):
     """21.91 Бюджет исчерпан (бюджет 1, страница 1 уже скачана):
     download_page страницы 2 отдаёт стоп с причиной budget_exhausted, и
@@ -4189,24 +4215,65 @@ def test_21_91_download_page_stop_after_retries(env):
     assert (outcome, asked_b2) == (crawl.PageOutcome("stop", "net_error"), [2, 2, 2, 2])
 
 
+def tile_pages(case: str) -> dict:
+    """Ответы клетки B для download_tile_last_outcome: страница 1 полная
+    (28 из 60), страница 2 — PAGE_END, BLOCK или короткая OK; у «деления» —
+    одна страница 1 с totalOffers 401 (порог деления — больше 400, 21.40)."""
+    if case == "split":
+        offers = [offer(1000 + i) for i in range(28)]
+        return {(B, 1): [loader_answer(B, 1, total=401, offers=offers)]}
+    second = {
+        "page_end": loader_answer(B, 2, **LOADER_PAGE_END),
+        "block": loader_answer(B, 2, **LOADER_BLOCK),
+        "short": loader_answer(B, 2, total=60),
+    }[case]
+    return {(B, 1): [full_first_page()], (B, 2): [second]}
+
+
 @pytest.mark.parametrize(
-    ("second_page", "expected"),
+    ("case", "expected"),
     [
-        (LOADER_PAGE_END, ("end", "")),
-        (LOADER_BLOCK, ("stop", "block")),
+        ("page_end", ("end", "")),
+        ("block", ("stop", "block")),
+        ("short", ("read", "")),
+        ("split", ("read", "")),
     ],
-    ids=["PAGE_END на стр. 2", "BLOCK на стр. 2"],
+    ids=[
+        "PAGE_END на стр. 2",
+        "BLOCK на стр. 2",
+        "короткая стр. 2",
+        "деление на стр. 1",
+    ],
 )
-def test_21_91_download_tile_last_outcome(env, second_page, expected):
+def test_21_91_download_tile_last_outcome(env, case, expected):
     """21.91 download_tile отдаёт итог последней скачанной страницы клетки:
     страница 1 прочитана, страница 2 — PAGE_END → конец клетки, BLOCK →
-    стоп с причиной block. Внутреннее. Модуль 21."""
-    pages = {
-        (B, 1): [full_first_page()],
-        (B, 2): [loader_answer(B, 2, **second_page)],
-    }
-    run, _ = opened_loader_crawl(env, pages)
+    стоп с причиной block, короткая OK → прочитана; деление на странице 1
+    (клетка дальше не листается) → прочитана. Внутреннее. Модуль 21."""
+    run, _ = opened_loader_crawl(env, tile_pages(case))
     assert run.download_tile(B) == crawl.PageOutcome(*expected)
+
+
+def test_21_91_download_tile_stops_by_outcome(env, monkeypatch):
+    """21.91 download_tile выходит из листания по итогу страницы, а не по
+    общей state.stopped: подменённый download_page честно скачивает
+    страницу 1 (28 из 60, прогон не остановлен) и отдаёт стоп —
+    download_tile отдаёт этот итог, страница 2 не запрошена, паузы
+    листания нет. Внутреннее. Модуль 21."""
+    pages = {(B, 1): [full_first_page()], (B, 2): [loader_answer(B, 2, total=60)]}
+    run, loader, slept = loader_crawl(env, pages)
+    run.open_run()
+    real_download_page = run.download_page
+    stop = crawl.PageOutcome("stop", "block")
+
+    def download_then_stop(key: str, page_no: int):
+        real_download_page(key, page_no)
+        return stop
+
+    monkeypatch.setattr(run, "download_page", download_then_stop)
+    outcome = run.download_tile(B)
+    asked = [(key, page_no) for key, page_no, _ in loader.asked]
+    assert (outcome, asked, slept) == (stop, [(B, 1)], [])
 
 
 def test_21_91_collect_stops_by_outcome(env, monkeypatch):
@@ -4571,13 +4638,15 @@ def test_21_84_page_loaders_dict():
 
 @pytest.mark.parametrize(
     ("flag", "expected"),
-    [([], "url"), (["--page-loader", "url"], "url")],
-    ids=["без флага", "--page-loader url"],
+    [([], "url"), (["--page-loader", "fake"], "fake")],
+    ids=["без флага", "--page-loader fake"],
 )
-def test_21_84_settings_page_loader(flag, expected):
-    """21.84 read_settings: Settings.page_loader — как флаг --page-loader;
-    без флага — url: запуск с прежними аргументами — прежний загрузчик.
-    Модуль 21."""
+def test_21_84_settings_page_loader(monkeypatch, flag, expected):
+    """21.84 read_settings: Settings.page_loader — как флаг --page-loader
+    (fake — имя, добавленное в словарь PAGE_LOADERS: значение флага не
+    совпадает с умолчанием); без флага — url: запуск с прежними
+    аргументами — прежний загрузчик. Модуль 21."""
+    monkeypatch.setitem(cc.PAGE_LOADERS, "fake", cc.make_url_loader)
     settings = cc.read_settings(["--geojson", "x.geojson", "--seed", "1", *flag])
     assert settings.page_loader == expected
 
@@ -4632,6 +4701,7 @@ def test_21_84_flag_takes_maker_from_dict(env, monkeypatch):
         type(site) is http_browser.HttpBrowser,
         site.transport is env.transport,
         site.ticket.cookie_header,
+        site.ticket.ua,
         settings.page_loader,
         state == random.Random(1).getstate(),
         type(clock) is crawl.Clock,
@@ -4642,6 +4712,7 @@ def test_21_84_flag_takes_maker_from_dict(env, monkeypatch):
         True,
         True,
         FAKE_COOKIE,
+        USER_AGENT,
         "fake",
         True,
         True,
