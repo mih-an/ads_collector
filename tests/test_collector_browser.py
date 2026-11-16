@@ -22,7 +22,10 @@ from collector_support import (
     no_network,  # noqa: F401 — автофикстура
 )
 
-from collector import browser, http_browser, search_page, transport
+from collector import http_browser, search_page, transport
+
+# Имена, а не модуль browser: у стенда есть метод browser, он затенял бы модуль.
+from collector.browser import Browser, FetchedPage, Ticket
 
 # Клетка, которую узнаёт нижний мир HttpStand, и её кольцо.
 KEY = "T0101"
@@ -78,9 +81,9 @@ class HttpStand:
     def browser(
         self,
         answers: list[SiteAnswer],
-        ticket: browser.Ticket,
+        ticket: Ticket,
         monotonic: Callable[[], float],
-    ) -> browser.Browser:
+    ) -> Browser:
         self.transport.replies[KEY, 1] = [reply_of(answer) for answer in answers]
         return http_browser.HttpBrowser(self.transport, ticket, monotonic)
 
@@ -97,15 +100,15 @@ def stand(request, tmp_path):
     return STANDS[request.param](tmp_path)
 
 
-def ticket_of(cookie_header: str | None = "a=b") -> browser.Ticket:
+def ticket_of(cookie_header: str | None = "a=b") -> Ticket:
     """Билет теста: кука cookie_header, UA ночей, возраст 5,7 ч."""
-    return browser.Ticket(cookie_header=cookie_header, ua=USER_AGENT, age_h=5.7)
+    return Ticket(cookie_header=cookie_header, ua=USER_AGENT, age_h=5.7)
 
 
-def fetch_one(stand, answers: list[SiteAnswer]) -> browser.FetchedPage:
+def fetch_one(stand, answers: list[SiteAnswer]) -> FetchedPage:
     """Один fetch по ссылке стенда; сайт отвечает answers по порядку."""
-    site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
-    return site.fetch(stand.url)
+    opened = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
+    return opened.fetch(stand.url)
 
 
 def test_21_86_answer_fields(stand):
@@ -145,10 +148,10 @@ def test_21_86_redirect_first_answer(stand, status):
     (location); следующий fetch получает следующий ответ сайта. Тело 3xx в
     общий контракт не входит (допущение о данных). Модуль 21."""
     answers = [SiteAnswer(status, "", {"Location": OTHER_URL}), SiteAnswer(200, "2")]
-    site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
-    first = site.fetch(stand.url)
+    opened = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
+    first = opened.fetch(stand.url)
     visits_after_first = len(stand.visits)
-    second = site.fetch(stand.url)
+    second = opened.fetch(stand.url)
     assert (
         visits_after_first,
         first.code,
@@ -161,10 +164,10 @@ def test_21_86_referer_not_followed(stand):
     """21.86 fetch(url, referer) — ответ как обычно, переход по ссылке url,
     а не по Referer: UrlPageSource всегда зовёт fetch(url, referer).
     Модуль 21."""
-    site = stand.browser(
+    opened = stand.browser(
         [SiteAnswer(200, "страница")], ticket_of(), FakeTime(EPOCH).monotonic
     )
-    fetched = site.fetch(stand.url, OTHER_URL)
+    fetched = opened.fetch(stand.url, OTHER_URL)
     assert (fetched.code, fetched.body, stand.visits) == (
         200,
         "страница",
@@ -209,9 +212,9 @@ def test_21_86_fetch_after_failure(stand):
     """21.86 Следующий fetch после сбоя сети работает: ответ сайта, второй
     переход по той же ссылке. Модуль 21."""
     answers = [SiteAnswer(failure=True), SiteAnswer(200, "страница")]
-    site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
-    site.fetch(stand.url)
-    second = site.fetch(stand.url)
+    opened = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
+    opened.fetch(stand.url)
+    second = opened.fetch(stand.url)
     assert (second.code, second.body, stand.visits) == (
         200,
         "страница",
@@ -223,11 +226,11 @@ def test_21_86_fetch_after_failure(stand):
 def test_21_86_other_exception_propagates(stand, error):
     """21.86 Исключение нижнего мира, которое не сбой сети (ValueError,
     KeyboardInterrupt), летит из fetch, а не глотается. Модуль 21."""
-    site = stand.browser(
+    opened = stand.browser(
         [SiteAnswer(crash=error("21.86"))], ticket_of(), FakeTime(EPOCH).monotonic
     )
     with pytest.raises(error):
-        site.fetch(stand.url)
+        opened.fetch(stand.url)
 
 
 def test_21_86_ms_by_monotonic(stand):
@@ -253,9 +256,9 @@ def test_21_86_monotonic_twice_per_fetch(stand, answer):
 def test_21_86_ticket_is_given(stand):
     """21.86 ticket браузера — переданный билет: cookie_header, ua, age_h
     без изменений. Модуль 21."""
-    given = browser.Ticket(cookie_header="sid=21.86", ua="Agent/21.86", age_h=3.5)
-    site = stand.browser([], given, FakeTime(EPOCH).monotonic)
-    ticket = site.ticket
+    given = Ticket(cookie_header="sid=21.86", ua="Agent/21.86", age_h=3.5)
+    opened = stand.browser([], given, FakeTime(EPOCH).monotonic)
+    ticket = opened.ticket
     assert (ticket.cookie_header, ticket.ua, ticket.age_h) == (
         "sid=21.86",
         "Agent/21.86",

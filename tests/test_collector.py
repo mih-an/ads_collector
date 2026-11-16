@@ -25,10 +25,15 @@ page_source (источник страниц), crawl (обход); через cc
 - http_browser.HttpBrowser(transport, ticket, monotonic) и
   http_browser.decode_body(raw, content_encoding) — HttpBrowser зовёт её по
   имени модуля в момент вызова: её подменяют 21.27 и 21.29;
+- browser.Ticket(cookie_header, ua, age_h) и browser.FetchedPage(code,
+  body, size, ms, neterr, headers) — билет и ответ браузера: тесты
+  собирают их сами (ожидаемый билет, браузер тестовой сборки 21.87);
 - cc.BROWSERS — словарь «имя → сборка браузера(settings, rnd, фабрика
   транспорта)» и умолчание cc.BROWSER; словарь читают build_parser
   (choices флага --browser) и enter_cian в момент вызова: 21.87 добавляет
   в него свою сборку;
+- cc.make_http_browser(settings, rnd, фабрика транспорта) → HttpBrowser
+  с атрибутами ticket и transport — сборка браузера http (21.87);
 - cc.time (time, sleep, monotonic — make_http_browser передаёт его в
   HttpBrowser) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
@@ -4341,20 +4346,22 @@ def fake_source_maker():
 
 def test_21_84_main_takes_source_from_dict(env, monkeypatch):
     """21.84 main с прежними аргументами берёт источник из словаря в момент
-    вызова: создатель, подставленный на место url, получает браузер с
-    билетом из файлов и транспортом фабрики; обход берёт страницы у
-    созданного источника, транспорт напрямую не зовётся. Модуль 21."""
+    вызова: создатель, подставленный на место url, получает браузер
+    HttpBrowser с билетом из файлов и транспортом фабрики; обход берёт
+    страницы у созданного источника, транспорт напрямую не зовётся.
+    Модуль 21."""
     make_source, sites, sources = fake_source_maker()
     monkeypatch.setitem(cc.PAGE_SOURCES, "url", make_source)
     run_main(env, monkeypatch, CELLS, {})
     (site,), (source,) = sites, sources
     assert (
+        type(site) is http_browser.HttpBrowser,
         site.transport is env.transport,
         site.ticket.cookie_header,
         site.ticket.ua,
         [(key, page_no) for key, page_no, _ in source.asked],
         env.transport.sent,
-    ) == (True, FAKE_COOKIE, USER_AGENT, [(B, 1), (A, 1)], [])
+    ) == (True, True, FAKE_COOKIE, USER_AGENT, [(B, 1), (A, 1)], [])
 
 
 def test_21_84_page_source_picks_creator(env, monkeypatch):
@@ -4431,8 +4438,9 @@ class FakeBrowser:
 def test_21_87_flag_takes_maker_from_dict(env, monkeypatch):
     """21.87 --browser fake берёт сборку из словаря BROWSERS в момент вызова:
     сборка, добавленная под именем fake, зовётся один раз с (Settings с
-    browser == "fake", rnd обхода, фабрика транспорта из main): при --seed 1
-    без паузы старта rnd в момент вызова — в состоянии random.Random(1);
+    browser == "fake", rnd в состоянии Random(seed) в момент сборки, фабрика
+    транспорта из main): при --seed 1 без паузы старта состояние rnd в
+    момент вызова равно random.Random(1).getstate();
     общий вход фабрику транспорта не зовёт и файлы билета не читает — в
     plan.json user_agent — UA билета этой сборки, ticket — false. Модуль 21."""
     calls: list = []
@@ -4490,6 +4498,16 @@ def test_21_87_make_http_browser(env):
         250.0,
         2,
     )
+
+
+def test_21_87_make_http_browser_ua_from_rnd(env):
+    """21.87 make_http_browser без ua.txt: UA билета — выбор из списка
+    сборщика (USER_AGENTS) переданным rnd; при rnd = random.Random(1) он
+    равен random.Random(1).choice(cc.USER_AGENTS). Модуль 21."""
+    (env.folder / "ua.txt").unlink()
+    settings = settings_of(env.folder)
+    made = cc.make_http_browser(settings, random.Random(1), env.transport.factory)
+    assert made.ticket.ua == random.Random(1).choice(cc.USER_AGENTS)
 
 
 def test_21_82_ticket_flags_paths(env, monkeypatch):

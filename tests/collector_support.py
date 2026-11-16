@@ -256,11 +256,12 @@ def next_reply(
 
 class FakeTransport:
     """Фальшивый транспорт сценариев обхода: ответы по (клетка, страница)
-    вместо сети, без urllib.
+    вместо сети, без urllib. Он же нижний мир стенда HttpStand контракта
+    браузера (21.86) и бросает любое Reply.error.
 
     get(url, headers) записывает запрос в sent и отдаёт HttpReply (имена
     заголовков — в нижнем регистре, тело как есть) или бросает Reply.error
-    (NetworkFailure, KeyboardInterrupt). factory — фабрика для
+    (NetworkFailure, KeyboardInterrupt, любое другое исключение). factory — фабрика для
     cc.main(transport_factory=...): записывает в made, с чем её позвали
     (имя транспорта, строка Cookie), и отдаёт этот же транспорт.
     """
