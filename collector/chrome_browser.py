@@ -157,7 +157,8 @@ def try_connect(
     есть неудача connect_over_cdp, отдельной проверки порта нет; причину
     отдаём, чтобы она попала в ChromeConnectError (ревью PR #8, кейс 21.89)."""
     try:
-        return playwright.chromium.connect_over_cdp(endpoint), ""
+        # без умолчаний Playwright — контекст как у человека (решение Андрея 16.11)
+        return playwright.chromium.connect_over_cdp(endpoint, no_defaults=True), ""
     except error as failure:
         return None, one_line(failure)
 
