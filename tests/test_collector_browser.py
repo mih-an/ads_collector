@@ -270,7 +270,7 @@ def test_21_86_redirect_first_answer(stand, status):
 
 def test_21_86_referer_not_followed(stand):
     """21.86 fetch(url, referer) — ответ как обычно, переход по ссылке url,
-    а не по Referer: UrlPageSource всегда зовёт fetch(url, referer).
+    а не по Referer: UrlPageLoader всегда зовёт fetch(url, referer).
     Модуль 21."""
     made = stand.browser(
         [SiteAnswer(200, "страница")], ticket_of(), FakeTime(EPOCH).monotonic

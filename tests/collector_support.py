@@ -12,7 +12,7 @@ subprocess), подставные часы (FakeTime, frozen_datetime), биле
 временной папке, ответ ЦИАН Reply, фальшивый транспорт FakeTransport
 (сценарии обхода test_collector.py и стенд HttpBrowser в контракте
 браузера test_collector_browser.py). И подмены сети одного файла,
-собранные рядом с общими: подделка источника страниц FakePageSource —
+собранные рядом с общими: подделка загрузчика страницы FakePageLoader —
 только сценарии обхода test_collector.py; проигрыватель ответов ЦИАН
 CianPlayer с фабрикой player_transport — только эталонные ночи
 test_collector_nights.py (на настоящем UrllibTransport). Кода сборщика не
@@ -315,15 +315,15 @@ class FakeTransport:
         return HttpReply(status=reply.status, headers=lowered, body=reply.body)
 
 
-class FakePageSource:
-    """Подделка источника страниц (page_source.PageSource) для обхода над
-    любым источником (21.85): готовые ответы run_folder.PageAnswer по
+class FakePageLoader:
+    """Подделка загрузчика страницы (page_loader.PageLoader) для обхода над
+    любым загрузчиком (21.85): готовые ответы run_folder.PageAnswer по
     (ключ клетки, страница) вместо ссылок, браузера и разбора.
 
-    get_page(key, ring, page) записывает вызов в asked — (ключ, страница,
+    load_page(key, ring, page) записывает вызов в asked — (ключ, страница,
     кольцо) по порядку — и отдаёт первый ответ из очереди (key, page);
     очередь пуста — AssertionError с ключом и страницей. ticket — билет,
-    который обход читает у источника (source.ticket).
+    который обход читает у загрузчика (loader.ticket).
     """
 
     def __init__(
@@ -333,11 +333,11 @@ class FakePageSource:
         self.pages = pages
         self.asked: list[tuple[str, int, list]] = []
 
-    def get_page(self, key: str, ring: list, page: int) -> "PageAnswer":
+    def load_page(self, key: str, ring: list, page: int) -> "PageAnswer":
         self.asked.append((key, page, ring))
         queue = self.pages.get((key, page))
         if not queue:
-            raise AssertionError(f"у подделки источника нет ответа на {key} p{page}")
+            raise AssertionError(f"у подделки загрузчика нет ответа на {key} p{page}")
         return queue.pop(0)
 
 

@@ -1,25 +1,26 @@
 """Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61,
-21.78, 21.81–21.85, 21.87, 21.90.
+21.78, 21.81–21.85, 21.87, 21.90, 21.91.
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
 геометрия и ссылка на выдачу, браузер над транспортом HttpBrowser
 (заголовки, распаковка; общий контракт браузера — 21.86,
-tests/test_collector_browser.py) и источник страниц «по ссылке»
-(UrlPageSource), сценарии прогона, main и выбор браузера (21.87), сборка
+tests/test_collector_browser.py) и загрузчик страницы «по ссылке»
+(UrlPageLoader), сценарии прогона, итог страницы для обхода (21.91), main
+и выбор браузера (21.87) и загрузчика страницы (21.84), сборка
 браузера chrome (21.90: флаги --chrome-*, билет из вкладки, main --browser
 chrome — на подделке вкладки FakeChromePage, без Chrome и playwright; сам
 ChromeBrowser — tests/test_collector_chrome_browser.py); в конце — страж
 21.78 (кто что импортирует, модули правил без внешнего мира). Сети
 нет: main получает фабрику фальшивого транспорта FakeTransport
 (tests/collector_support.py), обход — тот же транспорт через HttpBrowser и
-UrlPageSource или подделку источника страниц FakePageSource (21.85);
+UrlPageLoader или подделку загрузчика страницы FakePageLoader (21.85);
 urllib и подмены сети здесь не нужны (сами транспорты —
 tests/test_collector_transport.py). Часы и сон подменены, случайность —
 --seed, папки и билет — во временной папке теста. Имена берутся из своих
 модулей: search_page (разбор ответа), geometry (клетки), browser (билет
 Ticket и ответ FetchedPage), http_browser (браузер над транспортом),
-page_source (источник страниц), crawl (обход); через cc — только запуск и
+page_loader (загрузчик страницы), crawl (обход); через cc — только запуск и
 края.
 
 Точки подмены, которые код обязан сохранить:
@@ -53,15 +54,19 @@ page_source (источник страниц), crawl (обход); через cc
   HttpBrowser) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
-- crawl.Crawl(settings, tiles_file, source, Clock(now, sleep), rnd), где
-  source — источник страниц: page_source.UrlPageSource(browser) или
-  подделка — так обход собирается без main (make_crawl, source_crawl);
+- crawl.Crawl(settings, tiles_file, loader, Clock(now, sleep), rnd), где
+  loader — загрузчик страницы: page_loader.UrlPageLoader(browser) или
+  подделка — так обход собирается без main (make_crawl, loader_crawl);
   паузы старта и входа на ЦИАН при этом нет: их делает build_crawl;
-- page_source.UrlPageSource(browser) с атрибутом ticket и методом
-  get_page(ключ клетки, кольцо, страница) → run_folder.PageAnswer;
-- cc.PAGE_SOURCES — словарь «имя → создатель источника страниц» и
-  умолчание cc.PAGE_SOURCE; словарь и умолчание читаются в момент
-  вызова: 21.84 подставляет свой создатель и своё имя;
+  Crawl.download_page(ключ, страница) и Crawl.download_tile(ключ) отдают
+  crawl.PageOutcome (21.91), их подменяет 21.91;
+- page_loader.UrlPageLoader(browser) с атрибутом ticket и методом
+  load_page(ключ клетки, кольцо, страница) → run_folder.PageAnswer;
+- cc.PAGE_LOADERS — словарь «имя → создатель загрузчика страницы»
+  (браузер, Settings, rnd, часы Clock) и умолчание cc.PAGE_LOADER; флаг
+  --page-loader (Settings.page_loader); словарь читается в момент вызова:
+  21.84 подставляет свой создатель и своё имя; cc.make_url_loader —
+  создатель загрузчика «по ссылке»;
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -99,7 +104,7 @@ from collector_support import (  # noqa: F401 — no_network, no_chrome: авт�
     FAKE_COOKIE,
     PROXY_ENV,
     USER_AGENT,
-    FakePageSource,
+    FakePageLoader,
     FakeTime,
     FakeTransport,
     Reply,
@@ -125,7 +130,7 @@ from collector import (
     geometry,
     http_browser,
     httpx_transport,
-    page_source,
+    page_loader,
     run_folder,
     search_page,
     transport,
@@ -312,9 +317,10 @@ def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=F
 def settings_of(folder: Path, **changes):
     """Settings ночи сценария: файл клеток и runs/ в папке теста, бюджет 50,
     окно 1 ч, без пробы-only и паузы старта, seed 1, транспорт urllib,
-    билет — cookies.txt и ua.txt, браузер http, Chrome — порт 9333 (не
-    умолчание 9222: видно, что порт взят из Settings), путь /opt/chrome,
-    профиль /tmp/chrome-profile; changes перекрывают."""
+    билет — cookies.txt и ua.txt, браузер http, загрузчик страницы url,
+    Chrome — порт 9333 (не умолчание 9222: видно, что порт взят из
+    Settings), путь /opt/chrome, профиль /tmp/chrome-profile; changes
+    перекрывают."""
     settings = crawl.Settings(
         budget=50,
         window_hours=1.0,
@@ -330,6 +336,7 @@ def settings_of(folder: Path, **changes):
         chrome_path="/opt/chrome",
         chrome_profile="/tmp/chrome-profile",
         browser="http",
+        page_loader="url",
     )
     return replace(settings, **changes)
 
@@ -356,7 +363,7 @@ def fake_ticket():
 
 def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
-    features (TilesFile); источник страниц «по ссылке» UrlPageSource над
+    features (TilesFile); загрузчик страницы «по ссылке» UrlPageLoader над
     готовым браузером HttpBrowser с билетом как в env и фальшивым
     транспортом env; часы и сон — FakeTime env, случайность — Random(1);
     changes — поля Settings."""
@@ -364,12 +371,12 @@ def make_crawl(env, features, **changes):
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
     site = http_browser.HttpBrowser(env.transport, fake_ticket(), env.clock.monotonic)
-    source = page_source.UrlPageSource(site)
+    loader = page_loader.UrlPageLoader(site)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
         tiles_file,
-        source,
+        loader,
         clock,
         random.Random(1),
     )
@@ -1787,20 +1794,20 @@ def test_21_30_monotonic_twice_on_broken_compression(fetch_env):
     assert fetch_env.clock.monotonic_calls == 2
 
 
-# Источник страниц «по ссылке» (21.83): ссылка, Referer, браузер и разбор
+# Загрузчик страницы «по ссылке» (21.83): ссылка, Referer, браузер и разбор
 # ответа — внутри него; обходу он отдаёт run_folder.PageAnswer.
 
 
-def url_source(fetch_env, page_no: int, replies: list):
-    """UrlPageSource над браузером make_browser (с билетом); replies — ответы
+def url_loader(fetch_env, page_no: int, replies: list):
+    """UrlPageLoader над браузером make_browser (с билетом); replies — ответы
     на запросы страницы page_no клетки A по порядку."""
     site = make_browser(fetch_env)
     fetch_env.transport.replies[A, page_no] = list(replies)
-    return page_source.UrlPageSource(site)
+    return page_loader.UrlPageLoader(site)
 
 
 def answer_view(answer) -> tuple:
-    """Поля PageAnswer, которые источник обязан заполнить по ответу:
+    """Поля PageAnswer, которые загрузчик обязан заполнить по ответу:
     клетка, страница, код, класс, деталь, totalOffers, объявления, id,
     тело."""
     return (
@@ -1877,7 +1884,7 @@ OTHER_URL = "https://www.cian.ru/other/"
     ],
 )
 def test_21_83_answer_by_reply(fetch_env, page_no, reply, expected):
-    """21.83 Источник «по ссылке» отдаёт PageAnswer с ключом клетки и
+    """21.83 Загрузчик «по ссылке» отдаёт PageAnswer с ключом клетки и
     номером страницы, как переданы, и ids == [] (id считает обход после
     записи файла, 21.36). По ответу: страница выдачи → 200, OK, «-»,
     totalOffers, объявления как в странице, тело текстом; 403 → BLOCK
@@ -1886,20 +1893,20 @@ def test_21_83_answer_by_reply(fetch_env, page_no, reply, expected):
     API_CHANGED no_initial_state, тело целиком; сбой сети → код 0,
     NET_ERROR, деталь — текст сбоя, тело пусто; 302 с waf-verdict challenge
     → BLOCK captcha_redirect. Модуль 21."""
-    source = url_source(fetch_env, page_no, [reply])
-    answer = source.get_page(A, rect_ring(A), page_no)
+    loader = url_loader(fetch_env, page_no, [reply])
+    answer = loader.load_page(A, rect_ring(A), page_no)
     assert answer_view(answer) == expected
 
 
 def test_21_83_size_ms_headers(fetch_env):
-    """21.83 Размер, длительность и заголовки ответа источник берёт у
+    """21.83 Размер, длительность и заголовки ответа загрузчик берёт у
     браузера: 403 «запрет» — 12 байт с провода, 250 мс по часам браузера,
     заголовки ответа как отдал транспорт (имена в нижнем регистре).
     Модуль 21."""
-    source = url_source(
+    loader = url_loader(
         fetch_env, 1, [Reply(403, "запрет".encode(), {"Server": "nginx"})]
     )
-    answer = source.get_page(A, rect_ring(A), 1)
+    answer = loader.load_page(A, rect_ring(A), 1)
     assert (answer.size, answer.ms, answer.headers) == (12, 250.0, {"server": "nginx"})
 
 
@@ -1915,8 +1922,8 @@ def test_21_83_url_and_referer(fetch_env, page_no, referer):
     """21.83 Запрос страницы N уходит по page_url(ring, N); Referer
     страницы 1 с билетом — заход «с главной» (https://www.cian.ru/), у
     страницы 3 — page_url(ring, 2) того же кольца. Модуль 21."""
-    source = url_source(fetch_env, page_no, [page(1, 1, 60)])
-    source.get_page(A, rect_ring(A), page_no)
+    loader = url_loader(fetch_env, page_no, [page(1, 1, 60)])
+    loader.load_page(A, rect_ring(A), page_no)
     sent = fetch_env.transport.sent[0]
     assert (sent.url, lower_keys(sent.headers)["referer"]) == (
         search_page.page_url(rect_ring(A), page_no),
@@ -1925,23 +1932,23 @@ def test_21_83_url_and_referer(fetch_env, page_no, referer):
 
 
 def test_21_83_two_calls_same_url(fetch_env):
-    """21.83 Один get_page — один вызов транспорта, повторов внутри нет;
-    второй get_page той же страницы после сбоя сети — второй вызов
+    """21.83 Один load_page — один вызов транспорта, повторов внутри нет;
+    второй load_page той же страницы после сбоя сети — второй вызов
     транспорта по той же ссылке (решение Андрея 15.11). Модуль 21."""
     failure = Reply(error=transport.NetworkFailure("timeout"))
-    source = url_source(fetch_env, 1, [failure, page(1, 1, 1)])
-    source.get_page(A, rect_ring(A), 1)
+    loader = url_loader(fetch_env, 1, [failure, page(1, 1, 1)])
+    loader.load_page(A, rect_ring(A), 1)
     after_first = len(fetch_env.transport.sent)
-    source.get_page(A, rect_ring(A), 1)
+    loader.load_page(A, rect_ring(A), 1)
     url = search_page.page_url(rect_ring(A), 1)
     assert (after_first, [s.url for s in fetch_env.transport.sent]) == (1, [url, url])
 
 
 def test_21_83_ticket_is_browser_ticket(fetch_env):
-    """21.83 ticket источника — билет его браузера. Модуль 21."""
+    """21.83 ticket загрузчика — билет его браузера. Модуль 21."""
     site = make_browser(fetch_env)
-    source = page_source.UrlPageSource(site)
-    assert source.ticket is site.ticket
+    loader = page_loader.UrlPageLoader(site)
+    assert loader.ticket is site.ticket
 
 
 # ═══════════════════════════ Г. Сценарии прогона ═══════════════════════════
@@ -3419,12 +3426,13 @@ def test_21_52_no_cookie_without_ticket(env, monkeypatch):
 
 
 def test_21_52_start_line_without_ticket(env, monkeypatch):
-    """21.52 Строка start в night.log: ticket=0, cookie_age_h=None без
-    билета. Модуль 21."""
+    """21.52 Строка start в night.log: ticket=0, cookie_age_h= с пустым
+    значением (не «None») без билета (решение Андрея 10, block/click-pages;
+    CIAN_DATA_FORMAT.md, раздел 5). Модуль 21."""
     (env.folder / "cookies.txt").unlink()
     run_dir = run_main(env, monkeypatch, CELLS, short_a() | {(B, 1): [page(1, 3, 3)]})
     start = log_records(run_dir)[0]
-    assert (start["ticket"], start["cookie_age_h"]) == ("0", "None")
+    assert (start["ticket"], start["cookie_age_h"]) == ("0", "")
 
 
 def test_21_53_duplicate_ids(env, monkeypatch):
@@ -3862,31 +3870,31 @@ def test_21_57_smoke_only_empty_cell(env, monkeypatch):
     )
 
 
-# Обход над любым источником страниц (21.85): подделка FakePageSource без
+# Обход над любым загрузчиком страницы (21.85): подделка FakePageLoader без
 # ссылок и браузера, тело страницы — текст JSON, а не HTML.
 
 # Длительность и размер в ответах подделки — выдуманные и не совпадают ни с
 # часами теста (250 мс), ни с длиной тела: строка night.log обязана взять их
-# из ответа источника. Дробная часть 0,6: в night.log ms= — целая часть
+# из ответа загрузчика. Дробная часть 0,6: в night.log ms= — целая часть
 # (int), не округление.
-SOURCE_MS = 1234.6
-SOURCE_SIZE = 777
+LOADER_MS = 1234.6
+LOADER_SIZE = 777
 # Билет подделки — не тот, что в папке env: обход обязан взять его у
-# источника.
-SOURCE_TICKET_UA = "Agent/source (21.85)"
-SOURCE_TICKET_AGE_H = 2.5
+# загрузчика.
+LOADER_TICKET_UA = "Agent/loader (21.85)"
+LOADER_TICKET_AGE_H = 2.5
 
 
-def source_ticket():
-    """Билет подделки источника: своя кука, UA и возраст."""
+def loader_ticket():
+    """Билет подделки загрузчика: своя кука, UA и возраст."""
     return browser.Ticket(
-        cookie_header="sid=source", ua=SOURCE_TICKET_UA, age_h=SOURCE_TICKET_AGE_H
+        cookie_header="sid=loader", ua=LOADER_TICKET_UA, age_h=LOADER_TICKET_AGE_H
     )
 
 
-def source_answer(key: str, page_no: int, **changes):
-    """Ответ подделки источника: OK, страница с 3 объявлениями из 3, тело —
-    текст JSON; ids пусты, как у любого источника (21.83); changes
+def loader_answer(key: str, page_no: int, **changes):
+    """Ответ подделки загрузчика: OK, страница с 3 объявлениями из 3, тело —
+    текст JSON; ids пусты, как у любого загрузчика (21.83); changes
     перекрывают поля."""
     offers = [offer(100 + i) for i in range(3)]
     fields = {
@@ -3898,43 +3906,43 @@ def source_answer(key: str, page_no: int, **changes):
         "total": 3,
         "offers": offers,
         "ids": [],
-        "size": SOURCE_SIZE,
-        "ms": SOURCE_MS,
-        "body": json.dumps({"source": key, "page": page_no}),
+        "size": LOADER_SIZE,
+        "ms": LOADER_MS,
+        "body": json.dumps({"loader": key, "page": page_no}),
         "headers": {},
     }
     return run_folder.PageAnswer(**(fields | changes))
 
 
-def source_crawl(env, pages: dict, **changes):
-    """Обход без main() над подделкой источника FakePageSource(source_ticket(),
+def loader_crawl(env, pages: dict, **changes):
+    """Обход без main() над подделкой загрузчика FakePageLoader(loader_ticket(),
     pages) по клеткам CELLS (Random(1): очередь B, A); прогон не начат —
     тест сам зовёт collect(). Сон записывается в slept парой (сколько
-    вызовов get_page было к этому моменту, секунды). changes — поля
+    вызовов load_page было к этому моменту, секунды). changes — поля
     Settings. → (обход, подделка, slept)."""
     write_features(env.tiles, CELLS)
     tiles_file = geometry.TilesFile(str(env.tiles))
-    source = FakePageSource(source_ticket(), pages)
+    loader = FakePageLoader(loader_ticket(), pages)
     slept: list[tuple[int, float]] = []
 
     def sleep(seconds: float) -> None:
-        slept.append((len(source.asked), seconds))
+        slept.append((len(loader.asked), seconds))
 
     clock = crawl.Clock(now=env.clock.now, sleep=sleep)
     settings = settings_of(env.folder, **changes)
-    run = crawl.Crawl(settings, tiles_file, source, clock, random.Random(1))
-    return run, source, slept
+    run = crawl.Crawl(settings, tiles_file, loader, clock, random.Random(1))
+    return run, loader, slept
 
 
-def test_21_85_files_from_source_answer(env):
-    """21.85 Обход над подделкой источника (без ссылок, тело — текст JSON):
-    страница OK записана из ответа источника — <клетка>_p1.json.gz с его
+def test_21_85_files_from_loader_answer(env):
+    """21.85 Обход над подделкой загрузчика (без ссылок, тело — текст JSON):
+    страница OK записана из ответа загрузчика — <клетка>_p1.json.gz с его
     totalOffers и объявлениями, файл тела — его тело как есть; строка
     запроса night.log — код, мс, размер, total, вердикт из ответа, offers —
     число id. Модуль 21."""
-    answer_b = source_answer(B, 1)
-    pages = {(B, 1): [answer_b], (A, 1): [source_answer(A, 1)]}
-    run, _, _ = source_crawl(env, pages)
+    answer_b = loader_answer(B, 1)
+    pages = {(B, 1): [answer_b], (A, 1): [loader_answer(A, 1)]}
+    run, _, _ = loader_crawl(env, pages)
     run.collect()
     run_dir = Path(run.folder.path)
     raw = run_dir / "raw"
@@ -3948,7 +3956,7 @@ def test_21_85_files_from_source_answer(env):
         {
             "http": "200",
             "ms": "1234",
-            "bytes": str(SOURCE_SIZE),
+            "bytes": str(LOADER_SIZE),
             "total": "3",
             "verdict": "OK",
         },
@@ -3957,7 +3965,7 @@ def test_21_85_files_from_source_answer(env):
 
 
 def test_21_85_one_call_per_attempt(env):
-    """21.85 Обход получает страницу одним вызовом get_page(ключ, кольцо
+    """21.85 Обход получает страницу одним вызовом load_page(ключ, кольцо
     клетки с джиттером, номер) на попытку: страницы клетки подряд с одним
     кольцом; после сбоя сети — пауза повтора и второй вызов с теми же
     ключом, кольцом и номером. Модуль 21."""
@@ -3972,22 +3980,22 @@ def test_21_85_one_call_per_attempt(env):
         "body": "",
     }
     pages = {
-        (B, 1): [source_answer(B, 1, total=30, offers=full_page)],
-        (B, 2): [source_answer(B, 2, **failure), source_answer(B, 2, total=30)],
-        (A, 1): [source_answer(A, 1)],
+        (B, 1): [loader_answer(B, 1, total=30, offers=full_page)],
+        (B, 2): [loader_answer(B, 2, **failure), loader_answer(B, 2, total=30)],
+        (A, 1): [loader_answer(A, 1)],
     }
     # окно 0,01 ч: паузы листания и между клетками — до ~3 с, всё от 60 с —
     # паузы повтора
-    run, source, slept = source_crawl(env, pages, window_hours=0.01)
+    run, loader, slept = loader_crawl(env, pages, window_hours=0.01)
     run.collect()
-    rings_b = [ring for key, _, ring in source.asked if key == B]
-    (ring_a,) = [ring for key, _, ring in source.asked if key == A]
+    rings_b = [ring for key, _, ring in loader.asked if key == B]
+    (ring_a,) = [ring for key, _, ring in loader.asked if key == A]
     # кольцо с джиттером не равно каноническому вершина в вершину (сравнение
     # кортежами координат: список списков и список кортежей не равны всегда)
     canonical_b = [tuple(vertex) for vertex in rect_ring(B)]
     jittered = [tuple(vertex) for vertex in rings_b[0]] != canonical_b
     assert (
-        [(key, page_no) for key, page_no, _ in source.asked],
+        [(key, page_no) for key, page_no, _ in loader.asked],
         all(ring == rings_b[0] for ring in rings_b),
         same_ring(rings_b[0], rect_ring(B)),
         jittered,
@@ -4016,12 +4024,12 @@ def test_21_85_one_call_per_attempt(env):
     ],
     ids=["BLOCK", "API_CHANGED"],
 )
-def test_21_85_ticket_from_source(env, changes, pattern):
-    """21.85 Билет обход берёт у источника: UA в _block_*.txt и в
-    _broken_*.note.txt — source.ticket.ua; в plan.json user_agent, ticket и
-    cookie_age_h — из source.ticket. Модуль 21."""
-    answer = source_answer(B, 1, total=None, **changes)
-    run, _, _ = source_crawl(env, {(B, 1): [answer]})
+def test_21_85_ticket_from_loader(env, changes, pattern):
+    """21.85 Билет обход берёт у загрузчика: UA в _block_*.txt и в
+    _broken_*.note.txt — loader.ticket.ua; в plan.json user_agent, ticket и
+    cookie_age_h — из loader.ticket. Модуль 21."""
+    answer = loader_answer(B, 1, total=None, **changes)
+    run, _, _ = loader_crawl(env, {(B, 1): [answer]})
     run.collect()
     run_dir = Path(run.folder.path)
     (path,) = (run_dir / "raw").glob(pattern)
@@ -4032,11 +4040,194 @@ def test_21_85_ticket_from_source(env, changes, pattern):
         plan["ticket"],
         plan["cookie_age_h"],
     ) == (
-        f"sector={B} page=1 ua={SOURCE_TICKET_UA}",
-        SOURCE_TICKET_UA,
+        f"sector={B} page=1 ua={LOADER_TICKET_UA}",
+        LOADER_TICKET_UA,
         True,
-        SOURCE_TICKET_AGE_H,
+        LOADER_TICKET_AGE_H,
     )
+
+
+# Итог страницы для обхода (21.91, решение Андрея 2): download_page и
+# download_tile отдают crawl.PageOutcome — прочитана (READ), конец клетки
+# (TILE_END) или стоп с причиной (значение stopped); collect выходит из
+# очереди по итогу, а не по общей state.stopped. Обход — над подделкой
+# загрузчика, прогон открыт (open_run), страницы зовутся напрямую.
+# Внутреннее.
+
+# Сбой сети в ответе подделки: код 0, NET_ERROR, тело пусто.
+LOADER_NET_ERROR = {
+    "verdict": "NET_ERROR",
+    "detail": "timeout",
+    "code": 0,
+    "total": None,
+    "offers": [],
+    "size": 0,
+    "body": "",
+}
+# Запрет на странице: 403, BLOCK http_403 — stopped block (21.47).
+LOADER_BLOCK = {
+    "verdict": "BLOCK",
+    "detail": "http_403",
+    "code": 403,
+    "total": None,
+    "offers": [],
+    "body": "no",
+}
+# Конец выдачи на странице 2: 301 на p=1 — PAGE_END (21.37).
+LOADER_PAGE_END = {
+    "verdict": "PAGE_END",
+    "detail": "redirect_to_p1_301",
+    "code": 301,
+    "total": None,
+    "offers": [],
+    "body": "",
+}
+
+
+def full_first_page():
+    """Страница 1 клетки B: 28 объявлений из 60 — клетка листается дальше."""
+    offers = [offer(1000 + i) for i in range(28)]
+    return loader_answer(B, 1, total=60, offers=offers)
+
+
+def opened_loader_crawl(env, pages: dict, **changes):
+    """loader_crawl с уже начатым прогоном (open_run). → (обход, подделка)."""
+    run, loader, _ = loader_crawl(env, pages, **changes)
+    run.open_run()
+    return run, loader
+
+
+# Итоги в параметрах — парами (вид, причина): crawl.PageOutcome собирается
+# внутри теста, чтобы без него краснели тесты 21.91, а не сбор всего файла.
+@pytest.mark.parametrize(
+    ("task_state", "stopped", "expected"),
+    [
+        ("done", None, ("read", "")),
+        ("page_end", None, ("end", "")),
+        ("failed", "block", ("stop", "block")),
+        ("failed", "net_error", ("stop", "net_error")),
+    ],
+    ids=["done", "page_end", "failed block", "failed net_error"],
+)
+def test_21_91_page_outcome_rule(task_state, stopped, expected):
+    """21.91 Правило итога страницы page_outcome(состояние задачи, stopped):
+    done → прочитана, page_end → конец клетки, failed → стоп с причиной —
+    значением stopped. Внутреннее. Модуль 21."""
+    assert crawl.page_outcome(task_state, stopped) == crawl.PageOutcome(*expected)
+
+
+def test_21_91_named_outcomes():
+    """21.91 Имена итогов: crawl.READ — прочитана («read»), crawl.TILE_END —
+    конец клетки («end»), у обоих причины нет. Внутреннее. Модуль 21."""
+    named = (crawl.READ, crawl.TILE_END)
+    assert named == (crawl.PageOutcome("read", ""), crawl.PageOutcome("end", ""))
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [(("read", ""), False), (("end", ""), False), (("stop", "block"), True)],
+    ids=["прочитана", "конец клетки", "стоп"],
+)
+def test_21_91_outcome_stopped(outcome, expected):
+    """21.91 PageOutcome.stopped — истина только у стопа: прочитанная
+    страница и конец клетки прогон не останавливают. Внутреннее. Модуль 21."""
+    assert crawl.PageOutcome(*outcome).stopped is expected
+
+
+def test_21_91_download_page_read(env):
+    """21.91 download_page страницы с ответом OK (задача done) отдаёт
+    «прочитана» — crawl.READ. Внутреннее. Модуль 21."""
+    run, _ = opened_loader_crawl(env, {(B, 1): [full_first_page()]})
+    assert run.download_page(B, 1) == crawl.READ
+
+
+def test_21_91_download_page_tile_end(env):
+    """21.91 download_page страницы 2 с ответом PAGE_END (задача page_end)
+    отдаёт «конец клетки» — crawl.TILE_END. Внутреннее. Модуль 21."""
+    pages = {
+        (B, 1): [full_first_page()],
+        (B, 2): [loader_answer(B, 2, **LOADER_PAGE_END)],
+    }
+    run, _ = opened_loader_crawl(env, pages)
+    run.download_page(B, 1)
+    assert run.download_page(B, 2) == crawl.TILE_END
+
+
+def test_21_91_download_page_stop_block(env):
+    """21.91 download_page страницы 2 с ответом BLOCK отдаёт стоп с причиной
+    block (значение stopped, 21.47). Внутреннее. Модуль 21."""
+    pages = {
+        (B, 1): [full_first_page()],
+        (B, 2): [loader_answer(B, 2, **LOADER_BLOCK)],
+    }
+    run, _ = opened_loader_crawl(env, pages)
+    run.download_page(B, 1)
+    assert run.download_page(B, 2) == crawl.PageOutcome("stop", "block")
+
+
+def test_21_91_download_page_stop_budget(env):
+    """21.91 Бюджет исчерпан (бюджет 1, страница 1 уже скачана):
+    download_page страницы 2 отдаёт стоп с причиной budget_exhausted, и
+    запроса к загрузчику нет. Внутреннее. Модуль 21."""
+    run, loader = opened_loader_crawl(env, {(B, 1): [full_first_page()]}, budget=1)
+    run.download_page(B, 1)
+    outcome = run.download_page(B, 2)
+    asked = [(key, page_no) for key, page_no, _ in loader.asked]
+    assert (outcome, asked) == (crawl.PageOutcome("stop", "budget_exhausted"), [(B, 1)])
+
+
+def test_21_91_download_page_stop_after_retries(env):
+    """21.91 Четвёртый сбой сети подряд на странице 2 (повторы — внутри
+    download_page) — стоп с причиной net_error; загрузчик спрошен о
+    странице 2 четыре раза. Внутреннее. Модуль 21."""
+    failures = [loader_answer(B, 2, **LOADER_NET_ERROR) for _ in range(4)]
+    pages = {(B, 1): [full_first_page()], (B, 2): failures}
+    run, loader = opened_loader_crawl(env, pages)
+    run.download_page(B, 1)
+    outcome = run.download_page(B, 2)
+    asked_b2 = [page_no for key, page_no, _ in loader.asked if page_no == 2]
+    assert (outcome, asked_b2) == (crawl.PageOutcome("stop", "net_error"), [2, 2, 2, 2])
+
+
+@pytest.mark.parametrize(
+    ("second_page", "expected"),
+    [
+        (LOADER_PAGE_END, ("end", "")),
+        (LOADER_BLOCK, ("stop", "block")),
+    ],
+    ids=["PAGE_END на стр. 2", "BLOCK на стр. 2"],
+)
+def test_21_91_download_tile_last_outcome(env, second_page, expected):
+    """21.91 download_tile отдаёт итог последней скачанной страницы клетки:
+    страница 1 прочитана, страница 2 — PAGE_END → конец клетки, BLOCK →
+    стоп с причиной block. Внутреннее. Модуль 21."""
+    pages = {
+        (B, 1): [full_first_page()],
+        (B, 2): [loader_answer(B, 2, **second_page)],
+    }
+    run, _ = opened_loader_crawl(env, pages)
+    assert run.download_tile(B) == crawl.PageOutcome(*expected)
+
+
+def test_21_91_collect_stops_by_outcome(env, monkeypatch):
+    """21.91 collect выходит из очереди по итогу клетки, а не по общей
+    state.stopped: подменённый download_tile честно скачивает клетку B
+    (одна короткая страница, прогон не остановлен) и отдаёт стоп — вторая
+    клетка очереди (A) не запрошена. Внутреннее. Модуль 21."""
+    pages = {(B, 1): [loader_answer(B, 1)], (A, 1): [loader_answer(A, 1)]}
+    run, loader, _ = loader_crawl(env, pages)
+    real_download_tile = run.download_tile
+    tiles: list[str] = []
+
+    def download_then_stop(key: str):
+        tiles.append(key)
+        real_download_tile(key)
+        return crawl.PageOutcome("stop", "block")
+
+    monkeypatch.setattr(run, "download_tile", download_then_stop)
+    run.collect()
+    asked = [(key, page_no) for key, page_no, _ in loader.asked]
+    assert (tiles, asked) == ([B], [(B, 1)])
 
 
 # ═══════════════════════════════ Д. main ═══════════════════════════════
@@ -4363,66 +4554,119 @@ def test_21_81_no_library_no_check(env, monkeypatch):
     assert env.transport.made == [("fake", FAKE_COOKIE)]
 
 
-# Список источников страниц — словарь cc.PAGE_SOURCES «имя → создатель» и
-# умолчание cc.PAGE_SOURCE (DECISIONS, block/page-source): флага запуска
-# нет, словарь читается в момент вызова.
+# Выбор загрузчика страницы — флаг --page-loader, словарь cc.PAGE_LOADERS
+# «имя → создатель» и умолчание cc.PAGE_LOADER (решение Андрея 1 и DECISIONS
+# block/click-pages): создатель зовётся с браузером, Settings, rnd и часами
+# Clock обхода; словарь читается в момент вызова. Клик (ключ click) и код 2
+# с браузером без кликов — следующие пары блока.
 
 
-def test_21_84_page_sources_only_url():
-    """21.84 Список источников страниц — словарь cc.PAGE_SOURCES с одним
-    ключом url → page_source.UrlPageSource; умолчание cc.PAGE_SOURCE — url.
+def test_21_84_page_loaders_dict():
+    """21.84 Список загрузчиков страницы — словарь cc.PAGE_LOADERS «имя →
+    создатель» с ключом url → cc.make_url_loader; умолчание cc.PAGE_LOADER —
+    url. Модуль 21."""
+    loaders, default = cc.PAGE_LOADERS, cc.PAGE_LOADER
+    assert (loaders, default) == ({"url": cc.make_url_loader}, "url")
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [([], "url"), (["--page-loader", "url"], "url")],
+    ids=["без флага", "--page-loader url"],
+)
+def test_21_84_settings_page_loader(flag, expected):
+    """21.84 read_settings: Settings.page_loader — как флаг --page-loader;
+    без флага — url: запуск с прежними аргументами — прежний загрузчик.
     Модуль 21."""
-    sources, default = cc.PAGE_SOURCES, cc.PAGE_SOURCE
-    assert (sources, default) == ({"url": page_source.UrlPageSource}, "url")
+    settings = cc.read_settings(["--geojson", "x.geojson", "--seed", "1", *flag])
+    assert settings.page_loader == expected
 
 
-def fake_source_maker():
-    """Создатель источника страниц для 21.84: запоминает полученные браузеры
-    (sites) и созданные подделки FakePageSource (sources); у подделки —
-    страница 1 обеих клеток CELLS."""
-    sites: list = []
-    sources: list = []
-
-    def make_source(site):
-        sites.append(site)
-        pages = {(B, 1): [source_answer(B, 1)], (A, 1): [source_answer(A, 1)]}
-        sources.append(FakePageSource(site.ticket, pages))
-        return sources[-1]
-
-    return make_source, sites, sources
-
-
-def test_21_84_main_takes_source_from_dict(env, monkeypatch):
-    """21.84 main с прежними аргументами берёт источник из словаря в момент
-    вызова: создатель, подставленный на место url, получает браузер
-    HttpBrowser с билетом из файлов и транспортом фабрики; обход берёт
-    страницы у созданного источника, транспорт напрямую не зовётся.
+def test_21_84_unknown_page_loader_exit_2(capsys):
+    """21.84 --page-loader не из словаря PAGE_LOADERS (scroll — такого нет)
+    — выход argparse с кодом 2, в строке ошибки назван флаг --page-loader.
     Модуль 21."""
-    make_source, sites, sources = fake_source_maker()
-    monkeypatch.setitem(cc.PAGE_SOURCES, "url", make_source)
-    run_main(env, monkeypatch, CELLS, {})
-    (site,), (source,) = sites, sources
+    with pytest.raises(SystemExit) as stop:
+        cc.read_settings(["--geojson", "x.geojson", "--page-loader", "scroll"])
+    error = error_line(capsys.readouterr().err)
+    # флаг знаком argparse: ошибка — о значении, а не о незнакомом флаге
+    assert (stop.value.code, "--page-loader" in error, "unrecognized" in error) == (
+        2,
+        True,
+        False,
+    )
+
+
+def fake_loader_maker():
+    """Создатель загрузчика страницы для 21.84: запоминает, с чем его позвали
+    (calls: браузер, Settings, состояние rnd в момент вызова, часы), и
+    созданные подделки FakePageLoader (loaders); у подделки — страница 1
+    обеих клеток CELLS."""
+    calls: list = []
+    loaders: list = []
+
+    def make_loader(site, settings, rnd, clock):
+        # состояние rnd — сейчас: обход потом сдвинет его своими выборами
+        calls.append((site, settings, rnd.getstate(), clock))
+        pages = {(B, 1): [loader_answer(B, 1)], (A, 1): [loader_answer(A, 1)]}
+        loaders.append(FakePageLoader(site.ticket, pages))
+        return loaders[-1]
+
+    return make_loader, calls, loaders
+
+
+def test_21_84_flag_takes_maker_from_dict(env, monkeypatch):
+    """21.84 --page-loader fake берёт создателя из словаря PAGE_LOADERS в
+    момент вызова: создатель, добавленный под именем fake, зовётся один раз
+    с браузером HttpBrowser (билет из файлов, транспорт фабрики), Settings
+    с page_loader == "fake", rnd в состоянии Random(seed) (--seed 1, без
+    паузы старта; с ua.txt сборка браузера rnd не трогает) и часами обхода
+    Clock — их сон идёт в сон часов теста; обход берёт страницы у
+    созданного загрузчика, транспорт напрямую не зовётся. Модуль 21."""
+    make_loader, calls, loaders = fake_loader_maker()
+    monkeypatch.setitem(cc.PAGE_LOADERS, "fake", make_loader)
+    run_main(env, monkeypatch, CELLS, {}, "--page-loader", "fake")
+    ((site, settings, state, clock),), (loader,) = calls, loaders
+    clock.sleep(1.5)
     assert (
         type(site) is http_browser.HttpBrowser,
         site.transport is env.transport,
         site.ticket.cookie_header,
-        site.ticket.ua,
-        [(key, page_no) for key, page_no, _ in source.asked],
+        settings.page_loader,
+        state == random.Random(1).getstate(),
+        type(clock) is crawl.Clock,
+        env.clock.pauses[-1],
+        [(key, page_no) for key, page_no, _ in loader.asked],
         env.transport.sent,
-    ) == (True, True, FAKE_COOKIE, USER_AGENT, [(B, 1), (A, 1)], [])
+    ) == (
+        True,
+        True,
+        FAKE_COOKIE,
+        "fake",
+        True,
+        True,
+        1.5,
+        [(B, 1), (A, 1)],
+        [],
+    )
 
 
-def test_21_84_page_source_picks_creator(env, monkeypatch):
-    """21.84 main берёт создателя по имени PAGE_SOURCE: в словаре
-    PAGE_SOURCES рядом с url есть второй ключ, PAGE_SOURCE указывает на
-    него — main с прежними аргументами зовёт именно этот создатель, обход
-    берёт страницы у его источника, транспорт напрямую не зовётся. Модуль 21."""
-    make_source, _, sources = fake_source_maker()
-    monkeypatch.setitem(cc.PAGE_SOURCES, "fake", make_source)
-    monkeypatch.setattr(cc, "PAGE_SOURCE", "fake")
-    run_main(env, monkeypatch, CELLS, {})
-    asked = [[(key, page_no) for key, page_no, _ in s.asked] for s in sources]
-    assert (asked, env.transport.sent) == ([[(B, 1), (A, 1)]], [])
+def test_21_84_make_url_loader(env):
+    """21.84 make_url_loader(браузер, Settings, rnd, часы) —
+    page_loader.UrlPageLoader над этим браузером: билет загрузчика — билет
+    браузера, страница грузится через транспорт браузера. Модуль 21."""
+    write_features(env.tiles, [tile(A)])
+    give(env, {(A, 1): [page(1, 1, 1)]})
+    site = http_browser.HttpBrowser(env.transport, fake_ticket(), env.clock.monotonic)
+    clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
+    made = cc.make_url_loader(site, settings_of(env.folder), random.Random(1), clock)
+    answer = made.load_page(A, rect_ring(A), 1)
+    assert (
+        type(made),
+        made.ticket is site.ticket,
+        answer.verdict,
+        [s.page for s in env.transport.sent],
+    ) == (page_loader.UrlPageLoader, True, "OK", [1])
 
 
 # Список браузеров — словарь cc.BROWSERS «имя → cc.BrowserChoice(library,
@@ -4880,7 +5124,8 @@ def test_21_90_main_with_chrome(env, monkeypatch, capsys, playwright_installed):
     plan.json — user_agent вкладки (не из ua.txt), ticket true,
     cookie_age_h null, stop_detail http_403|cookie_expired_or_burned;
     summary.json — ticket true, cookie_age_h null; строка start в
-    night.log — ticket=1 cookie_age_h=None; фабрику транспорта не звали;
+    night.log — ticket=1, cookie_age_h= с пустым значением, не «None»
+    (решение Андрея 10, block/click-pages); фабрику транспорта не звали;
     один переход вкладки; строка итога кончается «билет: есть». Модуль 21."""
     page = FakeChromePage(CHROME_UA, CHROME_COOKIES)
     replace_connect_chrome_tab(monkeypatch, chrome_tab_of(page))
@@ -4906,7 +5151,7 @@ def test_21_90_main_with_chrome(env, monkeypatch, capsys, playwright_installed):
         None,
         "http_403|cookie_expired_or_burned",
         (True, None),
-        ("1", "None"),
+        ("1", ""),
         [],
         1,
         [True],
@@ -5052,7 +5297,7 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
 COLLECTOR_DIR = REPO_ROOT / "collector"
 # Без часов и сети: правила, интерфейс транспорта, интерфейс браузера,
 # браузер над транспортом (monotonic приходит в HttpBrowser аргументом) и
-# источник страниц.
+# загрузчик страницы.
 RULE_MODULES = (
     "crawl.py",
     "search_page.py",
@@ -5061,7 +5306,7 @@ RULE_MODULES = (
     "transport.py",
     "browser.py",
     "http_browser.py",
-    "page_source.py",
+    "page_loader.py",
 )
 # Реализации транспорта: сеть живёт только в них.
 TRANSPORT_MODULES = ("urllib_transport.py", "httpx_transport.py")
@@ -5074,7 +5319,7 @@ NO_DISK_MODULES = (
     "search_page.py",
     "transport.py",
     "browser.py",
-    "page_source.py",
+    "page_loader.py",
     "chrome_browser.py",
 )
 # Листья пакета: не импортируют никого из collector (2.1 документа);
@@ -5094,20 +5339,20 @@ PACKAGE_MODULES = (
     "chrome_browser.py",
     "status.py",
 )
-# Порядок слоёв (crawl → page_source → browser; http_browser → browser,
+# Порядок слоёв (crawl → page_loader → browser; http_browser → browser,
 # transport, search_page; циклов нет): что модуль может взять из пакета.
-# crawl до транспорта не доходит: страницы ему отдаёт источник страниц, из
+# crawl до транспорта не доходит: страницы ему отдаёт загрузчик страницы, из
 # browser — только тип Ticket (решения Андрея 12.11 и 15.11, DECISIONS
-# block/page-source); transport и реализации транспорта ему напрямую нельзя.
-# Реализации браузера (http_browser, chrome_browser) не знают ни crawl, ни
-# page_source: их собирает cian_collect (DECISIONS block/browser-interface,
-# block/chrome-insert); chrome_browser берёт из пакета только browser и
-# search_page.
+# block/page-source и block/click-pages); transport и реализации транспорта
+# ему напрямую нельзя. Реализации браузера (http_browser, chrome_browser) не
+# знают ни crawl, ни page_loader: их собирает cian_collect (DECISIONS
+# block/browser-interface, block/chrome-insert); chrome_browser берёт из
+# пакета только browser и search_page.
 LAYER_IMPORTS = {
     "crawl.py": frozenset(
-        {"page_source", "browser", "search_page", "geometry", "run_folder"}
+        {"page_loader", "browser", "search_page", "geometry", "run_folder"}
     ),
-    "page_source.py": frozenset({"browser", "search_page", "run_folder"}),
+    "page_loader.py": frozenset({"browser", "search_page", "run_folder"}),
     "http_browser.py": frozenset({"browser", "transport", "search_page"}),
     "chrome_browser.py": frozenset({"browser", "search_page"}),
     "urllib_transport.py": frozenset({"transport"}),
@@ -5125,11 +5370,11 @@ ALLOWED_OS = {"os", "os.path", "os.path.basename"}
 # «from .search_page import x» (imported_modules отбрасывает точки).
 PACKAGE_NAMES = {"collector", "crawl", "search_page", "geometry", "run_folder"}
 PACKAGE_NAMES |= {"transport", "browser", "urllib_transport", "httpx_transport"}
-PACKAGE_NAMES |= {"cian_collect", "status", "page_source", "http_browser"}
+PACKAGE_NAMES |= {"cian_collect", "status", "page_loader", "http_browser"}
 PACKAGE_NAMES |= {"chrome_browser"}
 # Имена ссылки, разбора и браузера, которых обход не называет: страницу ему
-# отдаёт источник страниц одним вызовом get_page (DECISIONS,
-# block/page-source; кейс 21.78).
+# отдаёт загрузчик страницы одним вызовом load_page (DECISIONS,
+# block/page-source и block/click-pages; кейс 21.78).
 CRAWL_FORBIDDEN_NAMES = {"page_url", "classify_page", "Browser", "FetchedPage", "fetch"}
 CRAWL_FORBIDDEN_NAMES |= {"HttpBrowser", "ChromeBrowser"}
 CLOCK_CLASSES = {"datetime", "date"}
@@ -5557,8 +5802,8 @@ def foreign_package_imports(source: str, allowed: frozenset[str]) -> list[str]:
 
 
 # Образцы слоёв: реализациям транспорта из пакета можно только transport;
-# crawl — только page_source, browser, search_page, geometry, run_folder;
-# page_source — только browser, search_page, run_folder; http_browser —
+# crawl — только page_loader, browser, search_page, geometry, run_folder;
+# page_loader — только browser, search_page, run_folder; http_browser —
 # только browser, transport, search_page; chrome_browser — только browser,
 # search_page.
 transport_layer_imports = functools.partial(
@@ -5567,8 +5812,8 @@ transport_layer_imports = functools.partial(
 crawl_layer_imports = functools.partial(
     foreign_package_imports, allowed=LAYER_IMPORTS["crawl.py"]
 )
-page_source_layer_imports = functools.partial(
-    foreign_package_imports, allowed=LAYER_IMPORTS["page_source.py"]
+page_loader_layer_imports = functools.partial(
+    foreign_package_imports, allowed=LAYER_IMPORTS["page_loader.py"]
 )
 http_browser_layer_imports = functools.partial(
     foreign_package_imports, allowed=LAYER_IMPORTS["http_browser.py"]
@@ -5649,7 +5894,7 @@ def test_21_78_package_modules_listed():
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (crawl, search_page, geometry, run_folder),
-    transport, browser, http_browser и page_source не импортируют time,
+    transport, browser, http_browser и page_loader не импортируют time,
     socket, urllib.request, urllib.error, http: сеть — в реализациях
     транспорта, часы — в cian_collect (monotonic приходит в HttpBrowser
     аргументом). Модуль 21."""
@@ -5668,7 +5913,7 @@ def test_21_78_transports_no_clock_imports(name):
     "name", (*RULE_MODULES, *TRANSPORT_MODULES, "chrome_browser.py")
 )
 def test_21_78_no_wall_clock_or_random_calls(name):
-    """21.78 Модули правил, transport, browser, http_browser, page_source,
+    """21.78 Модули правил, transport, browser, http_browser, page_loader,
     реализации транспорта и chrome_browser не обращаются к часам стены
     (datetime.now, .today, .utcnow) и к модулю random — ни вызовом, ни
     ссылкой: время и случайность приходят через Clock и аргумент rnd;
@@ -5678,7 +5923,7 @@ def test_21_78_no_wall_clock_or_random_calls(name):
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_disk_in_crawl_search_page_transport(name):
-    """21.78 crawl, search_page, transport, browser, page_source и
+    """21.78 crawl, search_page, transport, browser, page_loader и
     chrome_browser не зовут open, не обращаются к os.* (кроме
     os.path.basename), не импортируют gzip, io, pathlib, shutil: диск —
     только в run_folder и низу geometry. Модуль 21."""
@@ -5687,7 +5932,7 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
-    """21.78 crawl, search_page, transport, browser, page_source и
+    """21.78 crawl, search_page, transport, browser, page_loader и
     chrome_browser не печатают в stdout (print, sys.stdout): по таблице 2.4
     документа stdout — только run_folder.say (через него обход печатает эхо
     строк night.log и итог) и cian_collect (строка паузы старта и печать
@@ -5726,7 +5971,7 @@ def test_21_78_transports_no_disk_no_stdout(name):
 def test_21_78_cian_collect_not_imported(name):
     """21.78 cian_collect никем в пакете не импортируется (__init__, crawl,
     search_page, geometry, run_folder, transport, browser, http_browser,
-    page_source, транспорты, chrome_browser, status). Модуль 21."""
+    page_loader, транспорты, chrome_browser, status). Модуль 21."""
     assert module_imports(collector_source(name), "cian_collect") == []
 
 
@@ -5742,7 +5987,7 @@ def test_21_78_transports_imported_only_by_cian_collect(name, implementation):
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
 def test_21_78_browsers_imported_only_by_cian_collect(name, implementation):
     """21.78 Реализации браузера (http_browser, chrome_browser) никто в
-    пакете, кроме cian_collect, не импортирует: crawl и page_source работают
+    пакете, кроме cian_collect, не импортирует: crawl и page_loader работают
     с интерфейсом Browser, реализацию собирает cian_collect (DECISIONS
     block/browser-interface, block/chrome-insert). Модуль 21."""
     assert module_imports(collector_source(name), implementation) == []
@@ -5789,7 +6034,7 @@ def test_21_78_subprocess_only_in_chrome_browser_and_status(name):
 )
 def test_21_78_network_only_in_urllib_transport(name):
     """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
-    __init__, правила, transport, browser, http_browser, page_source,
+    __init__, правила, transport, browser, http_browser, page_loader,
     httpx_transport, chrome_browser, status), не импортирует socket,
     urllib.request,
     urllib.error, http: сеть stdlib — в urllib_transport. Модуль 21."""
@@ -5814,11 +6059,11 @@ def test_21_78_httpx_transport_imported_lazily():
 
 @pytest.mark.parametrize("name", list(LAYER_IMPORTS))
 def test_21_78_layer_order(name):
-    """21.78 Порядок слоёв без циклов (crawl → page_source → browser;
+    """21.78 Порядок слоёв без циклов (crawl → page_loader → browser;
     http_browser → browser, transport, search_page): crawl берёт из пакета
-    только page_source, browser, search_page, geometry и run_folder —
+    только page_loader, browser, search_page, geometry и run_folder —
     transport, http_browser и реализации транспорта напрямую не
-    импортирует; page_source берёт только browser, search_page и
+    импортирует; page_loader берёт только browser, search_page и
     run_folder; http_browser — только browser, transport и search_page,
     chrome_browser — только browser и search_page, реализации транспорта —
     только transport. Модуль 21."""
@@ -5826,7 +6071,7 @@ def test_21_78_layer_order(name):
     assert foreign_package_imports(source, LAYER_IMPORTS[name]) == []
 
 
-def test_21_78_crawl_knows_only_page_source():
+def test_21_78_crawl_knows_only_page_loader():
     """21.78 crawl.py не называет page_url, classify_page, Browser,
     HttpBrowser, ChromeBrowser, FetchedPage, fetch; из browser берёт только
     тип Ticket.
@@ -5947,22 +6192,22 @@ GUARD_SAMPLES = [
     (crawl_page_knowledge, "url = page_url(ring, 1)"),
     (crawl_page_knowledge, "from collector import browser"),
     (forbidden_page_names, "site = HttpBrowser(transport, ticket, monotonic)"),
-    # page_source импортирует transport или обход
-    (page_source_layer_imports, "from collector import transport"),
-    (page_source_layer_imports, "from collector import crawl"),
+    # page_loader импортирует transport или обход
+    (page_loader_layer_imports, "from collector import transport"),
+    (page_loader_layer_imports, "from collector import crawl"),
     # реализацию браузера HttpBrowser импортирует кто-то, кроме cian_collect:
-    # источник страниц, обход или любой другой модуль пакета
-    (page_source_layer_imports, "from collector import http_browser"),
-    (page_source_layer_imports, "from collector.http_browser import HttpBrowser"),
+    # загрузчик страницы, обход или любой другой модуль пакета
+    (page_loader_layer_imports, "from collector import http_browser"),
+    (page_loader_layer_imports, "from collector.http_browser import HttpBrowser"),
     (crawl_layer_imports, "from collector import http_browser"),
     (crawl_layer_imports, "import collector.http_browser"),
     (http_browser_imports, "from collector import http_browser"),
     (http_browser_imports, "from collector.http_browser import HttpBrowser"),
     (http_browser_imports, "import collector.http_browser as hb"),
-    # http_browser импортирует обход, источник страниц или реализацию
+    # http_browser импортирует обход, загрузчик страницы или реализацию
     # транспорта
     (http_browser_layer_imports, "from collector import crawl"),
-    (http_browser_layer_imports, "from collector import page_source"),
+    (http_browser_layer_imports, "from collector import page_loader"),
     (http_browser_layer_imports, "from collector import urllib_transport"),
     # chrome_browser импортирует playwright, subprocess или time вне
     # функции-края connect_chrome_tab: на верхнем уровне, в другой функции,
@@ -5989,9 +6234,9 @@ GUARD_SAMPLES = [
     (playwright_imports, "import playwright"),
     (playwright_imports, "from playwright.sync_api import sync_playwright"),
     # chrome_browser импортирует кто-то, кроме cian_collect: обход,
-    # источник страниц или любой другой модуль пакета
+    # загрузчик страницы или любой другой модуль пакета
     (crawl_layer_imports, "from collector import chrome_browser"),
-    (page_source_layer_imports, "from collector.chrome_browser import ChromeBrowser"),
+    (page_loader_layer_imports, "from collector.chrome_browser import ChromeBrowser"),
     (chrome_browser_imports, "from collector import chrome_browser"),
     (chrome_browser_imports, "import collector.chrome_browser as cb"),
     (package_imports, "import chrome_browser"),
@@ -6101,19 +6346,19 @@ def get(self, request) -> HttpReply:
         return HttpReply(response.status, {}, response.read())
 """
 
-# Образец разрешённого crawl: из пакета — page_source (страница — одним
-# вызовом get_page), тип Ticket из browser, search_page (id объявлений),
+# Образец разрешённого crawl: из пакета — page_loader (страница — одним
+# вызовом load_page), тип Ticket из browser, search_page (id объявлений),
 # geometry, run_folder.
 CRAWL_CLEAN_SAMPLE = """
 from dataclasses import replace
 
 from collector import geometry, run_folder, search_page
 from collector.browser import Ticket
-from collector.page_source import PageSource
+from collector.page_loader import PageLoader
 
 
 def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
-    answer = self.source.get_page(key, self.tiles[key].ring, page)
+    answer = self.loader.load_page(key, self.tiles[key].ring, page)
     return replace(answer, ids=search_page.offer_ids(answer.offers))
 """
 
@@ -6133,9 +6378,9 @@ from collector import browser
 from collector.browser import browser_headers
 """
 
-# Образец разрешённого page_source: из пакета — browser, search_page,
+# Образец разрешённого page_loader: из пакета — browser, search_page,
 # run_folder.
-PAGE_SOURCE_CLEAN_SAMPLE = """
+PAGE_LOADER_CLEAN_SAMPLE = """
 from collector import browser, run_folder, search_page
 from collector.browser import Browser, Ticket
 """
@@ -6209,7 +6454,7 @@ from collector import chrome_browser, http_browser
         (crawl_page_knowledge, CRAWL_CLEAN_SAMPLE),
         (browser_beyond_ticket, NAMES_ONLY_SAMPLE),
         (forbidden_page_names, BROWSER_IMPORTS_ONLY_SAMPLE),
-        (page_source_layer_imports, PAGE_SOURCE_CLEAN_SAMPLE),
+        (page_loader_layer_imports, PAGE_LOADER_CLEAN_SAMPLE),
         (eager_httpx_transport_imports, LAZY_CLEAN_SAMPLE),
         (httpx_imports, LAZY_CLEAN_SAMPLE),
         (chrome_edge_imports_outside, CHROME_BROWSER_CLEAN_SAMPLE),
@@ -6243,11 +6488,11 @@ from collector import chrome_browser, http_browser
         "urllib_transport: без httpx",
         "urllib_transport: только transport",
         "urllib_transport: без time",
-        "crawl: page_source, Ticket, search_page, geometry, run_folder",
-        "crawl: get_page и offer_ids",
+        "crawl: page_loader, Ticket, search_page, geometry, run_folder",
+        "crawl: load_page и offer_ids",
         "browser_beyond_ticket: имена — не его ветка",
         "forbidden_page_names: импорты browser — не его ветка",
-        "page_source: browser, search_page, run_folder",
+        "page_loader: browser, search_page, run_folder",
         "cian_collect: httpx_transport внутри функции",
         "cian_collect: без httpx",
         "chrome_browser: playwright, subprocess, time внутри connect_chrome_tab",
@@ -6268,10 +6513,10 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     памяти, импорт browser (FetchedPage, Ticket), transport и search_page;
     у интерфейса браузера browser — стандартная библиотека без сжатия и
     диска; у urllib_transport — сеть stdlib,
-    self.opener.open, импорт transport; у crawl — импорт page_source, типа
+    self.opener.open, импорт transport; у crawl — импорт page_loader, типа
     Ticket из browser, search_page, geometry, run_folder, вызов
-    self.source.get_page и search_page.offer_ids (а каждая из двух
-    проверок знания обхода не ловит нарушения другой); у page_source — импорт
+    self.loader.load_page и search_page.offer_ids (а каждая из двух
+    проверок знания обхода не ловит нарушения другой); у page_loader — импорт
     browser, search_page, run_folder; у cian_collect — импорт
     httpx_transport внутри функции и chrome_browser наверху; у
     chrome_browser — импорт типов browser, playwright, subprocess и time
