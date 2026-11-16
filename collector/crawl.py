@@ -40,6 +40,8 @@ class Settings:
     seed: int
     # сетевой транспорт: urllib или httpx (флаг --transport)
     transport: str
+    # браузер: реализация из cian_collect.BROWSERS (флаг --browser)
+    browser: str
     # «входной билет»: куки и UA браузера, прошедшего проверку WAF (флаги
     # --cookies и --ua; умолчания — в cian_collect)
     cookies_file: str
