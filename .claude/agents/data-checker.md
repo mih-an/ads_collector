@@ -34,7 +34,8 @@ Write — только для своих файлов в `var/scratch/`; дру�
 - collector/ — код сборщика: что и когда он пишет на диск, как разбирает
   страницу поиска ЦИАН (`search_page.py`), как получает и распаковывает ответ
   (`http_browser.py` — `HttpBrowser` над транспортами `urllib_transport.py` /
-  `httpx_transport.py`; интерфейс — `browser.py`), как
+  `httpx_transport.py`; `chrome_browser.py` — `ChromeBrowser` над вкладкой
+  Chrome; интерфейс — `browser.py`), как
   пишет папку прогона (`run_folder.py`), как ведёт обход (`crawl.py`). Вопрос о поведении сборщика при обрыве, делении,
   пробе — ответ ищи в коде и цитируй функцию и строку.
 - tests/fixtures/collector/ — фикстуры с реальными данными: эталонные ночи

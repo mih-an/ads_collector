@@ -42,12 +42,14 @@ docs/DECISIONS.md (решения уровня 1 и решения Андрея)
   в collector/search_page.py, не россыпью по коду (CLAUDE.md §6);
   исключения: `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в collector/transport.py, умолчания
   аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`,
-  `BROWSER`, `COOKIES_FILE`, `UA_FILE`) — в collector/cian_collect.py.
+  `BROWSER`, `COOKIES_FILE`, `UA_FILE`, `CHROME_PORT`, `CHROME_PATH`,
+  `CHROME_PROFILE`, `GOTO_TIMEOUT_MS`, `WAIT_UNTIL`, `PORT_WAIT_S`, `POLL_S`) —
+  в collector/cian_collect.py.
   Правила обхода и разбора — чистыми функциями; сеть (реализации транспорта
   collector/urllib_transport.py и collector/httpx_transport.py), часы, сон,
   случайность, argv — по краям.
 - В `collector/` — только стандартная библиотека, кроме httpx в
-  collector/httpx_transport.py.
+  collector/httpx_transport.py и playwright в collector/chrome_browser.py.
 - Общие файлы, которые блок тронет (`pyproject.toml`, `pytest.ini`,
   `tests/collector_support.py`, `.github/`, `CLAUDE.md`), — отдельным списком.
 - Вопросы — только там, где тест-план, описание формата, CLAUDE.md и

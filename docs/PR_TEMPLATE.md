@@ -105,9 +105,12 @@ Claude Code заполняет этот шаблон в конце блока и
       сборщика — в `Settings` и константах контракта `search_page.py`
       (исключения, CLAUDE.md §6: `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в
       `transport.py`, умолчания аргументов запуска `BUDGET`, `WINDOW_HOURS`,
-      `RUNS_DIR` — в `cian_collect.py`)
+      `RUNS_DIR`, `TRANSPORT`, `BROWSER`, `COOKIES_FILE`, `UA_FILE`,
+      `CHROME_PORT`, `CHROME_PATH`, `CHROME_PROFILE` и настройки Chrome
+      `GOTO_TIMEOUT_MS`, `WAIT_UNTIL`, `PORT_WAIT_S`, `POLL_S` — в
+      `cian_collect.py`)
 - [ ] в `collector/` только стандартная библиотека, кроме httpx в
-      `httpx_transport.py`; правило импортов
+      `httpx_transport.py` и playwright в `chrome_browser.py`; правило импортов
       соблюдено (тест 21.78)
 - [ ] формат папки прогона не изменён (или есть решение Андрея)
 - [ ] имена — по словарю CLAUDE.md §10; комментарии объясняют «почему» и
