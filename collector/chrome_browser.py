@@ -151,15 +151,15 @@ class ChromeBrowser:
 
 def try_connect(
     playwright: Any, endpoint: str, error: type[Exception]
-) -> tuple[Any, Exception | None]:
-    """Подключение Playwright к Chrome по CDP → (Chrome, None); не вышло —
-    (None, ошибка Playwright). «Порт не отвечает» и есть неудача
-    connect_over_cdp, отдельной проверки порта нет; ошибку отдаём, чтобы её
-    причина попала в ChromeConnectError (ревью PR #8, кейс 21.89)."""
+) -> tuple[Any, str]:
+    """Подключение Playwright к Chrome по CDP → (Chrome, ""); не вышло —
+    (None, причина — первая строка ошибки Playwright). «Порт не отвечает» и
+    есть неудача connect_over_cdp, отдельной проверки порта нет; причину
+    отдаём, чтобы она попала в ChromeConnectError (ревью PR #8, кейс 21.89)."""
     try:
-        return playwright.chromium.connect_over_cdp(endpoint), None
+        return playwright.chromium.connect_over_cdp(endpoint), ""
     except error as failure:
-        return None, failure
+        return None, one_line(failure)
 
 
 def first_tab(browser: Any) -> Any:
@@ -218,11 +218,9 @@ def connect_chrome_tab(
             browser, failure = try_connect(playwright, endpoint, Error)
     if browser is None:
         playwright.stop()
-        # без Chrome try_connect всегда отдаёт ошибку — подсказка для mypy
-        assert failure is not None
         raise ChromeConnectError(
             f"Chrome не открыл порт {port} за {port_wait_s} с: "
             f"{chrome_path} --user-data-dir={profile_dir}; "
-            f"последняя ошибка подключения: {one_line(failure)}"
+            f"последняя ошибка подключения: {failure}"
         )
     return ChromeTab(page=first_tab(browser), timeout_error=TimeoutError, error=Error)
