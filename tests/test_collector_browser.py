@@ -13,10 +13,12 @@ ChromeStand — ChromeBrowser над фальшивой вкладкой Playwri
 настоящей рукой человека chrome_human.Human на часах TickingClock.
 
 Подделки вкладки Playwright (FakePage, FakeMouse, FakeKeyboard, FakeLocator,
-FakeElement, ошибки) и часы руки TickingClock живут здесь: их берут
-tests/test_collector_chrome_browser.py (21.88, 21.93),
-tests/test_collector_chrome_human.py (21.94), tests/test_collector.py и
-tests/test_collector_click.py (подделка выдачи FakeListingPage, 21.96).
+FakeElement, ошибки), контекст вкладок для карточек (FakeTabContext,
+PageWaiter, FakeCdpSession, вкладка карточки FakeCardPage) и часы руки
+TickingClock живут здесь: их берут tests/test_collector_chrome_browser.py
+(21.88, 21.93, 21.98), tests/test_collector_chrome_human.py (21.94),
+tests/test_collector.py и tests/test_collector_click.py (подделка выдачи
+FakeListingPage, 21.96, 21.98).
 """
 
 import json
@@ -216,13 +218,16 @@ class FakeElement:
     """Элемент страницы: ссылка (href) или кнопка (text), рамка bounding_box
     в пикселях окна ({"x", "y", "width", "height"} или None), активность и
     ошибка прокрутки к нему (scroll_error: её бросает
-    scroll_into_view_if_needed, например тайм-аут)."""
+    scroll_into_view_if_needed, например тайм-аут). opens — вкладка
+    карточки, которую открывает клик по ссылке с зажатой клавишей (Cmd/Ctrl
+    + клик Chrome), 21.98."""
 
     box: dict[str, float] | None
     href: str | None = None
     text: str = ""
     enabled: bool = True
     scroll_error: BaseException | None = None
+    opens: "FakePage | None" = None
 
     def holds(self, x: float, y: float) -> bool:
         """Точка (x, y) внутри рамки элемента."""
@@ -280,13 +285,13 @@ class FakeLocator:
     def click(self, *, modifiers: list[str] | None = None, **kwargs: object) -> None:
         element = self.one()
         self.page.events.append(("locator_click", element, modifiers))
-        self.page.clicked_on(element)
+        self.page.clicked_on(element, tuple(modifiers or ()))
 
 
 class FakeMouse:
     """Мышь вкладки: move и click пишутся в события; клик мимо элементов
-    страницы до сайта не доходит (ответа не будет); колесо (wheel)
-    прокручивает страницу."""
+    страницы до сайта не доходит (ответа не будет); клик идёт с клавишами,
+    зажатыми на клавиатуре вкладки; колесо (wheel) прокручивает страницу."""
 
     def __init__(self, page: "FakePage") -> None:
         self.page = page
@@ -300,7 +305,7 @@ class FakeMouse:
         self.page.events.append(("click", x, y, delay))
         under = [element for element in self.page.elements if element.holds(x, y)]
         if under:
-            self.page.clicked_on(under[-1])
+            self.page.clicked_on(under[-1], tuple(sorted(self.page.held)))
         else:
             self.page.clicked.append(None)
 
@@ -310,16 +315,19 @@ class FakeMouse:
 
 
 class FakeKeyboard:
-    """Клавиатура вкладки: down и up пишутся в события."""
+    """Клавиатура вкладки: down и up пишутся в события; зажатые клавиши —
+    в page.held (их видит клик мыши)."""
 
     def __init__(self, page: "FakePage") -> None:
         self.page = page
 
     def down(self, key: str) -> None:
         self.page.events.append(("down", key))
+        self.page.held.add(key)
 
     def up(self, key: str) -> None:
         self.page.events.append(("up", key))
+        self.page.held.discard(key)
 
 
 class ResponseWaiter:
@@ -358,6 +366,91 @@ class ResponseWaiter:
         )
 
 
+# ---------- контекст вкладок для карточек (21.98) ----------
+
+
+class PageWaiter:
+    """Менеджер контекста context.expect_page фальшивого контекста: на входе
+    забывает прошлую открытую вкладку; на выходе — вкладка, открытая кликом
+    внутри блока (value). Задана open_error контекста — она и бросается;
+    вкладки нет или контекст «опоздал» (late) — тайм-аут Playwright."""
+
+    def __init__(self, context: "FakeTabContext", timeout: float | None) -> None:
+        self.context = context
+        self.timeout = timeout
+        self.value: FakePage | None = None
+
+    def __enter__(self) -> "PageWaiter":
+        self.context.opened = None
+        return self
+
+    def __exit__(self, kind, error, trace) -> None:
+        if error is not None:
+            return
+        if self.context.open_error is not None:
+            raise self.context.open_error
+        if self.context.opened is None or self.context.late:
+            raise FakeTimeoutError(
+                f'Timeout {self.timeout}ms exceeded while waiting for event "page"'
+            )
+        self.value = self.context.opened
+
+
+class FakeCdpSession:
+    """Сессия CDP вкладки page (context.new_cdp_session): send(метод)
+    пишется в sent; on(событие, обработчик) сразу отдаёт обработчику
+    параметры всех событий трафика вкладки (page.traffic) с этим именем —
+    по порядку."""
+
+    def __init__(self, page: "FakePage") -> None:
+        self.page = page
+        self.sent: list[str] = []
+
+    def send(self, method: str, params: object = None) -> None:
+        self.sent.append(method)
+
+    def on(self, event: str, handler: Callable) -> None:
+        for name, params in self.page.traffic:
+            if name == event:
+                handler(params)
+
+
+class FakeTabContext:
+    """Контекст профиля Chrome вкладки (page.context): pages — открытые
+    вкладки (первой — сама вкладка); expect_page(timeout) — ожидание новой
+    вкладки (PageWaiter), тайм-ауты ожиданий — в waits; клик с клавишей по
+    ссылке карточки открывает её (open_tab), клавиши клика — в opened_with;
+    new_cdp_session(вкладка) — сессия CDP (в sessions); log — действия
+    вкладок по порядку: (имя вкладки, "front" | "close"). open_error —
+    ошибка, которую бросит выход expect_page; late — вкладка открылась, а
+    ожидание её не дождалось (тайм-аут, вкладка осталась лишней)."""
+
+    def __init__(self, page: "FakePage") -> None:
+        self.pages: list[FakePage] = [page]
+        self.waits: list[float | None] = []
+        self.opened: FakePage | None = None
+        self.opened_with: list[tuple[str, ...]] = []
+        self.sessions: list[FakeCdpSession] = []
+        self.log: list[tuple[str, str]] = []
+        self.open_error: BaseException | None = None
+        self.late = False
+
+    def expect_page(self, *, timeout: float | None = None) -> PageWaiter:
+        self.waits.append(timeout)
+        return PageWaiter(self, timeout)
+
+    def open_tab(self, card: "FakePage", keys: tuple[str, ...]) -> None:
+        card.context = self
+        self.pages.append(card)
+        self.opened = card
+        self.opened_with.append(keys)
+
+    def new_cdp_session(self, page: "FakePage") -> FakeCdpSession:
+        session = FakeCdpSession(page)
+        self.sessions.append(session)
+        return session
+
+
 class FakePage:
     """Фальшивая вкладка Playwright: goto(url, wait_until, timeout) записывает
     переход в visits и отдаёт следующий ответ сайта. Сбой сети — тайм-аут
@@ -373,12 +466,20 @@ class FakePage:
     expect_response(предикат, timeout) отдаёт его на выходе блока (ResponseWaiter);
     wait_for_load_state(state, timeout) и wait_for_url(предикат адреса,
     timeout) пишутся в события и бросают load_error / url_error, если заданы;
-    evaluate(скрипт, arg): arg задан — поиск ссылки, arg = [имя параметра,
-    значение] → href последней ссылки, у которой параметр адреса равен
-    значению, или None; без arg — скрипт со scrollHeight → сколько пикселей
-    осталось до низа страницы, скрипт с innerWidth → [ширина, высота] окна.
+    evaluate(скрипт, arg): arg = [имя параметра, значение] → href последней
+    ссылки, у которой параметр адреса равен значению, или None; arg —
+    строка (шаблон ссылки на объявление, 21.98) → список href ссылок, в
+    которых шаблон найден (re.search), без повторов, по порядку; без arg —
+    скрипт со scrollHeight → сколько пикселей осталось до низа страницы,
+    скрипт с innerWidth → [ширина, высота] окна.
     Все действия — по порядку в events (у сна руки — ("sleep", секунды), его
-    пишет TickingClock); clicked — элементы, по которым кликнули."""
+    пишет TickingClock); clicked — элементы, по которым кликнули.
+
+    Для карточек (21.98): context — FakeTabContext; клик с клавишей по
+    ссылке с opens открывает вкладку карточки (ответа сайта нет);
+    bring_to_front и close пишутся в журнал контекста (имя вкладки — name),
+    закрытая вкладка — closed и уходит из context.pages; traffic — события
+    CDP вкладки (имя, параметры)."""
 
     def __init__(
         self,
@@ -406,6 +507,11 @@ class FakePage:
         self.scroll_height = scroll_height
         self.scroll_y = 0.0
         self.endless = endless
+        self.held: set[str] = set()
+        self.name = "выдача"
+        self.closed = False
+        self.traffic: list[tuple[str, dict]] = []
+        self.context = FakeTabContext(self)
 
     def goto(self, url: str, **kwargs: object) -> FakeResponse | None:
         self.visits.append(url)
@@ -441,10 +547,33 @@ class FakePage:
 
         return FakeLocator(self, [e for e in self.elements if matches(e)])
 
-    def clicked_on(self, element: FakeElement | None) -> None:
-        """Клик дошёл до страницы: сайт отвечает следующим ответом."""
+    def clicked_on(
+        self, element: FakeElement | None, keys: tuple[str, ...] = ()
+    ) -> None:
+        """Клик дошёл до страницы: клик с клавишей по ссылке карточки
+        открывает её вкладку, иначе сайт отвечает следующим ответом."""
         self.clicked.append(element)
+        if self.opens_tab(element, keys):
+            return
         self.emitted = self.answers.pop(0) if self.answers else None
+
+    def opens_tab(self, element: FakeElement | None, keys: tuple[str, ...]) -> bool:
+        """Клик с зажатой клавишей по ссылке, у которой есть вкладка opens,
+        открывает её новой вкладкой контекста (как Cmd/Ctrl + клик Chrome).
+        → открыта ли вкладка."""
+        if element is None or element.opens is None or not keys:
+            return False
+        self.context.open_tab(element.opens, keys)
+        return True
+
+    def bring_to_front(self) -> None:
+        self.context.log.append((self.name, "front"))
+
+    def close(self, **kwargs: object) -> None:
+        self.closed = True
+        self.context.log.append((self.name, "close"))
+        if self in self.context.pages:
+            self.context.pages.remove(self)
 
     def response_of(self, answer: SiteAnswer) -> FakeResponse:
         """Ответ сайта на клик — ответ Playwright из главного фрейма."""
@@ -481,6 +610,8 @@ class FakePage:
     # ---------- скрипты и прокрутка ----------
 
     def evaluate(self, script: str, arg: Any = None) -> Any:
+        if isinstance(arg, str):
+            return self.links_like(arg)
         if arg is not None:
             param, value = arg
             return self.last_link_with(param, str(value))
@@ -500,6 +631,15 @@ class FakePage:
                 found = element.href
         return found
 
+    def links_like(self, pattern: str) -> list[str]:
+        """href ссылок, в которых найден шаблон pattern, без повторов."""
+        found: list[str] = []
+        for element in self.elements:
+            href = element.href
+            if href is not None and re.search(pattern, href) and href not in found:
+                found.append(href)
+        return found
+
     def left_px(self) -> float:
         """Сколько пикселей страницы ниже окна."""
         return self.scroll_height - (self.scroll_y + self.inner_height)
@@ -511,6 +651,54 @@ class FakePage:
         self.scroll_y = max(0.0, min(self.scroll_y + delta_y, lowest))
         if self.endless:
             self.scroll_height = self.scroll_y + self.inner_height + 5000.0
+
+
+# Ссылка карточки на странице выдачи — как на настоящей (data-checker,
+# DECISIONS block/click-pages: krasnogorsk.cian.ru/sale/suburban/<число>/
+# ?context=…; номер и context выдуманные) — и её адрес без параметров.
+CARD_URL = "https://krasnogorsk.cian.ru/sale/suburban/312345678/?context=abc21"
+CARD_PLAIN_URL = "https://krasnogorsk.cian.ru/sale/suburban/312345678/"
+CARD_HTML = "<html>карточка объявления</html>"
+# Трафик карточки по CDP: два loadingFinished (1000 + 234 байт); dataReceived
+# и loadingFinished без encodedDataLength в сумму не входят.
+CARD_TRAFFIC = [
+    ("Network.loadingFinished", {"encodedDataLength": 1000}),
+    ("Network.dataReceived", {"encodedDataLength": 50}),
+    ("Network.loadingFinished", {"encodedDataLength": 234}),
+    ("Network.loadingFinished", {}),
+]
+CARD_TRAFFIC_BYTES = 1234
+
+
+class FakeCardPage(FakePage):
+    """Вкладка карточки объявления (21.98): адрес url, content() — её HTML,
+    события трафика CDP traffic; страница длиной scroll_height (рука её
+    листает), ожидание загрузки — wait_for_load_state фальшивой вкладки
+    (load_error). Имя вкладки в журнале контекста — «карточка»; контекст
+    подменяет FakeTabContext.open_tab, когда клик открывает вкладку."""
+
+    def __init__(
+        self,
+        url: str = CARD_URL,
+        html: str = CARD_HTML,
+        traffic: list[tuple[str, dict]] | None = None,
+        scroll_height: float = 3000.0,
+    ) -> None:
+        super().__init__([], scroll_height=scroll_height)
+        self.url = url
+        self.html = html
+        self.traffic = list(CARD_TRAFFIC if traffic is None else traffic)
+        self.name = "карточка"
+
+    def content(self) -> str:
+        return self.html
+
+
+def offer_link(card: FakePage, href: str = CARD_URL, x: float = 100.0) -> FakeElement:
+    """Ссылка на объявление на странице выдачи: клик по ней с клавишей
+    открывает вкладку card; рамка 200 × 40 в точке (x, 300) — в стороне от
+    пагинации (у нескольких ссылок — разные x, чтобы рамки не перекрылись)."""
+    return FakeElement(box(x, 300, 200, 40), href=href, text="Участок", opens=card)
 
 
 class TickingClock:
@@ -552,6 +740,8 @@ WAIT_UNTIL = "load"
 CLICK_TIMEOUT_MS = 60_000
 LOAD_TIMEOUT_MS = 60_000
 URL_TIMEOUT_MS = 30_000
+# Карточка стенда: ожидание новой вкладки, без переднего плана, клавиша Cmd.
+CARD_OPEN_TIMEOUT_MS = 30_000
 # Страница стенда ChromeStand: ссылка на страницу 2 и кнопка «Дальше».
 STAND_ELEMENTS = [
     FakeElement(box(500, 700, 30, 20), href=CLICKED_URL, text="2"),
@@ -567,6 +757,9 @@ def stand_tab_settings() -> chrome_browser.TabSettings:
         click_timeout_ms=CLICK_TIMEOUT_MS,
         load_timeout_ms=LOAD_TIMEOUT_MS,
         url_timeout_ms=URL_TIMEOUT_MS,
+        card_open_timeout_ms=CARD_OPEN_TIMEOUT_MS,
+        front=False,
+        new_tab_key="Meta",
     )
 
 
@@ -829,17 +1022,19 @@ def click_once(stand, answers: list[SiteAnswer], clock: FakeTime | None = None):
     return made.click_and_catch(click_target(), search_page.is_next_page_response)
 
 
-@pytest.mark.parametrize("action", ["click_and_catch", "scroll_page"])
+@pytest.mark.parametrize("action", ["click_and_catch", "scroll_page", "view_card"])
 def test_21_86_cannot_click_clear_error(plain_stand, action):
-    """21.86 Реализация без кликов (HttpBrowser): click_and_catch и
-    scroll_page бросают BrowserCannotError, в тексте — имя реализации и
-    действие; нижний мир не тронут. Модуль 21."""
+    """21.86 Реализация без кликов (HttpBrowser): click_and_catch,
+    scroll_page и view_card (заход на карточку, block/click-pages П4)
+    бросают BrowserCannotError, в тексте — имя реализации и действие;
+    нижний мир не тронут. Модуль 21."""
     made = plain_stand.browser([], ticket_of(), FakeTime(EPOCH).monotonic)
     calls = {
         "click_and_catch": lambda: made.click_and_catch(
             click_target(), search_page.is_next_page_response
         ),
         "scroll_page": lambda: made.scroll_page(30.0),
+        "view_card": lambda: made.view_card(r"/sale/suburban/\d+/", lambda url: None),
     }
     with pytest.raises(browser_types.BrowserCannotError) as caught:
         calls[action]()

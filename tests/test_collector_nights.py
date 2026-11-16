@@ -477,6 +477,8 @@ LOG_FIELDS = {
     "split_skip": ("event", "sector", "note"),
     "retry": ("event", "sector", "page", "attempt", "of", "after_s"),
     "STOP": ("event", "reason", "cls", "detail", "spent"),
+    # заход на карточку (--cards, block/click-pages П4; DECISIONS, допущение (г))
+    "card": ("event", "sector", "page", "url", "traffic", "view_s", "verdict", "err"),
 }
 
 
@@ -724,8 +726,11 @@ def pages_violations(run_dir: Path, log: list[dict]) -> list[str]:
     """У каждой строки verdict=OK есть .json.gz страницы и файл тела —
     .html.gz (по ссылке или документ клика) или .click.gz (ответ клика),
     но не оба; и наоборот: файла страницы без строки OK нет. Страница
-    сравнивается строкой: page=x не роняет проверку."""
-    ok = {(r["sector"], r["page"]) for r in log if r.get("verdict") == "OK"}
+    сравнивается строкой: page=x не роняет проверку. Считаются только
+    строки запросов (с n=): строка event=card verdict=OK — заход на
+    карточку, а не страница."""
+    requests = [r for r in log if "n" in r]
+    ok = {(r["sector"], r["page"]) for r in requests if r.get("verdict") == "OK"}
     files_of = {kind: page_files(run_dir, kind) for kind in ("json", "html", "click")}
     html, click = files_of["html"], files_of["click"]
     found = [
@@ -745,7 +750,7 @@ def pages_violations(run_dir: Path, log: list[dict]) -> list[str]:
     # страницы по ссылке тело — .html.gz
     not_click = {
         (r["sector"], r["page"], r.get("kind", ""))
-        for r in log
+        for r in requests
         if r.get("verdict") == "OK" and r.get("kind") != "click"
     }
     found += [

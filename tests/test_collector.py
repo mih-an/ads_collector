@@ -1,6 +1,8 @@
 """Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61,
 21.78, 21.81–21.85, 21.87, 21.90, 21.91, 21.92 (что нажать и что ловить при
-клике, разбор ответа клика — search_page).
+клике, разбор ответа клика, ссылка и признаки блока карточки — search_page),
+21.98 (флаги --cards и --front, клавиша новой вкладки, настройки карточки в
+сборке Chrome).
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
@@ -67,8 +69,10 @@ page_loader (загрузчик страницы), crawl (обход); чере�
   crawl.PageOutcome (21.91), их подменяет 21.91;
 - page_loader.UrlPageLoader(browser, sleep) с атрибутом ticket и методом
   load_page(ключ клетки, кольцо, страница) → run_folder.PageAnswer;
-  page_loader.ClickPageLoader(browser) — загрузчик «кликом» (21.84; сам он
-  — tests/test_collector_click.py);
+  page_loader.ClickPageLoader(browser, rnd, cards_per_tile) — загрузчик
+  «кликом» (21.84; сам он и заходы на карточки 21.98 —
+  tests/test_collector_click.py); обход после паузы спрашивает
+  loader.visit_card() (21.98);
 - cc.PAGE_LOADERS — словарь «имя → создатель загрузчика страницы»
   (браузер, Settings, rnd, часы Clock) с ключами url и click и умолчание
   cc.PAGE_LOADER; флаг --page-loader (Settings.page_loader); словарь
@@ -76,6 +80,9 @@ page_loader (загрузчик страницы), crawl (обход); чере�
   cc.make_url_loader и cc.make_click_loader — создатели загрузчиков «по
   ссылке» и «кликом»; поле cc.BrowserChoice.clicks — умеет ли браузер
   кликать (check_args: --page-loader click с браузером без кликов — код 2);
+  флаги --cards и --front (Settings.cards, Settings.front; --cards без
+  --page-loader click — код 2), cc.new_tab_key(platform),
+  cc.CARD_OPEN_TIMEOUT_MS (21.98);
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -128,12 +135,15 @@ from test_collector_browser import (
     CLICKED_URL,
     INFINITE_URL,
     SEARCH_OFFERS_URL,
+    FakeCardPage,
     FakeElement,
     FakePage,
     FakePlaywrightError,
+    FakeTabContext,
     FakeTimeoutError,
     SiteAnswer,
     box,
+    offer_link,
 )
 
 import collector
@@ -334,7 +344,8 @@ def settings_of(folder: Path, **changes):
     окно 1 ч, без пробы-only и паузы старта, seed 1, транспорт urllib,
     билет — cookies.txt и ua.txt, браузер http, загрузчик страницы url,
     Chrome — порт 9333 (не умолчание 9222: видно, что порт взят из
-    Settings), путь /opt/chrome, профиль /tmp/chrome-profile; changes
+    Settings), путь /opt/chrome, профиль /tmp/chrome-profile; без заходов
+    на карточки и переднего плана (cards, front — ложь); changes
     перекрывают."""
     settings = crawl.Settings(
         budget=50,
@@ -352,6 +363,8 @@ def settings_of(folder: Path, **changes):
         chrome_profile="/tmp/chrome-profile",
         browser="http",
         page_loader="url",
+        cards=False,
+        front=False,
     )
     return replace(settings, **changes)
 
@@ -1169,6 +1182,77 @@ def test_21_92_classify_click_fields_missing():
     lost = [{k: v for k, v in item.items() if k != "land"} for item in offers[:5]]
     verdict, detail, _, _ = search_page.classify_click(200, click_json(lost, total))
     assert (verdict, detail) == ("API_CHANGED", "fields_missing:land.area")
+
+
+# Знание ЦИАН о карточке объявления (21.92, block/click-pages П4): ссылки
+# карточек на странице выдачи ведут на поддомен с параметрами —
+# https://krasnogorsk.cian.ru/sale/suburban/<число>/?context=… (data-checker,
+# DECISIONS block/click-pages); номера и context ниже выдуманные.
+
+
+@pytest.mark.parametrize(
+    ("link", "expected"),
+    [
+        ("https://krasnogorsk.cian.ru/sale/suburban/312345678/?context=abc", True),
+        ("https://www.cian.ru/sale/suburban/312345678/", True),
+        ("/sale/suburban/312345678/", True),
+        ("/sale/suburban/312345678", True),
+        ("https://www.cian.ru/cat.php?deal_type=sale&offer_type=suburban&p=2", False),
+        ("https://www.cian.ru/sale/suburban/", False),
+        ("https://krasnogorsk.cian.ru/kupit-zemelniy-uchastok/", False),
+        ("/rent/suburban/312345678/", False),
+    ],
+    ids=[
+        "карточка на поддомене с параметрами",
+        "карточка на www",
+        "путь карточки",
+        "путь без косой в конце",
+        "ссылка выдачи",
+        "раздел без номера",
+        "посадочная страница",
+        "аренда",
+    ],
+)
+def test_21_92_offer_link_pattern(link, expected):
+    """21.92 OFFER_LINK_PATTERN — шаблон ссылки на объявление: ищется
+    вхождение пути /sale/suburban/<число>/ (re.search) — ссылка карточки на
+    поддомене с параметрами найдена, ссылка выдачи и раздел без номера —
+    нет (решение тимлида block/click-pages). Модуль 21."""
+    assert bool(re.search(search_page.OFFER_LINK_PATTERN, link)) is expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://krasnogorsk.cian.ru/sale/suburban/312345678/?context=a", None),
+        ("https://www.cian.ru/sale/suburban/312345678/", None),
+        ("https://cian.ru/sale/suburban/312345678/", None),
+        ("https://www.cian.ru/captcha/?redirect_url=x", "captcha"),
+        ("https://krasnogorsk.cian.ru/sale/suburban/1/?Captcha=1", "captcha"),
+        ("https://cian.ru.evil.com/sale/suburban/312345678/", "foreign_url"),
+        ("https://notcian.ru/sale/suburban/312345678/", "foreign_url"),
+        ("https://example.com/?next=https://www.cian.ru/", "foreign_url"),
+        ("about:blank", "foreign_url"),
+    ],
+    ids=[
+        "krasnogorsk.cian.ru",
+        "www.cian.ru",
+        "cian.ru",
+        "капча в пути",
+        "Captcha в параметрах",
+        "cian.ru.evil.com",
+        "notcian.ru",
+        "cian.ru только в параметре",
+        "пустая вкладка",
+    ],
+)
+def test_21_92_card_block_reason(url, expected):
+    """21.92 card_block_reason(адрес открытой карточки): captcha в адресе
+    (без учёта регистра, как в пробе) → "captcha"; хост не cian.ru и не
+    поддомен *.cian.ru → "foreign_url"; cian.ru, www.cian.ru,
+    krasnogorsk.cian.ru → None (решение тимлида block/click-pages).
+    Модуль 21."""
+    assert search_page.card_block_reason(url) == expected
 
 
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
@@ -2389,13 +2473,15 @@ def use_random(monkeypatch, random_class) -> None:
 
 
 def pause_factors(env, monkeypatch, random_class) -> list[float]:
-    """Множители пауз прогона CELLS + B_60 при случайности random_class."""
+    """Множители пауз прогона CELLS + B_60 при случайности random_class.
+    Шпион отдаёт итог настоящей паузы: с block/click-pages П4 пауза
+    возвращает PageOutcome (заход на карточку может остановить обход)."""
     factors = []
     original = crawl.Crawl.sleep_between
 
     def spy(self, factor=1.0):
         factors.append(factor)
-        original(self, factor)
+        return original(self, factor)
 
     monkeypatch.setattr(crawl.Crawl, "sleep_between", spy)
     use_random(monkeypatch, random_class)
@@ -5036,6 +5122,74 @@ def test_21_84_no_clicks_from_browsers_exit_2(monkeypatch, capsys):
     )
 
 
+# Заходы на карточки (21.98, решение Андрея 9): флаги --cards и --front
+# (умолчание — выкл.); --cards — только с --page-loader click (код 2 до
+# паузы старта, DECISIONS block/click-pages); клавиша «в новой вкладке» — по
+# платформе, ожидание новой вкладки — константа cian_collect.
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("darwin", "Meta"), ("linux", "Control"), ("win32", "Control")],
+    ids=["macOS", "Linux", "Windows"],
+)
+def test_21_98_new_tab_key(platform, expected):
+    """21.98 new_tab_key(платформа) — клавиша «открыть в новой вкладке»: Cmd
+    («Meta») на macOS (darwin), иначе Ctrl («Control»), как в пробе
+    click_test.py. Модуль 21."""
+    assert cc.new_tab_key(platform) == expected
+
+
+def test_21_98_card_open_timeout_constant():
+    """21.98 Новая вкладка карточки ждётся CARD_OPEN_TIMEOUT_MS = 30 000 мс
+    (число пробы click_test.py). Модуль 21."""
+    assert cc.CARD_OPEN_TIMEOUT_MS == 30_000
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ([], (False, False)),
+        (["--front"], (False, True)),
+        (["--cards", "--page-loader", "click", "--browser", "chrome"], (True, False)),
+    ],
+    ids=["без флагов", "--front", "--cards с загрузчиком click"],
+)
+def test_21_98_settings_cards_front(playwright_installed, flags, expected):
+    """21.98 read_settings: Settings.cards — флаг --cards, Settings.front —
+    флаг --front; без флагов оба ложь: запуск с прежними аргументами —
+    заходов нет. Модуль 21."""
+    settings = cc.read_settings(["--geojson", "x.geojson", "--seed", "1", *flags])
+    assert (settings.cards, settings.front) == expected
+
+
+def test_21_98_cards_per_tile_default(tmp_path):
+    """21.98 Settings.cards_per_tile по умолчанию — (1, 2): 1–2 карточки на
+    клетку (решение Андрея 9). Модуль 21."""
+    assert settings_of(tmp_path).cards_per_tile == (1, 2)
+
+
+def test_21_98_cards_need_click_loader(env, monkeypatch, capsys):
+    """21.98 --cards без --page-loader click (загрузчик url по умолчанию) —
+    выход с кодом 2, в строке ошибки названы оба флага: --cards и
+    --page-loader. Модуль 21."""
+    stop = main_exit(env, monkeypatch, "--cards")
+    error = error_line(capsys.readouterr().err)
+    words = ("--cards", "--page-loader")
+    assert (stop.code, [word for word in words if word not in error]) == (2, [])
+
+
+def test_21_98_cards_need_click_loader_before_start_pause(
+    env, monkeypatch, playwright_installed
+):
+    """21.98 --cards --browser chrome без --page-loader click — выход до
+    паузы старта (её нет даже без --no-start-delay) и до подключения к
+    Chrome: connect_chrome_tab и фабрику транспорта не зовут. Модуль 21."""
+    connects = replace_connect_chrome_tab(monkeypatch, None)
+    main_exit(env, monkeypatch, "--cards", "--browser", "chrome")
+    assert (env.clock.pauses, connects, env.transport.made) == ([], [], [])
+
+
 # Список браузеров — словарь cc.BROWSERS «имя → cc.BrowserChoice(library,
 # ticket_files, make)» и умолчание cc.BROWSER (DECISIONS,
 # block/browser-interface и block/chrome-insert): флаг --browser, choices —
@@ -5307,11 +5461,14 @@ CHROME_COOKIES = [
 ]
 
 
-class FakeChromeContext:
-    """Контекст вкладки: cookies(*urls) записывает аргументы вызова в
-    cookie_calls и отдаёт куки вкладки."""
+class FakeChromeContext(FakeTabContext):
+    """Контекст вкладки page: всё, что умеет контекст фальшивой вкладки
+    (вкладки, ожидание новой вкладки, CDP — для карточек 21.98), плюс
+    cookies(*urls): записывает аргументы вызова в cookie_calls и отдаёт куки
+    вкладки."""
 
-    def __init__(self, cookies: list[dict]) -> None:
+    def __init__(self, page: FakePage, cookies: list[dict]) -> None:
+        super().__init__(page)
         self.given = cookies
         self.cookie_calls: list[tuple] = []
 
@@ -5332,7 +5489,7 @@ class FakeChromePage(FakePage):
     def __init__(self, user_agent: str, cookies: list[dict]) -> None:
         super().__init__([SiteAnswer(403, "no")])
         self.user_agent = user_agent
-        self.context = FakeChromeContext(cookies)
+        self.context = FakeChromeContext(self, cookies)
         self.evaluated: list[str] = []
 
     def evaluate(self, expression: str, arg: object = None) -> object:
@@ -5515,6 +5672,26 @@ def test_21_90_make_chrome_browser_human_clock(env, monkeypatch):
         len(env.clock.pauses) > 0,
         page.left_px() <= BOTTOM_PX,
     ) == (True, True, True)
+
+
+def test_21_98_make_chrome_browser_card_settings(env, monkeypatch):
+    """21.98 make_chrome_browser собирает настройки карточки в TabSettings:
+    новая вкладка ждётся CARD_OPEN_TIMEOUT_MS (30 000 мс), клавиша «в новой
+    вкладке» — new_tab_key(sys.platform), передний план — Settings.front (с
+    front вкладка карточки, затем вкладка выдачи — на передний план).
+    Модуль 21."""
+    page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
+    page.elements = [offer_link(FakeCardPage())]
+    replace_connect_chrome_tab(monkeypatch, chrome_tab_of(page))
+    settings = settings_of(env.folder, front=True)
+    made = cc.make_chrome_browser(settings, random.Random(1), env.transport.factory)
+    made.view_card(search_page.OFFER_LINK_PATTERN, search_page.card_block_reason)
+    fronts = [entry for entry in page.context.log if entry[1] == "front"]
+    assert (page.context.waits, page.context.opened_with, fronts) == (
+        [30_000],
+        [(cc.new_tab_key(sys.platform),)],
+        [("карточка", "front"), ("выдача", "front")],
+    )
 
 
 def test_21_90_chrome_connect_error_exits(env, monkeypatch):

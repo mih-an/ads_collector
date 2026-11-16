@@ -541,7 +541,8 @@ def test_21_94_scroll_stops_on_endless_page():
 # ---------- числа пробы ----------
 
 # Числа ../open_site/click_test.py (human_move, human_aim, human_click,
-# human_scroll, click_next) — имена констант chrome_human (план блока).
+# human_scroll, click_next, open_random_card) — имена констант chrome_human
+# (план блока).
 PROBE_NUMBERS = {
     # движение мыши
     "START_SPOT": (0.3, 0.7),
@@ -592,6 +593,10 @@ PROBE_NUMBERS = {
     "READ_FACTOR": (2, 4),
     "MIN_DELAY_S": 0.15,
     "AFTER_SCROLL_S": (0.5, 1.5),
+    # карточка (open_random_card пробы, block/click-pages П4)
+    "CARD_LOAD_LOOK_S": (1, 2.5),
+    "CARD_VIEW_S": (20, 60),
+    "CARD_CLOSE_S": (0.5, 1.5),
 }
 
 

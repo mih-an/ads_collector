@@ -8,6 +8,12 @@
 ошибки клика, ожидания после ответа — на фальшивой вкладке FakePage с
 настоящей рукой chrome_human.Human (часы TickingClock пишут её сон в события
 вкладки).
+Кейс 21.98 — заход на карточку ChromeBrowser.view_card(шаблон ссылки,
+признак блока): выбор ссылки, клик с клавишей в новую вкладку, трафик по
+CDP, листание, закрытие, BLOCK / ERROR / OK, передний план — на фальшивой
+вкладке с контекстом вкладок (FakeTabContext) и вкладкой карточки
+FakeCardPage. Ссылки на объявления браузер узнаёт скриптом
+page.evaluate(скрипт, шаблон) → список href (подделка — FakePage.evaluate).
 Кейс 21.89 — функция-край connect_chrome_tab на подделках: модуль
 playwright.sync_api подменяется в sys.modules, subprocess.Popen и часы модуля
 time — через monkeypatch. Ни Chrome, ни playwright, ни сети.
@@ -27,6 +33,11 @@ from collector_support import (  # noqa: F401 — no_network, no_chrome: авт�
     no_network,
 )
 from test_collector_browser import (
+    BOTTOM_PX,
+    CARD_HTML,
+    CARD_PLAIN_URL,
+    CARD_TRAFFIC_BYTES,
+    CARD_URL,
     CLICK_JSON,
     EPOCH,
     FOREIGN_FRAME,
@@ -35,6 +46,7 @@ from test_collector_browser import (
     OTHER_URL,
     REDIRECT_TARGET_TEXT,
     SEARCH_OFFERS_URL,
+    FakeCardPage,
     FakeElement,
     FakePage,
     FakePlaywrightError,
@@ -45,6 +57,7 @@ from test_collector_browser import (
     TickingClock,
     box,
     click_target,
+    offer_link,
     stand_human,
     ticket_of,
 )
@@ -59,31 +72,45 @@ WAIT_UNTIL = "domcontentloaded"
 CLICK_TIMEOUT_MS = 12_000
 LOAD_TIMEOUT_MS = 13_000
 URL_TIMEOUT_MS = 14_000
+# Карточка 21.98: своё ожидание новой вкладки и клавиша «в новой вкладке» не
+# та, что на Маке по умолчанию, — видно, что обе взяты из TabSettings.
+CARD_OPEN_TIMEOUT_MS = 15_000
+NEW_TAB_KEY = "Control"
 
 
-def tab_settings() -> "chrome_browser.TabSettings":
-    """Настройки вкладки тестов 21.88 и 21.93."""
+def tab_settings(front: bool = False) -> "chrome_browser.TabSettings":
+    """Настройки вкладки тестов 21.88, 21.93 и 21.98."""
     return chrome_browser.TabSettings(
         goto_timeout_ms=GOTO_TIMEOUT_MS,
         wait_until=WAIT_UNTIL,
         click_timeout_ms=CLICK_TIMEOUT_MS,
         load_timeout_ms=LOAD_TIMEOUT_MS,
         url_timeout_ms=URL_TIMEOUT_MS,
+        card_open_timeout_ms=CARD_OPEN_TIMEOUT_MS,
+        front=front,
+        new_tab_key=NEW_TAB_KEY,
     )
 
 
-def browser_over(page, clock: FakeTime | None = None) -> chrome_browser.ChromeBrowser:
+def browser_over(
+    page,
+    clock: FakeTime | None = None,
+    front: bool = False,
+    hand_clock: TickingClock | None = None,
+) -> chrome_browser.ChromeBrowser:
     """ChromeBrowser над вкладкой page с ошибками фальшивой вкладки; часы
     браузера — clock (по умолчанию свои), рука — настоящая chrome_human.Human
-    на часах TickingClock, сон которых пишется в события вкладки (если они
-    у неё есть)."""
+    на часах hand_clock (по умолчанию свои TickingClock, сон которых пишется
+    в события вкладки, если они у неё есть); front — вкладку на передний
+    план (TabSettings.front)."""
     tab = chrome_browser.ChromeTab(
         page=page, timeout_error=FakeTimeoutError, error=FakePlaywrightError
     )
     clock = clock or FakeTime(EPOCH)
-    human = stand_human(TickingClock(getattr(page, "events", None)))
+    hand_clock = hand_clock or TickingClock(getattr(page, "events", None))
+    human = stand_human(hand_clock)
     return chrome_browser.ChromeBrowser(
-        tab, ticket_of(), clock.monotonic, tab_settings(), human
+        tab, ticket_of(), clock.monotonic, tab_settings(front), human
     )
 
 
@@ -512,6 +539,282 @@ def test_21_93_no_monotonic_when_nothing():
     page = click_page([LINK_P2, BACK_BUTTON], [JSON_ANSWER])
     click(page, "3", clock)
     assert clock.monotonic_calls == 0
+
+
+# ---------- ChromeBrowser.view_card (21.98) ----------
+
+# Шаблон ссылки на объявление в тестах браузера — свой: браузер обязан взять
+# переданный шаблон, а не знать ЦИАН сам.
+LINK_PATTERN = r"/sale/suburban/\d+/"
+# Ссылка пагинации выдачи: под шаблон объявления не подходит.
+LISTING_LINK = FakeElement(box(500, 700), href="/cat.php?deal_type=sale&p=2", text="2")
+
+
+def no_block(url: str) -> str | None:
+    """Признак блока карточки, который блока не видит."""
+    return None
+
+
+def card_page(card: FakeCardPage | None = None) -> tuple[FakePage, FakeCardPage]:
+    """Страница выдачи со ссылкой пагинации и одной ссылкой на объявление,
+    клик по которой с клавишей открывает вкладку card. → (выдача, карточка)."""
+    card = card or FakeCardPage()
+    return FakePage([], [LISTING_LINK, offer_link(card)]), card
+
+
+def view(page, block_reason=no_block, front: bool = False, hand_clock=None):
+    """view_card(LINK_PATTERN, block_reason) браузера над вкладкой page."""
+    made = browser_over(page, front=front, hand_clock=hand_clock)
+    return made.view_card(LINK_PATTERN, block_reason)
+
+
+def test_21_98_card_opened_with_new_tab_key():
+    """21.98 Заход на карточку — клик по ссылке на объявление с зажатой
+    клавишей «в новой вкладке» TabSettings.new_tab_key (Cmd/Ctrl + клик, как
+    open_random_card пробы): открыта ровно одна вкладка. Модуль 21."""
+    page, _ = card_page()
+    view(page)
+    assert page.context.opened_with == [(NEW_TAB_KEY,)]
+
+
+def test_21_98_card_waits_new_tab():
+    """21.98 Новая вкладка ждётся context.expect_page с тайм-аутом
+    TabSettings.card_open_timeout_ms. Модуль 21."""
+    page, _ = card_page()
+    view(page)
+    assert page.context.waits == [CARD_OPEN_TIMEOUT_MS]
+
+
+def test_21_98_card_aim_then_key_click():
+    """21.98 Порядок руки: прицел (прокрутка к ссылке и движение мыши) →
+    нажатие клавиши → клик → отпускание клавиши. Модуль 21."""
+    page, _ = card_page()
+    view(page)
+    order = kinds(page)
+    last_aim = max(
+        i for i, kind in enumerate(order) if kind in {"scroll_into_view", "move"}
+    )
+    assert (
+        last_aim < order.index("down") < order.index("click") < order.index("up")
+    ) is True
+
+
+def test_21_98_card_ok_visit():
+    """21.98 Удачный заход: CardVisit — OK, деталь «-», адрес карточки без
+    параметров (?context=… отрезан), трафик — сумма encodedDataLength
+    событий Network.loadingFinished вкладки карточки. Модуль 21."""
+    page, _ = card_page()
+    visit = view(page)
+    assert (visit.verdict, visit.detail, visit.url, visit.traffic) == (
+        "OK",
+        "-",
+        CARD_PLAIN_URL,
+        CARD_TRAFFIC_BYTES,
+    )
+
+
+def test_21_98_card_traffic_by_cdp():
+    """21.98 Трафик карточки — через CDP: одна сессия
+    context.new_cdp_session над вкладкой карточки, ей отправлен
+    Network.enable. Модуль 21."""
+    page, card = card_page()
+    view(page)
+    (session,) = page.context.sessions
+    assert (session.page is card, "Network.enable" in session.sent) == (True, True)
+
+
+def test_21_98_card_scrolled_20_to_60():
+    """21.98 Карточку рука листает 20–60 с (CARD_VIEW_S): длительность
+    CardVisit.seconds в этих границах, вкладка карточки долистана до низа,
+    рука проспала не меньше этой длительности. Модуль 21."""
+    page, card = card_page()
+    hand_clock = TickingClock(page.events)
+    visit = view(page, hand_clock=hand_clock)
+    assert (
+        20.0 <= visit.seconds <= 60.0,
+        card.left_px() <= BOTTOM_PX,
+        sum(hand_clock.pauses) >= visit.seconds,
+    ) == (True, True, True)
+
+
+def test_21_98_card_closed_after_view():
+    """21.98 После листания вкладка карточки закрыта, вкладка выдачи — нет:
+    в контексте осталась одна вкладка выдачи. Модуль 21."""
+    page, card = card_page()
+    view(page)
+    assert (card.closed, page.closed, page.context.pages) == (True, False, [page])
+
+
+def test_21_98_card_choice_is_random_offer_link():
+    """21.98 Ссылка на объявление выбирается случайно (случайность руки) из
+    ссылок, подходящих под шаблон: при разных seed руки нажимаются разные
+    ссылки на объявления и никогда — ссылка пагинации. Модуль 21."""
+    hrefs = [CARD_URL.replace("312345678", str(number)) for number in (101, 102, 103)]
+    clicked: set[str | None] = set()
+    for seed in range(1, 31):
+        offers = [
+            offer_link(FakeCardPage(), href, x=100.0 + 250.0 * place)
+            for place, href in enumerate(hrefs)
+        ]
+        page = FakePage([], [LISTING_LINK, *offers])
+        tab = chrome_browser.ChromeTab(
+            page=page, timeout_error=FakeTimeoutError, error=FakePlaywrightError
+        )
+        human = stand_human(TickingClock(), seed)
+        made = chrome_browser.ChromeBrowser(
+            tab, ticket_of(), FakeTime(EPOCH).monotonic, tab_settings(), human
+        )
+        made.view_card(LINK_PATTERN, no_block)
+        clicked |= {element.href for element in page.clicked if element is not None}
+    assert (clicked <= set(hrefs), len(clicked) >= 2) == (True, True)
+
+
+def test_21_98_card_uses_given_pattern():
+    """21.98 Ссылки на объявления ищутся по переданному шаблону: с шаблоном
+    /rent/flat/<число>/ открыта карточка аренды, а не продажи. Модуль 21."""
+    sale, rent = FakeCardPage(), FakeCardPage()
+    page = FakePage(
+        [],
+        [
+            offer_link(sale),
+            FakeElement(box(400, 300, 200, 40), href="/rent/flat/77/", opens=rent),
+        ],
+    )
+    browser_over(page).view_card(r"/rent/flat/\d+/", no_block)
+    assert (rent.closed, sale.closed, len(page.context.opened_with)) == (
+        True,
+        False,
+        1,
+    )
+
+
+def test_21_98_no_offer_links():
+    """21.98 Ссылок на объявления на странице нет — CardVisit ERROR
+    no_offer_links: ни прицела, ни клика, ни ожидания вкладки. Модуль 21."""
+    page = FakePage([], [LISTING_LINK])
+    visit = view(page)
+    touched = {"scroll_into_view", "click", "locator_click"} & set(kinds(page))
+    assert (visit.verdict, visit.detail, touched, page.context.waits) == (
+        "ERROR",
+        "no_offer_links",
+        set(),
+        [],
+    )
+
+
+def test_21_98_card_block_reason_gets_url():
+    """21.98 Признак блока карточки block_reason зовётся с адресом открытой
+    вкладки карточки целиком (с параметрами). Модуль 21."""
+    seen: list[str] = []
+
+    def reason(url: str) -> str | None:
+        seen.append(url)
+        return None
+
+    page, _ = card_page()
+    view(page, reason)
+    assert seen == [CARD_URL]
+
+
+# Карточка, открывшаяся капчей.
+CAPTCHA_CARD_URL = "https://www.cian.ru/captcha/?redirect_url=x"
+
+
+def captcha_reason(url: str) -> str | None:
+    """Признак блока карточки: капча в адресе."""
+    return "captcha" if "captcha" in url else None
+
+
+def test_21_98_card_block():
+    """21.98 Признак блока сработал (капча или чужой адрес) — CardVisit
+    BLOCK с деталью признака и телом вкладки карточки (content) — для файла
+    _block_*. Модуль 21."""
+    page, _ = card_page(FakeCardPage(url=CAPTCHA_CARD_URL))
+    visit = view(page, captcha_reason)
+    assert (visit.verdict, visit.detail, visit.body) == ("BLOCK", "captcha", CARD_HTML)
+
+
+def test_21_98_card_block_not_viewed_closed():
+    """21.98 Карточка с блоком не листается и закрывается. Модуль 21."""
+    page, card = card_page(FakeCardPage(url=CAPTCHA_CARD_URL))
+    view(page, captcha_reason)
+    assert ("wheel" in kinds(card), card.closed) == (False, True)
+
+
+def test_21_98_card_load_timeout_not_failure():
+    """21.98 Загрузка карточки ждётся (wait_for_load_state), её тайм-аут —
+    не сбой: заход OK. Модуль 21."""
+    page, card = card_page()
+    card.load_error = FakeTimeoutError("Timeout exceeded")
+    visit = view(page)
+    assert ("load" in kinds(card), visit.verdict) == (True, "OK")
+
+
+def test_21_98_card_open_error_is_error():
+    """21.98 Ошибка Playwright при открытии карточки — не исключение, а
+    CardVisit ERROR, деталь — первая строка текста ошибки. Модуль 21."""
+    page, _ = card_page()
+    page.context.open_error = FakePlaywrightError(
+        "Target page, context or browser has been closed\nCall log:\n  - x"
+    )
+    visit = view(page)
+    assert (visit.verdict, visit.detail) == (
+        "ERROR",
+        "Target page, context or browser has been closed",
+    )
+
+
+def test_21_98_card_open_timeout_closes_extra_tabs():
+    """21.98 Новая вкладка не дождалась (тайм-аут), а осталась открытой —
+    CardVisit ERROR, лишняя вкладка закрыта, вкладка выдачи — нет.
+    Модуль 21."""
+    page, card = card_page()
+    page.context.late = True
+    visit = view(page)
+    assert (visit.verdict, card.closed, page.closed, page.context.pages) == (
+        "ERROR",
+        True,
+        False,
+        [page],
+    )
+
+
+def test_21_98_card_open_other_error_propagates():
+    """21.98 Исключение при открытии карточки, которое не ошибка Playwright
+    (ValueError), летит из view_card: «ошибки громко». Модуль 21."""
+    page, _ = card_page()
+    page.context.open_error = ValueError("21.98")
+    with pytest.raises(ValueError, match="21.98"):
+        view(page)
+
+
+@pytest.mark.parametrize(
+    ("front", "expected"),
+    [
+        (
+            True,
+            [("карточка", "front"), ("карточка", "close"), ("выдача", "front")],
+        ),
+        (False, [("карточка", "close")]),
+    ],
+    ids=["--front", "без --front"],
+)
+def test_21_98_front_flag(front, expected):
+    """21.98 TabSettings.front: вкладка карточки — на передний план до
+    листания, после закрытия — снова вкладка выдачи; без front — ни одной
+    смены переднего плана. Модуль 21."""
+    page, _ = card_page()
+    view(page, front=front)
+    assert page.context.log == expected
+
+
+def test_21_98_front_after_open_error():
+    """21.98 С front после ошибки открытия вкладка выдачи снова на переднем
+    плане (последнее действие журнала вкладок). Модуль 21."""
+    page, _ = card_page()
+    page.context.late = True
+    view(page, front=True)
+    assert page.context.log[-1] == ("выдача", "front")
 
 
 # ---------- функция-край connect_chrome_tab (21.89) ----------

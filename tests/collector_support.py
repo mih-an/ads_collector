@@ -35,7 +35,8 @@ test_collector_status.py, а status.py — отдельный скрипт, ко
 импортирует (CLAUDE.md §6); его тесты берут отсюда только запрет сети и
 часы и не должны падать оттого, что пакет collector сломан или не
 собирается. Подсказки типов HttpReply, Ticket и PageAnswer — только для
-проверки типов (TYPE_CHECKING), при запуске тестов не импортируются.
+проверки типов (TYPE_CHECKING), при запуске тестов не импортируются (как и
+CardAnswer).
 """
 
 import http.client
@@ -58,7 +59,7 @@ import pytest
 
 if TYPE_CHECKING:
     from collector.browser import Ticket
-    from collector.run_folder import PageAnswer
+    from collector.run_folder import CardAnswer, PageAnswer
     from collector.transport import HttpReply
 
 # Допуск сверки вершин ссылки с кольцом клетки. Почему 2e-5: jitter_ring
@@ -330,6 +331,10 @@ class FakePageLoader:
     который обход читает у загрузчика (loader.ticket). stay_on_page(секунды)
     — пауза обхода на открытой странице (21.97): длительность пишется в
     stayed и уходит в переданный сон sleep (не дан — только запись).
+    visit_card() — заход на карточку после паузы (21.98): отдаёт первый
+    заход из очереди cards (run_folder.CardAnswer или None — захода нет),
+    очередь пуста — None; в card_calls пишется, сколько пауз stay_on_page
+    было к этому вызову.
     """
 
     def __init__(
@@ -337,17 +342,24 @@ class FakePageLoader:
         ticket: "Ticket",
         pages: dict[tuple[str, int], list["PageAnswer"]],
         sleep: Callable[[float], None] | None = None,
+        cards: list["CardAnswer | None"] | None = None,
     ) -> None:
         self.ticket = ticket
         self.pages = pages
         self.sleep = sleep
+        self.cards = list(cards or [])
         self.asked: list[tuple[str, int, list]] = []
         self.stayed: list[float] = []
+        self.card_calls: list[int] = []
 
     def stay_on_page(self, seconds: float) -> None:
         self.stayed.append(seconds)
         if self.sleep is not None:
             self.sleep(seconds)
+
+    def visit_card(self) -> "CardAnswer | None":
+        self.card_calls.append(len(self.stayed))
+        return self.cards.pop(0) if self.cards else None
 
     def load_page(self, key: str, ring: list, page: int) -> "PageAnswer":
         self.asked.append((key, page, ring))
