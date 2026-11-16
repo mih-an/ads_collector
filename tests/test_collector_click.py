@@ -1108,12 +1108,12 @@ def test_21_96_no_button_sector_end(env, monkeypatch, playwright_installed):
 
 def test_21_96_no_button_marked(env, monkeypatch, capsys, playwright_installed):
     """21.96 Конец без кнопки на полной странице, когда по totalOffers
-    страниц больше, — пометка в итоге прогона в stdout: строка итога с
-    клеткой и no_next_page (решение Андрея 6; DECISIONS block/click-pages,
-    допущение (б)). Модуль 21."""
+    страниц больше (стр. 2 — 28 из 100), — пометка в итоге прогона в
+    stdout: строка «КОНЕЦ КЛИКОМ <клетка>: no_next_page» (решение Андрея 6;
+    DECISIONS block/click-pages, допущение (б)). Модуль 21."""
     no_button_run(env, monkeypatch)
     lines = summary_lines(capsys.readouterr().out)
-    assert [line for line in lines if B in line and "no_next_page" in line] != []
+    assert f"КОНЕЦ КЛИКОМ {B}: no_next_page" in lines
 
 
 def test_21_96_no_button_summary_keys(env, monkeypatch, playwright_installed):
@@ -1149,11 +1149,85 @@ def test_21_96_same_ids_page_not_saved(env, monkeypatch, playwright_installed):
 
 
 def test_21_96_same_ids_marked(env, monkeypatch, capsys, playwright_installed):
-    """21.96 Те же id — пометка в итоге прогона в stdout: строка итога с
-    клеткой и same_ids. Модуль 21."""
+    """21.96 Те же id — пометка в итоге прогона в stdout всегда (как STALE
+    в пробе): строка «КОНЕЦ КЛИКОМ <клетка>: same_ids». Модуль 21."""
     same_ids_run(env, monkeypatch)
     lines = summary_lines(capsys.readouterr().out)
-    assert [line for line in lines if B in line and "same_ids" in line] != []
+    assert f"КОНЕЦ КЛИКОМ {B}: same_ids" in lines
+
+
+# Условие пометки «конец без кнопки» (решение Андрея 6): прошлая страница
+# клетки полная (OFFERS_PER_PAGE) и по totalOffers страниц больше, чем она.
+# Через main обход такую страницу N не спрашивает (короткая страница или
+# исчерпанная оценка totalOffers гасят листание, read_out), поэтому (б) и
+# (в) — внутренние: страницы зовутся напрямую (download_page, как 21.91) над
+# подделкой загрузчика. Внутреннее.
+
+# Ответ загрузчика кликом «нажимать нечего»: обычная попытка, код 0.
+NO_NEXT_PAGE_ANSWER = {
+    "verdict": "PAGE_END",
+    "detail": "no_next_page",
+    "code": 0,
+    "total": None,
+    "offers": [],
+    "size": 0,
+    "body": "",
+    "kind": "click",
+}
+
+
+def end_note_crawl(env, first_page, second_page):
+    """Обход над подделкой загрузчика с открытым прогоном: стр. 1 B —
+    first_page, стр. 2 — second_page; обе зовутся напрямую. → обход."""
+    pages = {(B, 1): [first_page], (B, 2): [second_page]}
+    run, _, _ = stay_crawl(env, pages)
+    run.open_run()
+    run.download_page(B, 1)
+    run.download_page(B, 2)
+    return run
+
+
+def test_21_96_note_full_page_more_pages(env):
+    """21.96 (а) Прошлая страница полная (28) и по totalOffers (60) страниц
+    больше одной — «нажимать нечего» на стр. 2 помечается: end_notes
+    {клетка: no_next_page}. Внутреннее. Модуль 21."""
+    first = loader_answer(B, 1, total=60, offers=full_offers(100, 28))
+    run = end_note_crawl(env, first, loader_answer(B, 2, **NO_NEXT_PAGE_ANSWER))
+    assert run.state.end_notes == {B: "no_next_page"}
+
+
+def test_21_96_no_note_after_short_page(env):
+    """21.96 (б) Прошлая страница короткая (5 из 60) — «нажимать нечего»
+    не помечается: end_notes пуст. Модуль 21. Внутреннее."""
+    first = loader_answer(B, 1, total=60, offers=full_offers(100, 5))
+    run = end_note_crawl(env, first, loader_answer(B, 2, **NO_NEXT_PAGE_ANSWER))
+    assert run.state.end_notes == {}
+
+
+def test_21_96_no_note_when_total_is_read(env):
+    """21.96 (в) Прошлая страница полная, но по totalOffers (28) страниц
+    ровно одна — «нажимать нечего» на стр. 2 не помечается (end_notes
+    пуст), а строка sector_end why=no_next_page есть. Внутреннее.
+    Модуль 21."""
+    first = loader_answer(B, 1, total=28, offers=full_offers(100, 28))
+    run = end_note_crawl(env, first, loader_answer(B, 2, **NO_NEXT_PAGE_ANSWER))
+    ends = sector_ends(Path(run.folder.path), B)
+    assert (ends, run.state.end_notes) == (
+        [{"event": "sector_end", "sector": B, "why": "no_next_page"}],
+        {},
+    )
+
+
+def test_21_96_same_ids_always_noted(env):
+    """21.96 Те же id помечаются всегда (как STALE в пробе), даже когда по
+    totalOffers страниц ровно одна: end_notes {клетка: same_ids}.
+    Внутреннее. Модуль 21."""
+    first = loader_answer(B, 1, total=28, offers=full_offers(100, 28))
+    same = loader_answer(
+        B, 2, verdict="PAGE_END", detail="same_ids", offers=[], kind="click"
+    )
+    run = end_note_crawl(env, first, same)
+    assert run.state.end_notes == {B: "same_ids"}
 
 
 # JSON клика без списка объявлений: API_CHANGED no_offers_serialized.
