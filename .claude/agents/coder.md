@@ -65,7 +65,7 @@ docs/DECISIONS.md — решения уровня 1 и решения Андре
 - числа сборщика — в `Settings` (collector/crawl.py) и константах контракта
   в collector/search_page.py; исключения: `HTTP_TIMEOUT_S` и
   `COOKIE_DOMAIN` — в collector/transport.py, умолчания аргументов запуска (`BUDGET`,
-  `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `COOKIES_FILE`, `UA_FILE`) — в
+  `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `BROWSER`, `COOKIES_FILE`, `UA_FILE`) — в
   collector/cian_collect.py; никаких магических чисел россыпью;
 - формат папки прогона (docs/CIAN_DATA_FORMAT.md) не меняется без решения
   Андрея: порядок ключей, имена файлов, кодировки — как есть;

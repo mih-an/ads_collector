@@ -42,7 +42,7 @@ docs/DECISIONS.md (решения уровня 1 и решения Андрея)
   в collector/search_page.py, не россыпью по коду (CLAUDE.md §6);
   исключения: `HTTP_TIMEOUT_S` и `COOKIE_DOMAIN` — в collector/transport.py, умолчания
   аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`,
-  `COOKIES_FILE`, `UA_FILE`) — в collector/cian_collect.py.
+  `BROWSER`, `COOKIES_FILE`, `UA_FILE`) — в collector/cian_collect.py.
   Правила обхода и разбора — чистыми функциями; сеть (реализации транспорта
   collector/urllib_transport.py и collector/httpx_transport.py), часы, сон,
   случайность, argv — по краям.
