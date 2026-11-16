@@ -1,12 +1,12 @@
 """
 cian_collect.py — запуск боевого сборщика ЦИАН и его края (часы, сон, билет).
 
-Получает argv (read_settings → Settings). build_crawl собирает обход
-crawl.Crawl: случайность по seed, файл клеток сбора [E-42] и сетка (сетка —
-в stdout), часы crawl.Clock, пауза старта, затем вход на ЦИАН. enter_cian —
-билет (read_ticket → Ticket), транспорт (make_transport) →
-браузер browser.Browser. main запускает обход и печатает итог. Сети здесь нет
-(она в транспорте); сервер и запуск — collector/README.md.
+Получает argv (read_settings → Settings). build_crawl собирает обход crawl.Crawl:
+случайность по seed, файл клеток [E-42] и сетка (в stdout), часы crawl.Clock,
+пауза старта, вход на ЦИАН. enter_cian — билет (read_ticket → Ticket),
+транспорт (make_transport) → браузер browser.Browser → источник страниц из
+PAGE_SOURCES. main запускает обход и печатает итог. Сети здесь нет (она в
+транспорте); сервер и запуск — collector/README.md.
 """
 
 from __future__ import annotations
@@ -21,10 +21,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from collector import urllib_transport
+from collector import page_source, urllib_transport
 from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
+from collector.page_source import PageSource
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
@@ -135,6 +136,18 @@ def make_transport(name: str, cookie_header: str | None) -> Transport:
 TransportFactory = Callable[[str, str | None], Transport]
 
 
+# ───────────────────────── ИСТОЧНИКИ СТРАНИЦ ─────────────────────────
+
+# Одно место для списка источников страниц, по образцу TRANSPORTS. Словарь
+# и умолчание PAGE_SOURCE читаются в момент вызова: так 21.84 подставляет
+# свой создатель и своё имя. Флага запуска нет, пока реализация одна: имя
+# без выбора не проверить (DECISIONS, block/page-source).
+PAGE_SOURCE = "url"
+PAGE_SOURCES: dict[str, Callable[[Browser], PageSource]] = {
+    "url": page_source.UrlPageSource,
+}
+
+
 # ─────────────────────────────── CLI ────────────────────────────────
 
 
@@ -234,18 +247,19 @@ def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> 
 
 def enter_cian(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
-) -> Browser:
+) -> PageSource:
     """Вход на ЦИАН: браузер с билетом (куки, UA, возраст кук) на выбранном
-    транспорте."""
+    транспорте → источник страниц PAGE_SOURCES[PAGE_SOURCE] над ним."""
     ticket = read_ticket(settings, time.time(), rnd)
     transport = transport_factory(settings.transport, ticket.cookie_header)
-    return Browser(transport, ticket, time.monotonic)
+    browser = Browser(transport, ticket, time.monotonic)
+    return PAGE_SOURCES[PAGE_SOURCE](browser)
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
     пауза старта (первый вызов случайности после seed), затем вход на ЦИАН
-    (билет, транспорт) — готовый браузер для обхода."""
+    (билет, транспорт, браузер) — готовый источник страниц для обхода."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -262,14 +276,15 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     clock = Clock(now=now_local, sleep=time.sleep)
     pause_before_start(settings, rnd, clock)
     # билет — после паузы старта: возраст кук и UA (порядок случайности)
-    browser = enter_cian(settings, rnd, transport_factory)
-    return Crawl(settings, tiles_file, browser, clock, rnd)
+    source = enter_cian(settings, rnd, transport_factory)
+    return Crawl(settings, tiles_file, source, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
     """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
     settings = read_settings(sys.argv[1:])
-    # вся сборка внешнего мира: часы, rnd, пауза старта, билет, транспорт
+    # вся сборка внешнего мира: часы, rnd, пауза старта, билет, транспорт,
+    # источник страниц
     crawl = build_crawl(settings, transport_factory)
     crawl.collect()
     crawl.print_summary()
