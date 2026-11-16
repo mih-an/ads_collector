@@ -15,7 +15,8 @@ ChromeStand — ChromeBrowser над фальшивой вкладкой Playwri
 Подделки вкладки Playwright (FakePage, FakeMouse, FakeKeyboard, FakeLocator,
 FakeElement, ошибки) и часы руки TickingClock живут здесь: их берут
 tests/test_collector_chrome_browser.py (21.88, 21.93),
-tests/test_collector_chrome_human.py (21.94) и tests/test_collector.py.
+tests/test_collector_chrome_human.py (21.94), tests/test_collector.py и
+tests/test_collector_click.py (подделка выдачи FakeListingPage, 21.96).
 """
 
 import json
@@ -41,7 +42,7 @@ from collector_support import (
 # модуль. Типы клика (ClickTarget, BrowserCannotError) берутся через него в
 # момент теста.
 from collector import browser as browser_types
-from collector import chrome_browser, http_browser, search_page, transport
+from collector import chrome_browser, chrome_human, http_browser, search_page, transport
 from collector.browser import Browser, FetchedPage, Ticket
 
 # Клетка, которую узнаёт нижний мир HttpStand, и её кольцо.
@@ -538,14 +539,9 @@ class TickingClock:
         self.now += seconds
 
 
-def stand_human(clock: TickingClock, seed: int = 1) -> Any:
+def stand_human(clock: TickingClock, seed: int = 1) -> chrome_human.Human:
     """Настоящая рука человека chrome_human.Human на часах clock и
-    random.Random(seed). Импорт внутри функции — временно: пока модуля
-    chrome_human нет (коммит «тесты» П2), этот файл и импортирующие его
-    test_collector.py и test_collector_chrome_browser.py должны собираться;
-    в П3 импорт поднимается наверх."""
-    from collector import chrome_human
-
+    random.Random(seed)."""
     return chrome_human.Human(clock.sleep, clock.monotonic, random.Random(seed))
 
 
@@ -563,7 +559,7 @@ STAND_ELEMENTS = [
 ]
 
 
-def stand_tab_settings() -> Any:
+def stand_tab_settings() -> chrome_browser.TabSettings:
     """chrome_browser.TabSettings стенда ChromeStand."""
     return chrome_browser.TabSettings(
         goto_timeout_ms=GOTO_TIMEOUT_MS,
@@ -816,7 +812,9 @@ def test_21_86_has_ticket(cookie_header, expected):
 CLICK_JSON = '{"data": {"offersSerialized": [], "offerCount": 0}}'
 
 
-def click_target(value: str = "2", else_text: str = "Дальше") -> Any:
+def click_target(
+    value: str = "2", else_text: str = "Дальше"
+) -> browser_types.ClickTarget:
     """Что нажать: ссылку с p=value, нет её — элемент с текстом else_text."""
     return browser_types.ClickTarget(
         link_param=search_page.PAGE_PARAM, link_value=value, else_text=else_text

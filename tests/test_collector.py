@@ -1,6 +1,6 @@
 """Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61,
 21.78, 21.81–21.85, 21.87, 21.90, 21.91, 21.92 (что нажать и что ловить при
-клике — search_page).
+клике, разбор ответа клика — search_page).
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
@@ -59,18 +59,23 @@ page_loader (загрузчик страницы), crawl (обход); чере�
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
   теста одним FakeTime;
 - crawl.Crawl(settings, tiles_file, loader, Clock(now, sleep), rnd), где
-  loader — загрузчик страницы: page_loader.UrlPageLoader(browser) или
+  loader — загрузчик страницы: page_loader.UrlPageLoader(browser, sleep) или
   подделка — так обход собирается без main (make_crawl, loader_crawl);
+  паузы между запросами обход отдаёт loader.stay_on_page(секунды) (21.97);
   паузы старта и входа на ЦИАН при этом нет: их делает build_crawl;
   Crawl.download_page(ключ, страница) и Crawl.download_tile(ключ) отдают
   crawl.PageOutcome (21.91), их подменяет 21.91;
-- page_loader.UrlPageLoader(browser) с атрибутом ticket и методом
+- page_loader.UrlPageLoader(browser, sleep) с атрибутом ticket и методом
   load_page(ключ клетки, кольцо, страница) → run_folder.PageAnswer;
+  page_loader.ClickPageLoader(browser) — загрузчик «кликом» (21.84; сам он
+  — tests/test_collector_click.py);
 - cc.PAGE_LOADERS — словарь «имя → создатель загрузчика страницы»
-  (браузер, Settings, rnd, часы Clock) и умолчание cc.PAGE_LOADER; флаг
-  --page-loader (Settings.page_loader); словарь читается в момент вызова:
-  21.84 подставляет свой создатель и своё имя; cc.make_url_loader —
-  создатель загрузчика «по ссылке»;
+  (браузер, Settings, rnd, часы Clock) с ключами url и click и умолчание
+  cc.PAGE_LOADER; флаг --page-loader (Settings.page_loader); словарь
+  читается в момент вызова: 21.84 подставляет свой создатель и своё имя;
+  cc.make_url_loader и cc.make_click_loader — создатели загрузчиков «по
+  ссылке» и «кликом»; поле cc.BrowserChoice.clicks — умеет ли браузер
+  кликать (check_args: --page-loader click с браузером без кликов — код 2);
 - cc.read_settings, cc.read_ticket, cc.make_transport, cc.random (Random,
   randrange) и crawl.Crawl.sleep_between (подглядывание в 21.36);
 - cc.TRANSPORTS — словарь «имя → cc.TransportChoice(library, make)», его
@@ -375,13 +380,13 @@ def make_crawl(env, features, **changes):
     """Crawl без main() с уже начатым прогоном (open_run): файл клеток
     features (TilesFile); загрузчик страницы «по ссылке» UrlPageLoader над
     готовым браузером HttpBrowser с билетом как в env и фальшивым
-    транспортом env; часы и сон — FakeTime env, случайность — Random(1);
-    changes — поля Settings."""
+    транспортом env, пауза на странице — сон FakeTime env (21.97); часы и
+    сон — FakeTime env, случайность — Random(1); changes — поля Settings."""
     write_features(env.tiles, features)
     tiles_file = geometry.TilesFile(str(env.tiles))
     settings = settings_of(env.folder, **changes)
     site = http_browser.HttpBrowser(env.transport, fake_ticket(), env.clock.monotonic)
-    loader = page_loader.UrlPageLoader(site)
+    loader = page_loader.UrlPageLoader(site, env.clock.sleep)
     clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
     started = crawl.Crawl(
         settings,
@@ -999,6 +1004,134 @@ def test_21_92_is_next_page_response(url, resource_type, expected):
     адресе — да; get-infinite-search-result (блок рекомендаций того же API)
     — нет; прочие — нет. Модуль 21."""
     assert search_page.is_next_page_response(url, resource_type) is expected
+
+
+# Разбор ответа на клик «следующая страница» (21.92, решение Андрея 5):
+# объявления — data.offersSerialized, счётчик — data.offerCount (путь —
+# допущение о данных, DECISIONS block/click-pages). Настоящего ответа клика
+# в фикстурах нет: JSON собирается из объявлений настоящих страниц ночи 10-07.
+
+CLICK_NIGHT = "2026-10-07_0013"
+
+
+def click_json(offers: list, total) -> str:
+    """Тело ответа API выдачи на клик: объявления — data.offersSerialized,
+    счётчик — data.offerCount."""
+    payload = {"data": {"offersSerialized": offers, "offerCount": total}}
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def fixture_offers(name: str = "T0611_p1.html.xz") -> tuple[int, list]:
+    """totalOffers и объявления настоящей страницы ночи 10-07 (фикстура)."""
+    verdict, _, total, offers = search_page.classify_page(
+        200, full_page(CLICK_NIGHT, name)
+    )
+    if verdict != search_page.OK:
+        raise AssertionError(f"фикстура {name} не страница выдачи: {verdict}")
+    return total, offers
+
+
+def test_21_92_click_end_details():
+    """21.92 Детали конца выдачи при листании кликом — знание ЦИАН в
+    search_page: нажимать нечего — NO_NEXT_PAGE = "no_next_page", те же id,
+    что на прошлой странице, — SAME_IDS = "same_ids" (решение Андрея 6).
+    Модуль 21."""
+    assert (search_page.NO_NEXT_PAGE, search_page.SAME_IDS) == (
+        "no_next_page",
+        "same_ids",
+    )
+
+
+def test_21_92_classify_click_ok():
+    """21.92 classify_click: JSON с data.offersSerialized (объявления
+    настоящей страницы T0611 p1 ночи 10-07) и data.offerCount → OK, «-»,
+    totalOffers = offerCount, объявления как в ответе. Модуль 21."""
+    total, offers = fixture_offers()
+    assert search_page.classify_click(200, click_json(offers, total)) == (
+        search_page.OK,
+        "-",
+        total,
+        offers,
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "body", "neterr", "expected"),
+    [
+        (403, "запрет", None, ("BLOCK", "http_403")),
+        (429, "запрет", None, ("BLOCK", "http_429")),
+        (500, "ошибка", None, ("NET_ERROR", "http_500")),
+        (503, "ошибка", None, ("NET_ERROR", "http_503")),
+        (0, "", "click_timeout", ("NET_ERROR", "click_timeout")),
+    ],
+    ids=["403", "429", "500", "503", "сбой: click_timeout"],
+)
+def test_21_92_classify_click_by_code(code, body, neterr, expected):
+    """21.92 classify_click по коду ответа клика, как у страницы по ссылке:
+    403 и 429 → BLOCK http_<код>; 500 и выше → NET_ERROR http_<код>; сбой
+    (код 0, neterr) → NET_ERROR с деталью neterr; totalOffers None,
+    объявлений нет. Модуль 21."""
+    verdict, detail = expected
+    assert search_page.classify_click(code, body, neterr) == (verdict, detail, None, [])
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (servicepipe_body("013140").decode("utf-8"), ("BLOCK", "servicepipe")),
+        ("<html>Вы не робот?</html>", ("BLOCK", "captcha")),
+        ("<html>другое</html>", ("API_CHANGED", "click_not_json")),
+        ("", ("API_CHANGED", "click_not_json")),
+    ],
+    ids=["Servicepipe (проба 10.11)", "капча", "другой HTML", "пустое тело"],
+)
+def test_21_92_classify_click_not_json(body, expected):
+    """21.92 Ответ клика 200 — не JSON: страница проверки Servicepipe →
+    BLOCK servicepipe; капча → BLOCK captcha; иное (и пустое тело) →
+    API_CHANGED click_not_json; totalOffers None, объявлений нет. Модуль 21."""
+    verdict, detail = expected
+    assert search_page.classify_click(200, body) == (verdict, detail, None, [])
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"data": {"offerCount": 87}}',
+        '{"data": {"offersSerialized": {}, "offerCount": 87}}',
+        '{"data": null}',
+        '{"offers": []}',
+    ],
+    ids=["нет offersSerialized", "offersSerialized не список", "data null", "нет data"],
+)
+def test_21_92_classify_click_no_offers_list(body):
+    """21.92 JSON клика без списка объявлений data.offersSerialized (нет
+    ключа, не список, нет data) → API_CHANGED no_offers_serialized.
+    Модуль 21."""
+    verdict, detail, _, offers = search_page.classify_click(200, body)
+    assert (verdict, detail, offers) == ("API_CHANGED", "no_offers_serialized", [])
+
+
+@pytest.mark.parametrize("page_no", [None, 3], ids=["страница по умолчанию", "p3"])
+def test_21_92_classify_click_empty_page(page_no):
+    """21.92 Пустой список объявлений на странице 2 и дальше при offerCount
+    больше 0 → PAGE_END empty_page (конец набора, как у страницы по ссылке);
+    страница по умолчанию — 2. Модуль 21."""
+    body = click_json([], 87)
+    if page_no is None:
+        result = search_page.classify_click(200, body)
+    else:
+        result = search_page.classify_click(200, body, page=page_no)
+    assert result == ("PAGE_END", "empty_page", 87, [])
+
+
+def test_21_92_classify_click_fields_missing():
+    """21.92 У первых пяти объявлений ответа клика нет land (поле потеряно у
+    всех) → API_CHANGED fields_missing:land.area, как у страницы по ссылке.
+    Модуль 21."""
+    total, offers = fixture_offers()
+    lost = [{k: v for k, v in item.items() if k != "land"} for item in offers[:5]]
+    verdict, detail, _, _ = search_page.classify_click(200, click_json(lost, total))
+    assert (verdict, detail) == ("API_CHANGED", "fields_missing:land.area")
 
 
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
@@ -1847,11 +1980,12 @@ def test_21_30_monotonic_twice_on_broken_compression(fetch_env):
 
 
 def url_loader(fetch_env, page_no: int, replies: list):
-    """UrlPageLoader над браузером make_browser (с билетом); replies — ответы
-    на запросы страницы page_no клетки A по порядку."""
+    """UrlPageLoader над браузером make_browser (с билетом) и сном часов
+    fetch_env; replies — ответы на запросы страницы page_no клетки A по
+    порядку."""
     site = make_browser(fetch_env)
     fetch_env.transport.replies[A, page_no] = list(replies)
-    return page_loader.UrlPageLoader(site)
+    return page_loader.UrlPageLoader(site, fetch_env.clock.sleep)
 
 
 def answer_view(answer) -> tuple:
@@ -1995,7 +2129,7 @@ def test_21_83_two_calls_same_url(fetch_env):
 def test_21_83_ticket_is_browser_ticket(fetch_env):
     """21.83 ticket загрузчика — билет его браузера. Модуль 21."""
     site = make_browser(fetch_env)
-    loader = page_loader.UrlPageLoader(site)
+    loader = page_loader.UrlPageLoader(site, fetch_env.clock.sleep)
     assert loader.ticket is site.ticket
 
 
@@ -3975,17 +4109,18 @@ def loader_answer(key: str, page_no: int, **changes):
 def loader_crawl(env, pages: dict, **changes):
     """Обход без main() над подделкой загрузчика FakePageLoader(loader_ticket(),
     pages) по клеткам CELLS (Random(1): очередь B, A); прогон не начат —
-    тест сам зовёт collect(). Сон записывается в slept парой (сколько
-    вызовов load_page было к этому моменту, секунды). changes — поля
-    Settings. → (обход, подделка, slept)."""
+    тест сам зовёт collect(). Сон часов и пауза на странице подделки
+    (stay_on_page, 21.97) записываются в slept парой (сколько вызовов
+    load_page было к этому моменту, секунды). changes — поля Settings.
+    → (обход, подделка, slept)."""
     write_features(env.tiles, CELLS)
     tiles_file = geometry.TilesFile(str(env.tiles))
-    loader = FakePageLoader(loader_ticket(), pages)
     slept: list[tuple[int, float]] = []
 
     def sleep(seconds: float) -> None:
         slept.append((len(loader.asked), seconds))
 
+    loader = FakePageLoader(loader_ticket(), pages, sleep)
     clock = crawl.Clock(now=env.clock.now, sleep=sleep)
     settings = settings_of(env.folder, **changes)
     run = crawl.Crawl(settings, tiles_file, loader, clock, random.Random(1))
@@ -4672,16 +4807,20 @@ def test_21_81_no_library_no_check(env, monkeypatch):
 # Выбор загрузчика страницы — флаг --page-loader, словарь cc.PAGE_LOADERS
 # «имя → создатель» и умолчание cc.PAGE_LOADER (решение Андрея 1 и DECISIONS
 # block/click-pages): создатель зовётся с браузером, Settings, rnd и часами
-# Clock обхода; словарь читается в момент вызова. Клик (ключ click) и код 2
-# с браузером без кликов — следующие пары блока.
+# Clock обхода; словарь читается в момент вызова. Ключ click —
+# cc.make_click_loader; --page-loader click с браузером, у которого
+# BrowserChoice.clicks ложь, — код 2 до паузы старта.
 
 
 def test_21_84_page_loaders_dict():
     """21.84 Список загрузчиков страницы — словарь cc.PAGE_LOADERS «имя →
-    создатель» с ключом url → cc.make_url_loader; умолчание cc.PAGE_LOADER —
-    url. Модуль 21."""
+    создатель» с ключами url → cc.make_url_loader и click →
+    cc.make_click_loader; умолчание cc.PAGE_LOADER — url. Модуль 21."""
     loaders, default = cc.PAGE_LOADERS, cc.PAGE_LOADER
-    assert (loaders, default) == ({"url": cc.make_url_loader}, "url")
+    assert (loaders, default) == (
+        {"url": cc.make_url_loader, "click": cc.make_click_loader},
+        "url",
+    )
 
 
 @pytest.mark.parametrize(
@@ -4788,6 +4927,78 @@ def test_21_84_make_url_loader(env):
     ) == (page_loader.UrlPageLoader, True, "OK", [1])
 
 
+def test_21_84_make_click_loader(env):
+    """21.84 make_click_loader(браузер, Settings, rnd, часы) —
+    page_loader.ClickPageLoader над этим браузером: билет загрузчика — билет
+    браузера, вкладка ещё ничего не открыла (tab None), транспорт не тронут.
+    Модуль 21."""
+    site = http_browser.HttpBrowser(env.transport, fake_ticket(), env.clock.monotonic)
+    clock = crawl.Clock(now=env.clock.now, sleep=env.clock.sleep)
+    made = cc.make_click_loader(site, settings_of(env.folder), random.Random(1), clock)
+    assert (type(made), made.ticket is site.ticket, made.tab, env.transport.sent) == (
+        page_loader.ClickPageLoader,
+        True,
+        None,
+        [],
+    )
+
+
+def test_21_84_click_with_http_exit_2(env, monkeypatch, capsys):
+    """21.84 --page-loader click с браузером http (умолчание; кликать не
+    умеет — BrowserChoice.clicks ложь) — выход с кодом 2, в строке ошибки
+    названы оба флага: --page-loader и --browser. Модуль 21."""
+    stop = main_exit(env, monkeypatch, "--page-loader", "click")
+    error = error_line(capsys.readouterr().err)
+    words = ("--page-loader", "--browser")
+    assert (stop.code, [word for word in words if word not in error]) == (2, [])
+
+
+def test_21_84_click_with_http_exits_before_start_pause(env, monkeypatch):
+    """21.84 --page-loader click --browser http — выход до паузы старта (её
+    нет даже без --no-start-delay) и до сборки браузера: фабрику транспорта
+    не зовут, запросов нет. Модуль 21."""
+    main_exit(env, monkeypatch, "--page-loader", "click", "--browser", "http")
+    assert (env.clock.pauses, env.transport.made, env.transport.sent) == ([], [], [])
+
+
+def click_flags_with_fake_browser(monkeypatch, clicks: bool) -> list[str]:
+    """Сборка «fake» в cc.BROWSERS с полем clicks (без библиотеки и файлов
+    билета; сама сборка зваться не должна) → argv read_settings с
+    --browser fake --page-loader click."""
+
+    def make_unreachable(settings, rnd, transport_factory):
+        raise AssertionError("сборка браузера не должна зваться при чтении флагов")
+
+    choice = cc.BrowserChoice(
+        library=None, ticket_files=False, make=make_unreachable, clicks=clicks
+    )
+    monkeypatch.setitem(cc.BROWSERS, "fake", choice)
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--browser", "fake"]
+    return argv + ["--page-loader", "click"]
+
+
+def test_21_84_clicks_checked_from_browsers(monkeypatch):
+    """21.84 Проверка «браузер умеет кликать» — по полю clicks выбора из
+    словаря BROWSERS: сборка fake с clicks True и --page-loader click —
+    выхода нет. Модуль 21."""
+    argv = click_flags_with_fake_browser(monkeypatch, clicks=True)
+    assert cc.read_settings(argv).page_loader == "click"
+
+
+def test_21_84_no_clicks_from_browsers_exit_2(monkeypatch, capsys):
+    """21.84 Сборка fake с clicks False и --page-loader click — выход с
+    кодом 2, в строке ошибки --page-loader и --browser. Модуль 21."""
+    argv = click_flags_with_fake_browser(monkeypatch, clicks=False)
+    with pytest.raises(SystemExit) as stop:
+        cc.read_settings(argv)
+    error = error_line(capsys.readouterr().err)
+    words = ("--page-loader", "--browser")
+    assert (stop.value.code, [word for word in words if word not in error]) == (
+        2,
+        [],
+    )
+
+
 # Список браузеров — словарь cc.BROWSERS «имя → cc.BrowserChoice(library,
 # ticket_files, make)» и умолчание cc.BROWSER (DECISIONS,
 # block/browser-interface и block/chrome-insert): флаг --browser, choices —
@@ -4811,16 +5022,17 @@ def playwright_installed(monkeypatch):
 def test_21_87_browsers_dict():
     """21.87 Список браузеров — словарь cc.BROWSERS с ключами chrome и http:
     make — cc.make_http_browser и cc.make_chrome_browser, library — None и
-    "playwright", ticket_files — True и False; умолчание cc.BROWSER — http.
+    "playwright", ticket_files — True и False, clicks (умеет ли кликать,
+    block/click-pages) — False и True; умолчание cc.BROWSER — http.
     Модуль 21."""
     browsers = {
-        name: (choice.library, choice.ticket_files, choice.make)
+        name: (choice.library, choice.ticket_files, choice.make, choice.clicks)
         for name, choice in cc.BROWSERS.items()
     }
     assert (browsers, cc.BROWSER) == (
         {
-            "http": (None, True, cc.make_http_browser),
-            "chrome": ("playwright", False, cc.make_chrome_browser),
+            "http": (None, True, cc.make_http_browser, False),
+            "chrome": ("playwright", False, cc.make_chrome_browser, True),
         },
         "http",
     )

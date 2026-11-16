@@ -2,20 +2,21 @@
 
 Используются tests/test_collector.py, tests/test_collector_nights.py,
 tests/test_collector_transport.py, tests/test_collector_browser.py,
-tests/test_collector_chrome_browser.py, tests/test_collector_chrome_human.py
-и tests/test_collector_status.py.
+tests/test_collector_chrome_browser.py, tests/test_collector_chrome_human.py,
+tests/test_collector_click.py и tests/test_collector_status.py.
 Здесь две группы. Общее для нескольких файлов: запрет сети (no_network —
-во всех семи файлах), предохранитель от настоящего Chrome (no_chrome — в
+во всех восьми файлах), предохранитель от настоящего Chrome (no_chrome — в
 test_collector.py, test_collector_nights.py, test_collector_transport.py,
 test_collector_browser.py, test_collector_chrome_browser.py,
-test_collector_chrome_human.py; не
+test_collector_chrome_human.py, test_collector_click.py; не
 подключается только в test_collector_status.py — status.py сам зовёт
 subprocess), подставные часы (FakeTime, frozen_datetime), билет во
 временной папке, ответ ЦИАН Reply, фальшивый транспорт FakeTransport
 (сценарии обхода test_collector.py и стенд HttpBrowser в контракте
 браузера test_collector_browser.py). И подмены сети одного файла,
 собранные рядом с общими: подделка загрузчика страницы FakePageLoader —
-только сценарии обхода test_collector.py; проигрыватель ответов ЦИАН
+сценарии обхода test_collector.py и паузы на странице test_collector_click.py
+(21.97); проигрыватель ответов ЦИАН
 CianPlayer с фабрикой player_transport — только эталонные ночи
 test_collector_nights.py (на настоящем UrllibTransport). Кода сборщика не
 меняет.
@@ -47,6 +48,7 @@ import sys
 import urllib.parse
 import urllib.request
 import urllib.response
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
@@ -325,15 +327,27 @@ class FakePageLoader:
     load_page(key, ring, page) записывает вызов в asked — (ключ, страница,
     кольцо) по порядку — и отдаёт первый ответ из очереди (key, page);
     очередь пуста — AssertionError с ключом и страницей. ticket — билет,
-    который обход читает у загрузчика (loader.ticket).
+    который обход читает у загрузчика (loader.ticket). stay_on_page(секунды)
+    — пауза обхода на открытой странице (21.97): длительность пишется в
+    stayed и уходит в переданный сон sleep (не дан — только запись).
     """
 
     def __init__(
-        self, ticket: "Ticket", pages: dict[tuple[str, int], list["PageAnswer"]]
+        self,
+        ticket: "Ticket",
+        pages: dict[tuple[str, int], list["PageAnswer"]],
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.ticket = ticket
         self.pages = pages
+        self.sleep = sleep
         self.asked: list[tuple[str, int, list]] = []
+        self.stayed: list[float] = []
+
+    def stay_on_page(self, seconds: float) -> None:
+        self.stayed.append(seconds)
+        if self.sleep is not None:
+            self.sleep(seconds)
 
     def load_page(self, key: str, ring: list, page: int) -> "PageAnswer":
         self.asked.append((key, page, ring))
