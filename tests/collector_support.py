@@ -1,9 +1,12 @@
 """Общие помощники тестов сборщика ЦИАН (модуль 21): без сети, без ожиданий.
 
 Используются tests/test_collector.py, tests/test_collector_nights.py,
-tests/test_collector_transport.py, tests/test_collector_browser.py и
-tests/test_collector_status.py. Здесь две группы. Общее для нескольких
-файлов: запрет сети, подставные часы (FakeTime, frozen_datetime), билет во
+tests/test_collector_transport.py, tests/test_collector_browser.py,
+tests/test_collector_chrome_browser.py и tests/test_collector_status.py.
+Здесь две группы. Общее для нескольких
+файлов: запрет сети, предохранитель от настоящего Chrome (no_chrome; не
+подключается в test_collector_status.py — status.py сам зовёт
+subprocess), подставные часы (FakeTime, frozen_datetime), билет во
 временной папке, ответ ЦИАН Reply, фальшивый транспорт FakeTransport
 (сценарии обхода test_collector.py и стенд HttpBrowser в контракте
 браузера test_collector_browser.py). И подмены сети одного файла,
@@ -35,6 +38,8 @@ import io
 import json
 import os
 import socket
+import subprocess
+import sys
 import urllib.parse
 import urllib.request
 import urllib.response
@@ -99,6 +104,22 @@ def forbid_network(patch: pytest.MonkeyPatch) -> None:
 def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Любая попытка открыть соединение — падение теста, а не запрос наружу."""
     forbid_network(monkeypatch)
+
+
+def refuse_launch(*args: object, **kwargs: object) -> None:
+    raise AssertionError(f"запуск программ в тестах запрещён (Chrome?): {args}")
+
+
+@pytest.fixture(autouse=True)
+def no_chrome(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Предохранитель от настоящего Chrome: playwright «не установлен»
+    (import playwright — ImportError, find_spec — None), subprocess.Popen —
+    падение теста. Тесты Chrome перекрывают это своими подделками
+    (fake_playwright, launches, playwright_installed): автофикстура
+    исполняется раньше фикстур, которые тест просит сам."""
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    monkeypatch.setattr(subprocess, "Popen", refuse_launch)
 
 
 class FakeTime:

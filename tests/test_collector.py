@@ -93,7 +93,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from collector_support import (  # noqa: F401 — no_network: автофикстура
+from collector_support import (  # noqa: F401 — no_network, no_chrome: автофикстуры
     FAKE_COOKIE,
     PROXY_ENV,
     USER_AGENT,
@@ -102,6 +102,7 @@ from collector_support import (  # noqa: F401 — no_network: автофикст
     FakeTransport,
     Reply,
     frozen_datetime,
+    no_chrome,
     no_network,
     same_ring,
     write_ticket,
@@ -302,8 +303,9 @@ def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=F
 def settings_of(folder: Path, **changes):
     """Settings ночи сценария: файл клеток и runs/ в папке теста, бюджет 50,
     окно 1 ч, без пробы-only и паузы старта, seed 1, транспорт urllib,
-    билет — cookies.txt и ua.txt, браузер http, Chrome — порт 9222, путь
-    /opt/chrome, профиль /tmp/chrome-profile; changes перекрывают."""
+    билет — cookies.txt и ua.txt, браузер http, Chrome — порт 9333 (не
+    умолчание 9222: видно, что порт взят из Settings), путь /opt/chrome,
+    профиль /tmp/chrome-profile; changes перекрывают."""
     settings = crawl.Settings(
         budget=50,
         window_hours=1.0,
@@ -315,7 +317,7 @@ def settings_of(folder: Path, **changes):
         transport="urllib",
         cookies_file="cookies.txt",
         ua_file="ua.txt",
-        chrome_port=9222,
+        chrome_port=9333,
         chrome_path="/opt/chrome",
         chrome_profile="/tmp/chrome-profile",
         browser="http",
@@ -4619,6 +4621,45 @@ def test_21_87_library_check_from_browsers(env, monkeypatch, capsys):
     assert (stop.code, [word for word in words if word not in error]) == (2, [])
 
 
+def add_fake_browser(monkeypatch, ticket_files: bool) -> None:
+    """Сборка «fake» в cc.BROWSERS на время теста: без библиотеки, с полем
+    ticket_files; сама сборка зваться не должна (тесты — до сборки)."""
+
+    def make_unreachable(settings, rnd, transport_factory):
+        raise AssertionError("сборка браузера не должна зваться при разборе флагов")
+
+    choice = cc.BrowserChoice(
+        library=None, ticket_files=ticket_files, make=make_unreachable
+    )
+    monkeypatch.setitem(cc.BROWSERS, "fake", choice)
+
+
+def test_21_87_ticket_files_checked_from_browsers(tmp_path, monkeypatch, capsys):
+    """21.87 Проверка файлов билета — по полю ticket_files выбора из словаря
+    BROWSERS: сборка fake с ticket_files True и несуществующим --cookies —
+    выход с кодом 2, в строке ошибки флаг --cookies и путь. Модуль 21."""
+    add_fake_browser(monkeypatch, ticket_files=True)
+    missing = tmp_path / "нет-кук.txt"
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--browser", "fake"]
+    with pytest.raises(SystemExit) as stop:
+        cc.read_settings([*argv, "--cookies", str(missing)])
+    error = error_line(capsys.readouterr().err)
+    assert (stop.value.code, "--cookies" in error, str(missing) in error) == (
+        2,
+        True,
+        True,
+    )
+
+
+def test_21_87_no_ticket_files_no_check(tmp_path, monkeypatch):
+    """21.87 Сборка fake с ticket_files False и несуществующим --cookies —
+    выхода нет: файлы билета не проверяются. Модуль 21."""
+    add_fake_browser(monkeypatch, ticket_files=False)
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--browser", "fake"]
+    argv += ["--cookies", str(tmp_path / "нет-кук.txt")]
+    assert cc.read_settings(argv).browser == "fake"
+
+
 def test_21_87_http_without_playwright(env, monkeypatch):
     """21.87 Без библиотеки playwright (sys.modules['playwright'] = None)
     запуск с браузером по умолчанию идёт: фабрика транспорта получает
@@ -4631,6 +4672,10 @@ def test_21_87_http_without_playwright(env, monkeypatch):
 # ─────────────── сборка браузера chrome (21.90): подделка вкладки ───────────────
 # Chrome и playwright не нужны: chrome_browser.connect_chrome_tab подменяется
 # (connect_to) и отдаёт ChromeTab над подделкой вкладки FakeChromePage.
+# Запрос, ответ и ошибки вкладки — свои маленькие копии, а не FakeRequest,
+# FakeResponse, FakePlaywrightError из test_collector_browser.py: тот
+# импортирует collector.chrome_browser на верхнем уровне, и этот файл без
+# модуля не собрался бы (ленивый импорт — DECISIONS block/chrome-insert).
 
 # UA вкладки Chrome — не тот, что в ua.txt папки env: plan.json покажет,
 # откуда взят билет.
@@ -4769,6 +4814,16 @@ def test_21_90_chrome_flags_parsed():
     )
 
 
+def test_21_90_chrome_profile_relative_made_absolute(tmp_path, monkeypatch):
+    """21.90 --chrome-profile my-profile (относительный путь) — в Settings
+    абсолютный путь от папки запуска (DECISIONS block/chrome-insert).
+    Модуль 21."""
+    monkeypatch.chdir(tmp_path)
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--chrome-profile", "my-profile"]
+    settings = cc.read_settings(argv)
+    assert settings.chrome_profile == os.path.abspath("my-profile")
+
+
 def test_21_90_chrome_ignores_ticket_flags(tmp_path, playwright_installed):
     """21.90 --browser chrome с несуществующими файлами --cookies и --ua —
     выхода нет: билет Chrome берёт из вкладки, файлы билета не проверяются.
@@ -4808,11 +4863,11 @@ def test_21_90_read_chrome_ticket_no_cookies():
 def test_21_90_make_chrome_browser(env, monkeypatch):
     """21.90 make_chrome_browser(settings, rnd, фабрика транспорта):
     connect_chrome_tab получает (chrome_port, chrome_path, chrome_profile
-    Settings, cc.PORT_WAIT_S, cc.POLL_S); результат — ChromeBrowser над этой
-    вкладкой с билетом из неё; переход — с тайм-аутом cc.GOTO_TIMEOUT_MS и
-    событием загрузки load; часы — monotonic модуля time сборщика: один
-    fetch даёт ms 250.0 и ровно два обращения к часам; фабрику транспорта
-    не зовут. Модуль 21."""
+    Settings, ожидание порта 30.0 с, шаг опроса 0.5 с); результат —
+    ChromeBrowser над этой вкладкой с билетом из неё; переход — с тайм-аутом
+    45 000 мс и событием загрузки load (числа — DECISIONS block/chrome-insert);
+    часы — monotonic модуля time сборщика: один fetch даёт ms 250.0 и ровно
+    два обращения к часам; фабрику транспорта не зовут. Модуль 21."""
     page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
     connects = connect_to(monkeypatch, chrome_tab_of(page))
     settings = settings_of(env.folder)
@@ -4825,17 +4880,15 @@ def test_21_90_make_chrome_browser(env, monkeypatch):
         made.ticket,
         page.visits,
         page.goto_kwargs,
-        cc.WAIT_UNTIL,
         fetched.ms,
         env.clock.monotonic_calls,
         env.transport.made,
     ) == (
         True,
-        [(9222, "/opt/chrome", "/tmp/chrome-profile", cc.PORT_WAIT_S, cc.POLL_S)],
+        [(9333, "/opt/chrome", "/tmp/chrome-profile", 30.0, 0.5)],
         browser.Ticket(cookie_header="a=1", ua=CHROME_UA, age_h=None),
         [url],
-        [{"wait_until": cc.WAIT_UNTIL, "timeout": cc.GOTO_TIMEOUT_MS}],
-        "load",
+        [{"wait_until": "load", "timeout": 45_000}],
         250.0,
         2,
         [],
@@ -4846,13 +4899,13 @@ def test_21_90_chrome_connect_error_exits(env, monkeypatch):
     """21.90 connect_chrome_tab бросил ChromeConnectError — выход
     (SystemExit) без трассировки; в тексте — «--browser chrome» и текст
     ошибки. Модуль 21."""
-    error = chrome_browser_module().ChromeConnectError("Chrome не открыл порт 9222")
+    error = chrome_browser_module().ChromeConnectError("Chrome не открыл порт 9333")
     connect_to(monkeypatch, error)
     settings = settings_of(env.folder)
     with pytest.raises(SystemExit) as stop:
         cc.make_chrome_browser(settings, random.Random(1), env.transport.factory)
     text = str(stop.value.code)
-    assert ("--browser chrome" in text, "Chrome не открыл порт 9222" in text) == (
+    assert ("--browser chrome" in text, "Chrome не открыл порт 9333" in text) == (
         True,
         True,
     )
@@ -4861,14 +4914,15 @@ def test_21_90_chrome_connect_error_exits(env, monkeypatch):
 def test_21_90_main_with_chrome(env, monkeypatch, capsys, playwright_installed):
     """21.90 main --browser chrome на подделке вкладки (на пробу — 403):
     plan.json — user_agent вкладки (не из ua.txt), ticket true,
-    cookie_age_h null, stop_detail http_403|cookie_expired_or_burned; строка
-    start в night.log — ticket=1 cookie_age_h=None; фабрику транспорта не
-    звали; один переход вкладки; строка итога кончается «билет: есть».
-    Модуль 21."""
+    cookie_age_h null, stop_detail http_403|cookie_expired_or_burned;
+    summary.json — ticket true, cookie_age_h null; строка start в
+    night.log — ticket=1 cookie_age_h=None; фабрику транспорта не звали;
+    один переход вкладки; строка итога кончается «билет: есть». Модуль 21."""
     page = FakeChromePage(CHROME_UA, CHROME_COOKIES)
     connect_to(monkeypatch, chrome_tab_of(page))
     run_dir = run_main(env, monkeypatch, CELLS, {}, "--browser", "chrome")
     plan = read_json(run_dir / "plan.json")
+    summary = summary_of(run_dir)
     start = log_records(run_dir)[0]
     out = capsys.readouterr().out.splitlines()
     head = [line for line in out if line.startswith("ночь 2026-11-10")]
@@ -4877,6 +4931,7 @@ def test_21_90_main_with_chrome(env, monkeypatch, capsys, playwright_installed):
         plan["ticket"],
         plan["cookie_age_h"],
         plan["stop_detail"],
+        (summary["ticket"], summary["cookie_age_h"]),
         (start["ticket"], start["cookie_age_h"]),
         env.transport.made,
         len(page.visits),
@@ -4886,6 +4941,7 @@ def test_21_90_main_with_chrome(env, monkeypatch, capsys, playwright_installed):
         True,
         None,
         "http_403|cookie_expired_or_burned",
+        (True, None),
         ("1", "None"),
         [],
         1,

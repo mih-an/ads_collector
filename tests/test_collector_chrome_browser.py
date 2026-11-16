@@ -16,7 +16,11 @@ import types
 from pathlib import Path
 
 import pytest
-from collector_support import FakeTime, no_network  # noqa: F401 — автофикстура
+from collector_support import (  # noqa: F401 — no_network, no_chrome: автофикстуры
+    FakeTime,
+    no_chrome,
+    no_network,
+)
 from test_collector_browser import (
     EPOCH,
     OTHER_URL,
@@ -76,6 +80,14 @@ def test_21_88_goto_gets_timeout_and_load_event():
     конструктора. Модуль 21."""
     page = FakePage([SiteAnswer(200, "страница")])
     browser_over(page).fetch(URL)
+    assert page.goto_kwargs == [{"wait_until": WAIT_UNTIL, "timeout": GOTO_TIMEOUT_MS}]
+
+
+def test_21_88_referer_not_passed_to_goto():
+    """21.88 fetch(url, referer) — goto получает только тайм-аут перехода и
+    событие загрузки: Referer вкладке не подставляется. Модуль 21."""
+    page = FakePage([SiteAnswer(200, "страница")])
+    browser_over(page).fetch(URL, OTHER_URL)
     assert page.goto_kwargs == [{"wait_until": WAIT_UNTIL, "timeout": GOTO_TIMEOUT_MS}]
 
 
@@ -295,13 +307,14 @@ def test_21_89_connect_opens_new_tab_when_none(fake_playwright, launches, clock)
 
 
 def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, clock):
-    """21.89 Порт молчит — запуск с портом и профилем, отдельная сессия,
+    """21.89 Порт молчит — один запуск с портом и профилем, отдельная сессия,
     stdout и stderr в DEVNULL; повтор раз в poll_s до успеха. Модуль 21."""
     chrome = FakeChrome(FakeContext(["вкладка"]))
     made = fake_playwright([PortClosed("ECONNREFUSED"), PortTimeout("slow"), chrome])
     tab = connect()
     command, kwargs = launches[0]
     assert (
+        len(launches),
         command,
         kwargs["start_new_session"],
         kwargs["stdout"],
@@ -311,6 +324,7 @@ def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, cloc
         tab.page,
         made.stopped,
     ) == (
+        1,
         [
             "/opt/chrome",
             "--remote-debugging-port=9333",
@@ -328,7 +342,9 @@ def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, cloc
 
 def test_21_89_connect_gives_up_after_wait(fake_playwright, launches, clock):
     """21.89 Порт не ответил за port_wait_s — ChromeConnectError с портом,
-    путём, профилем; Playwright остановлен. Модуль 21."""
+    путём, профилем; Chrome запущен один раз; ожидание — паузами poll_s
+    (часы теста идут на 0,25 с за обращение); Playwright остановлен.
+    Модуль 21."""
     made = fake_playwright([PortClosed("refused")] * 10)
     with pytest.raises(chrome_browser.ChromeConnectError) as caught:
         connect(port_wait_s=1.0)
@@ -337,8 +353,10 @@ def test_21_89_connect_gives_up_after_wait(fake_playwright, launches, clock):
         "9333" in text,
         "/opt/chrome" in text,
         "/home/u/cian-chrome" in text,
+        len(launches),
+        clock.pauses,
         made.stopped,
-    ) == (True, True, True, True)
+    ) == (True, True, True, 1, [0.5] * 3, True)
 
 
 def test_21_89_connect_chrome_not_launched(fake_playwright, monkeypatch, clock):

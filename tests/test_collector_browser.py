@@ -19,6 +19,7 @@ from collector_support import (
     FakeTime,
     FakeTransport,
     Reply,
+    no_chrome,  # noqa: F401 — автофикстура
     no_network,  # noqa: F401 — автофикстура
 )
 
