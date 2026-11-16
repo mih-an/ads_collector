@@ -41,8 +41,8 @@ class FetchedPage(NamedTuple):
 
 class Browser(Protocol):
     """Браузер для источника страниц: вторая реализация — новый файл и
-    строка cian_collect.BROWSERS; обход и источник страниц не трогаются
-    (DECISIONS, block/browser-interface)."""
+    сборка в cian_collect.py (строка BROWSERS); обход и источник страниц
+    не трогаются (DECISIONS, block/browser-interface)."""
 
     ticket: Ticket
 
