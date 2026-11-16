@@ -4,7 +4,7 @@ page_source.py — источник страниц: «дай страницу N 
 PageSource — что обход знает об источнике: билет ticket и get_page(ключ
 клетки, кольцо, номер) → run_folder.PageAnswer с пустыми ids (id считает
 обход после записи файла, 21.36). UrlPageSource — реализация «по ссылке»:
-ссылка и Referer, браузер browser.Browser, разбор search_page.classify_page.
+ссылка и Referer, интерфейс browser.Browser, разбор search_page.classify_page.
 Повторов нет — один get_page = один запрос (повторы — в crawl.Crawl).
 Без часов, диска и печати.
 """
@@ -31,7 +31,8 @@ class PageSource(Protocol):
 
 class UrlPageSource:
     """Источник «по ссылке»: каждая страница — переход браузера по ссылке
-    page_url, как у человека, листающего выдачу."""
+    page_url, как у человека, листающего выдачу; браузер — любая реализация
+    интерфейса browser.Browser (21.86)."""
 
     def __init__(self, browser: Browser) -> None:
         self.browser = browser

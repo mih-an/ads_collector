@@ -1,11 +1,13 @@
 """Общие помощники тестов сборщика ЦИАН (модуль 21): без сети, без ожиданий.
 
 Используются tests/test_collector.py, tests/test_collector_nights.py,
-tests/test_collector_transport.py и tests/test_collector_status.py. Здесь
-две группы. Общее для нескольких файлов: запрет сети, подставные часы
-(FakeTime, frozen_datetime), билет во временной папке, ответ ЦИАН Reply.
-И подмены сети одного файла, собранные рядом с общими: фальшивый
-транспорт FakeTransport и подделка источника страниц FakePageSource —
+tests/test_collector_transport.py, tests/test_collector_browser.py и
+tests/test_collector_status.py. Здесь две группы. Общее для нескольких
+файлов: запрет сети, подставные часы (FakeTime, frozen_datetime), билет во
+временной папке, ответ ЦИАН Reply, фальшивый транспорт FakeTransport
+(сценарии обхода test_collector.py и стенд HttpBrowser в контракте
+браузера test_collector_browser.py). И подмены сети одного файла,
+собранные рядом с общими: подделка источника страниц FakePageSource —
 только сценарии обхода test_collector.py; проигрыватель ответов ЦИАН
 CianPlayer с фабрикой player_transport — только эталонные ночи
 test_collector_nights.py (на настоящем UrllibTransport). Кода сборщика не
@@ -17,7 +19,7 @@ collector.cian_collect): cc.main(transport_factory=...) — фабрика зо�
 методом get(url, headers) → transport.HttpReply; urllib_transport.
 UrllibTransport(cookie_header) с атрибутом opener (urllib OpenerDirector);
 cc.time (time, sleep, monotonic — длительность запроса main передаёт в
-Browser) и cc.datetime (now, astimezone, strftime, isoformat).
+HttpBrowser) и cc.datetime (now, astimezone, strftime, isoformat).
 
 Модули сборщика (collector.transport, collector.urllib_transport)
 импортируются внутри функций, а не наверху. Почему: этот файл импортирует и
@@ -181,7 +183,7 @@ class Reply:
 class Sent:
     """Запрос, который сборщик отправил: клетка, страница, заголовки (у
     CianPlayer — как их хранит urllib, у FakeTransport — как их передал
-    Browser), тайм-аут (только у CianPlayer)."""
+    HttpBrowser), тайм-аут (только у CianPlayer)."""
 
     cell: str
     page: int
@@ -254,11 +256,12 @@ def next_reply(
 
 class FakeTransport:
     """Фальшивый транспорт сценариев обхода: ответы по (клетка, страница)
-    вместо сети, без urllib.
+    вместо сети, без urllib. Он же нижний мир стенда HttpStand контракта
+    браузера (21.86) и бросает любое Reply.error.
 
     get(url, headers) записывает запрос в sent и отдаёт HttpReply (имена
     заголовков — в нижнем регистре, тело как есть) или бросает Reply.error
-    (NetworkFailure, KeyboardInterrupt). factory — фабрика для
+    (NetworkFailure, KeyboardInterrupt, любое другое исключение). factory — фабрика для
     cc.main(transport_factory=...): записывает в made, с чем её позвали
     (имя транспорта, строка Cookie), и отдаёт этот же транспорт.
     """

@@ -3,8 +3,8 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 
 Получает argv (read_settings → Settings). build_crawl собирает обход crawl.Crawl:
 случайность по seed, файл клеток [E-42] и сетка (в stdout), часы crawl.Clock,
-пауза старта, вход на ЦИАН. enter_cian — билет (read_ticket → Ticket),
-транспорт (make_transport) → браузер browser.Browser → источник страниц из
+пауза старта, вход на ЦИАН. enter_cian — браузер из BROWSERS (HttpBrowser:
+билет read_ticket и транспорт make_transport) → источник страниц из
 PAGE_SOURCES. main запускает обход и печатает итог. Сети здесь нет (она в
 транспорте); сервер и запуск — collector/README.md.
 """
@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from collector import page_source, urllib_transport
+from collector import http_browser, page_source, urllib_transport
 from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
@@ -37,6 +37,8 @@ WINDOW_HOURS = 8.0
 # транспорт по умолчанию — urllib: на сервере сборщик идёт голым python3
 # (решение Андрея 11.11); список транспортов — TRANSPORTS ниже
 TRANSPORT = "urllib"
+# браузер по умолчанию — HttpBrowser над транспортом; список — BROWSERS ниже
+BROWSER = "http"
 # входной билет без флагов --cookies и --ua — файлы в папке запуска (cron
 # делает cd ~/calib2)
 COOKIES_FILE = "cookies.txt"
@@ -136,6 +138,33 @@ def make_transport(name: str, cookie_header: str | None) -> Transport:
 TransportFactory = Callable[[str, str | None], Transport]
 
 
+# ───────────────────────────── БРАУЗЕРЫ ──────────────────────────────
+
+# сборка браузера по Settings, rnd обхода и фабрике транспорта из main
+BrowserMaker = Callable[[Settings, random.Random, TransportFactory], Browser]
+
+
+def make_http_browser(
+    settings: Settings, rnd: random.Random, transport_factory: TransportFactory
+) -> Browser:
+    """HttpBrowser: билет из файлов (куки, UA, возраст кук) → транспорт по
+    флагу --transport и строке Cookie билета → браузер с часами monotonic.
+    transport_factory — точка подмены сети в main (решение Андрея 12.11);
+    сборке ChromeBrowser он не нужен."""
+    ticket = read_ticket(settings, time.time(), rnd)
+    transport = transport_factory(settings.transport, ticket.cookie_header)
+    return http_browser.HttpBrowser(transport, ticket, time.monotonic)
+
+
+# Одно место для списка браузеров, по образцу TRANSPORTS: из него choices
+# флага --browser и сборка браузера. Читается в момент вызова: так тесты
+# добавляют в него свою сборку (21.87). Вторая реализация —
+# docs/reference/browser_contract.md, раздел 8.
+BROWSERS: dict[str, BrowserMaker] = {
+    "http": make_http_browser,
+}
+
+
 # ───────────────────────── ИСТОЧНИКИ СТРАНИЦ ─────────────────────────
 
 # Одно место для списка источников страниц, по образцу TRANSPORTS. Словарь
@@ -173,6 +202,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(TRANSPORTS),
         default=TRANSPORT,
         help="сетевой транспорт",
+    )
+    ap.add_argument(
+        "--browser",
+        choices=list(BROWSERS),
+        default=BROWSER,
+        help="реализация браузера",
     )
     ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
     ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
@@ -219,6 +254,7 @@ def read_settings(argv: list[str]) -> Settings:
         start_delay=not args.no_start_delay,
         seed=seed,
         transport=args.transport,
+        browser=args.browser,
         cookies_file=args.cookies or COOKIES_FILE,
         ua_file=args.ua or UA_FILE,
     )
@@ -248,11 +284,9 @@ def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> 
 def enter_cian(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
 ) -> PageSource:
-    """Вход на ЦИАН: браузер с билетом (куки, UA, возраст кук) на выбранном
-    транспорте → источник страниц PAGE_SOURCES[PAGE_SOURCE] над ним."""
-    ticket = read_ticket(settings, time.time(), rnd)
-    transport = transport_factory(settings.transport, ticket.cookie_header)
-    browser = Browser(transport, ticket, time.monotonic)
+    """Вход на ЦИАН: браузер флага --browser из BROWSERS (со своим билетом)
+    → источник страниц PAGE_SOURCES[PAGE_SOURCE] над ним."""
+    browser = BROWSERS[settings.browser](settings, rnd, transport_factory)
     return PAGE_SOURCES[PAGE_SOURCE](browser)
 
 

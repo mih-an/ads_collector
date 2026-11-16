@@ -94,19 +94,21 @@
 
 | Файл | Что делает |
 |---|---|
-| `cian_collect.py` | запуск и края: argv → `Settings` (`read_settings`), сборка обхода (`build_crawl`: seed, часы `Clock`, `rnd`, файл клеток `TilesFile`, пауза старта `pause_before_start`, вход на ЦИАН `enter_cian` → источник страниц), край `enter_cian` (билет, выбор транспорта `make_transport`, сборка `Browser`, источник страниц из `PAGE_SOURCES`), `main` в 4 строки |
+| `cian_collect.py` | запуск и края: argv → `Settings` (`read_settings`), сборка обхода (`build_crawl`: seed, часы `Clock`, `rnd`, файл клеток `TilesFile`, пауза старта `pause_before_start`, вход на ЦИАН `enter_cian` → источник страниц), список браузеров `BROWSERS` и сборка `make_http_browser` (билет, выбор транспорта `make_transport`, `HttpBrowser`), край `enter_cian` в две строки (браузер из `BROWSERS` → источник страниц из `PAGE_SOURCES`), `main` в 4 строки |
 | `transport.py` | интерфейс сети `Transport` (один метод `get`), сырой ответ `HttpReply`, `NetworkFailure`, общие помощники реализаций; без сети |
 | `urllib_transport.py` | транспорт на urllib (по умолчанию): доставить запрос и принести байты, банк кук |
 | `httpx_transport.py` | транспорт на httpx (`--transport httpx`); единственное место импорта httpx |
-| `browser.py` | браузер над транспортом: заголовки браузера, распаковка тела, длительность, сбой → код 0; `Browser`, `FetchedPage`, входной билет `Ticket` |
-| `page_source.py` | источник страниц: интерфейс `PageSource` (`ticket`, `get_page(ключ, кольцо, страница)` → `run_folder.PageAnswer`) и реализация «по ссылке» `UrlPageSource` (ссылка и Referer, `Browser`, разбор `classify_page`); без часов, диска и печати |
+| `browser.py` | интерфейс браузера `Browser` (`ticket`, `fetch(url, referer)` → `FetchedPage`), входной билет `Ticket`, ответ `FetchedPage`; лист пакета; контракт — `docs/reference/browser_contract.md` |
+| `http_browser.py` | `HttpBrowser` — браузер над транспортом: заголовки браузера, распаковка тела, длительность, сбой → код 0 |
+| `chrome_browser.py` | будущий (следующий блок): `ChromeBrowser` на Playwright (вкладка аргументом конструктора) и функция-край подключения к Chrome; импорт playwright только здесь и только внутри функции подключения, поэтому сам модуль импортируется без playwright; `cian_collect.py` импортирует `chrome_browser` на верхнем уровне, как `http_browser`, и собирает его в `make_chrome_browser`; строка в `BROWSERS` |
+| `page_source.py` | источник страниц: интерфейс `PageSource` (`ticket`, `get_page(ключ, кольцо, страница)` → `run_folder.PageAnswer`) и реализация «по ссылке» `UrlPageSource` (ссылка и Referer, интерфейс `Browser`, разбор `classify_page`); без часов, диска и печати |
 | `crawl.py` | обход: `Settings`, `Clock`, состояние; правила обхода без внешнего мира; текст итога `summary_text`; класс `Crawl` (`collect`, `print_summary`); страницу берёт у источника страниц одним вызовом `get_page` |
 | `search_page.py` | контракт ЦИАН: ссылка на страницу поиска, разбор страницы, классы ответа, константы контракта; чистый |
 | `geometry.py` | геометрия клеток (чистые функции) и файл клеток `TilesFile` (чтение `tiles`, `grid()`, атомарная перезапись `record_split` — внизу) |
 | `run_folder.py` | папка прогона: `RunFolder` (имена, кодировки и порядок записи файлов) и `say` — единственная печать обхода |
 | `status.py` | отдельный скрипт «идёт ли сбор»; пакет не импортирует |
 
-Тесты — `tests/test_collector.py`, `tests/test_collector_transport.py`, `tests/test_collector_nights.py`, `tests/test_collector_status.py`, помощники — `tests/collector_support.py` (фальшивый транспорт `FakeTransport`, фальшивый источник страниц `FakePageSource`, фальшивые часы).
+Тесты — `tests/test_collector.py`, `tests/test_collector_transport.py`, `tests/test_collector_browser.py` (контракт браузера 21.86), `tests/test_collector_nights.py`, `tests/test_collector_status.py`, помощники — `tests/collector_support.py` (фальшивый транспорт `FakeTransport`, фальшивый источник страниц `FakePageSource`, фальшивые часы).
 
 ### Как писать код: «читается как рецепт»
 
@@ -121,7 +123,7 @@ def main() -> None:
     crawl.print_summary()
 ```
 
-Это схема. Фактический `main` — в `collector/cian_collect.py`: `build_crawl` делает паузу старта, затем зовёт край `enter_cian` (билет, транспорт, браузер) и отдаёт `Crawl` готовый источник страниц; транспорт приходит аргументом `transport_factory` (точка подмены в тестах).
+Это схема. Фактический `main` — в `collector/cian_collect.py`: `build_crawl` делает паузу старта, затем зовёт край `enter_cian` (браузер из `BROWSERS`; у `HttpBrowser` — билет и транспорт) и отдаёт `Crawl` готовый источник страниц; транспорт приходит аргументом `transport_factory` (точка подмены в тестах).
 
 - `collect` — один экран сверху вниз: открыть прогон → пока есть клетки и бюджет: взять клетку, скачать её, пауза между клетками → итог. Проба — страница 1 первой клетки очереди, отдельного шага нет. Пауза старта — в `build_crawl`.
 - `download_tile` — один экран: страница 1 → стоп / деление на четверти / страницы 2…N до конца.
@@ -129,16 +131,16 @@ def main() -> None:
 Правила:
 - **`main` — на языке дела**: несколько строк, каждая — шаг, понятный без кода ниже.
 - **Главный алгоритм — на одном экране** (до ~40 строк), без повторов, сна и записи файлов внутри.
-- **Класс = предмет реального мира**: файл клеток (`TilesFile`), папка прогона (`RunFolder`), обход (`Crawl`), браузер (`Browser`); страница поиска — остаток упрощения (`docs/ROADMAP.md`). Не «сумка» полей и не «менеджер».
+- **Класс = предмет реального мира**: файл клеток (`TilesFile`), папка прогона (`RunFolder`), обход (`Crawl`), браузер (`HttpBrowser`); страница поиска — остаток упрощения (`docs/ROADMAP.md`). Не «сумка» полей и не «менеджер».
 - **Имя метода — фраза о действии**: `download_tile`, `split_into_quarters`, `pause_between_pages`.
 - **Повторы, паузы и запись файлов — в своих функциях**: главный метод о них не знает (повторы при сбое сети — внутри «скачать страницу»).
 - **История решений — в `docs/DECISIONS.md` и git**; в коде «почему» — одной строкой со ссылкой на кейс или решение.
 
 ### Общие правила кода
 
-- **Импорты.** Никто в пакете не импортирует `cian_collect`; `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого из пакета. Реализации транспорта импортирует только `cian_collect`, `httpx_transport` — только внутри функции (`make_httpx`), не на верхнем уровне модуля. Список транспортов — один словарь `TRANSPORTS` в `cian_collect.py` (решение Андрея 12.11); список источников страниц — словарь `PAGE_SOURCES` и умолчание `PAGE_SOURCE` в `cian_collect.py`. Сеть (`socket`, `urllib.request`, `http*`) — только в `urllib_transport`, httpx — только в `httpx_transport`. Порядок слоёв: `crawl` → `page_source` → `browser` → `transport`, `search_page`; `crawl` берёт из пакета только `page_source`, `search_page`, `geometry`, `run_folder` и тип `Ticket` из `browser` — ссылок, разбора ответа (`classify_page`) и браузера не знает (решения Андрея 12.11 и 15.11); `page_source` берёт только `browser`, `search_page`, `run_folder`. Импорты абсолютные (`from collector import search_page`). Страж — тест 21.78.
-- **Внешний мир** (сеть, часы, сон, случайность, argv) — только по краям: в `cian_collect.py` и реализациях транспорта; внутрь он приходит аргументами (транспорт через `enter_cian` → `Browser` → источник страниц, часы `Clock`, `rnd`). Диск — только `run_folder.py`, низ `geometry.py`, чтение билета и проверка, что файл клеток и файлы билета есть (`cian_collect.py`).
-- **Числа сборщика** — в `Settings` (`collector/crawl.py`) и константах контракта в `collector/search_page.py`, не россыпью по коду (решение Андрея 10.11; `collector_architecture.md`, вопрос 2). Исключения: тайм-аут сети `HTTP_TIMEOUT_S` и домен кук билета `COOKIE_DOMAIN` — в `transport.py`, умолчания аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `COOKIES_FILE`, `UA_FILE`) — в `cian_collect.py`. Литералы формата файлов (вид запроса kind=ssr — PAGE_KIND) — в run_folder.py.
+- **Импорты.** Никто в пакете не импортирует `cian_collect`; `search_page`, `geometry`, `run_folder`, `transport`, `browser` не импортируют никого из пакета. Реализации транспорта и реализации браузера импортирует только `cian_collect`, `httpx_transport` — только внутри функции (`make_httpx`), не на верхнем уровне модуля. Список транспортов — один словарь `TRANSPORTS` в `cian_collect.py` (решение Андрея 12.11); список браузеров — словарь `BROWSERS` и умолчание `BROWSER`; список источников страниц — словарь `PAGE_SOURCES` и умолчание `PAGE_SOURCE` в `cian_collect.py`. Сеть (`socket`, `urllib.request`, `http*`) — только в `urllib_transport`, httpx — только в `httpx_transport`. Порядок слоёв: `crawl` → `page_source` → `browser` (интерфейс); `http_browser` → `browser`, `transport`, `search_page`; `crawl` берёт из пакета только `page_source`, `search_page`, `geometry`, `run_folder` и тип `Ticket` из `browser` — ссылок, разбора ответа (`classify_page`) и браузера не знает (решения Андрея 12.11 и 15.11); `page_source` берёт только `browser`, `search_page`, `run_folder`. Импорты абсолютные (`from collector import search_page`). Страж — тест 21.78.
+- **Внешний мир** (сеть, часы, сон, случайность, argv) — только по краям: в `cian_collect.py` и реализациях транспорта; внутрь он приходит аргументами (транспорт через `make_http_browser` → `HttpBrowser` → источник страниц, часы `Clock`, `rnd`). Диск — только `run_folder.py`, низ `geometry.py`, чтение билета и проверка, что файл клеток и файлы билета есть (`cian_collect.py`).
+- **Числа сборщика** — в `Settings` (`collector/crawl.py`) и константах контракта в `collector/search_page.py`, не россыпью по коду (решение Андрея 10.11; `collector_architecture.md`, вопрос 2). Исключения: тайм-аут сети `HTTP_TIMEOUT_S` и домен кук билета `COOKIE_DOMAIN` — в `transport.py`, умолчания аргументов запуска (`BUDGET`, `WINDOW_HOURS`, `RUNS_DIR`, `TRANSPORT`, `BROWSER`, `COOKIES_FILE`, `UA_FILE`) — в `cian_collect.py`. Литералы формата файлов (вид запроса kind=ssr — PAGE_KIND) — в run_folder.py.
 - Правила — чистыми функциями: данные на входе, результат на выходе. Данные — `dataclass` с подсказками типов.
 - Без иерархий наследования, метапрограммирования, декораторов «для красоты» и плотных однострочников. Абстракция — когда одинаковый код встретился в третий раз.
 - Функция делает одно дело, ориентир — до 40 строк; больше 5 аргументов — собрать в `dataclass`; ранний выход вместо вложенных условий.
@@ -192,7 +194,7 @@ def main() -> None:
 | обход | `Crawl`, `CrawlState` | работа прогона по клеткам: что запросить, когда делить, когда остановиться |
 | страница поиска | `search_page`, `page_url`, `classify_page` | одна страница выдачи ЦИАН по клетке (бывший жаргон SERP) |
 | транспорт | `Transport`, `UrllibTransport`, `HttpxTransport`, `HttpReply` | доставить GET-запрос и принести байты ответа; выбирается флагом `--transport` |
-| браузер | `Browser`, `FetchedPage` | наша логика над транспортом и билетом: заголовки браузера, распаковка, длительность, сбой → код 0 |
+| браузер | `Browser` (интерфейс), `HttpBrowser`, `ChromeBrowser` (будущий), `FetchedPage` | «сходи по ссылке и принеси страницу» с билетом; `HttpBrowser` — наша логика над транспортом: заголовки браузера, распаковка, длительность, сбой → код 0 |
 | источник страниц | `PageSource`, `UrlPageSource` | «дай страницу N клетки»: запрос и разбор ответа, обходу — готовый `PageAnswer`; сейчас одна реализация — «по ссылке» |
 | часы | `Clock` | «который час» и «подождать» — единственный путь времени и сна в обход |
 | папка прогона | `runs/<метка>/`, `RunFolder` | всё, что прогон записал на диск; формат — `docs/CIAN_DATA_FORMAT.md` |

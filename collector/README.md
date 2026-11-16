@@ -19,12 +19,13 @@ land-monitor): тот же
 
 | Файл | Что делает |
 |---|---|
-| `cian_collect.py` | запуск и края: разбирает аргументы в `Settings` (`read_settings`; в том числе `--transport`, `--cookies`, `--ua`); `build_crawl` выбирает seed, собирает часы `Clock`, случайность и файл клеток `TilesFile`, печатает сетку, делает паузу старта (`pause_before_start`), затем зовёт край `enter_cian` и отдаёт обходу готовый источник страниц; `enter_cian` читает входной билет (`Ticket`), собирает транспорт (`make_transport`), браузер `Browser` и над ним источник страниц из словаря `PAGE_SOURCES` (умолчание `PAGE_SOURCE` — `url`, флага запуска нет, пока реализация одна); `main` — четыре строки: настройки, сборка, `collect`, итог |
+| `cian_collect.py` | запуск и края: разбирает аргументы в `Settings` (`read_settings`; в том числе `--transport`, `--browser`, `--cookies`, `--ua`); `build_crawl` выбирает seed, собирает часы `Clock`, случайность и файл клеток `TilesFile`, печатает сетку, делает паузу старта (`pause_before_start`), затем зовёт край `enter_cian` и отдаёт обходу готовый источник страниц; `enter_cian` — две строки: браузер из словаря `BROWSERS` по флагу `--browser` и над ним источник страниц из словаря `PAGE_SOURCES` (умолчание `PAGE_SOURCE` — `url`, флага запуска нет, пока реализация одна); сборка `HttpBrowser` — `make_http_browser`: входной билет (`read_ticket` → `Ticket`), транспорт (`make_transport`), браузер; `main` — четыре строки: настройки, сборка, `collect`, итог |
 | `transport.py` | интерфейс сети и общие помощники реализаций: `Transport` (один метод `get`), ответ как с провода `HttpReply`, сбой `NetworkFailure`, тайм-аут `HTTP_TIMEOUT_S`, разбор строки кук, заголовки в нижнем регистре; без сети |
 | `urllib_transport.py` | транспорт на urllib (по умолчанию): банк кук с ротацией из `Set-Cookie`, без редиректов, тайм-аут; приносит байты, не распаковывая |
 | `httpx_transport.py` | транспорт на внешней библиотеке httpx (`--transport httpx`): то же поведение, что у urllib; httpx импортируется только здесь |
-| `browser.py` | входной билет `Ticket` и браузер `Browser` — запрос страницы поиска над любым транспортом: заголовки браузера, распаковка тела, длительность запроса; сбой сети и битое сжатие ответа 2xx — ответ с кодом 0 и деталью |
-| `page_source.py` | источник страниц: интерфейс `PageSource` (билет `ticket` и `get_page(ключ клетки, кольцо, страница)` → `run_folder.PageAnswer`) и реализация «по ссылке» `UrlPageSource`: ссылка страницы и Referer, запрос через `Browser`, разбор ответа (`search_page.classify_page`); один `get_page` — один запрос, повторы — в обходе; вторая реализация — новый файл; в `cian_collect.py` — строка словаря `PAGE_SOURCES`, флаг, проверка библиотеки и сборка источника; `crawl.py` не трогается |
+| `browser.py` | интерфейс браузера: `Browser` (билет `ticket` и `fetch(url, referer)` → `FetchedPage`), входной билет `Ticket`, ответ `FetchedPage`; лист пакета, без сети, диска и сжатия; контракт для реализаций — `docs/reference/browser_contract.md` |
+| `http_browser.py` | браузер над транспортом `HttpBrowser` — запрос страницы поиска над любым транспортом: заголовки браузера, распаковка тела, длительность запроса; сбой сети и битое сжатие ответа 2xx — ответ с кодом 0 и деталью |
+| `page_source.py` | источник страниц: интерфейс `PageSource` (билет `ticket` и `get_page(ключ клетки, кольцо, страница)` → `run_folder.PageAnswer`) и реализация «по ссылке» `UrlPageSource`: ссылка страницы и Referer, запрос через интерфейс `Browser`, разбор ответа (`search_page.classify_page`); один `get_page` — один запрос, повторы — в обходе; вторая реализация — новый файл; в `cian_collect.py` — строка словаря `PAGE_SOURCES`, флаг, проверка библиотеки и сборка источника; `crawl.py` не трогается |
 | `crawl.py` | обход: данные (`Settings` с умолчаниями чисел правил ночи, `Clock`, состояние клеток и ночи), правила обхода функциями без внешнего мира (деление, паузы, «билет сгорел», итог пробы `smoke_entry`, учёт страницы, дочитанность, ступень, словари `plan.json` и `summary.json`, текст итога `summary_text`) и класс `Crawl`: `collect` — открыть прогон, очередь клеток (проба — страница 1 первой клетки), `download_tile` и `download_page` (листание, повторы; страница — одним вызовом источника страниц `get_page`), деление на четверти, бюджет, стоп, Ctrl+C; итог — `report` и `print_summary` |
 | `search_page.py` | контракт ЦИАН: ссылка на страницу поиска, разбор `initialState`, обязательные поля, классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`), id объявлений, число страниц; без сети и диска |
 | `geometry.py` | геометрия клеток: джиттер, сетка, базовый квадрат, четверти, отсечение, площадь, уплотнение, дети деления; внизу — файл клеток `TilesFile`: чтение (`tiles`, `grid()`) и атомарная перезапись при делении (`record_split`) |
@@ -36,8 +37,8 @@ land-monitor): тот же
 умолчания `Settings` (`collector/crawl.py`, решение Андрея 10.11); тайм-аут
 сети (`HTTP_TIMEOUT_S`) и домен кук билета (`COOKIE_DOMAIN`) — в
 `transport.py`; умолчания аргументов запуска
-(`RUNS_DIR`, `BUDGET`, `WINDOW_HOURS`, `TRANSPORT`, `COOKIES_FILE`,
-`UA_FILE`) — в `cian_collect.py`; потолок страниц (`MAX_PAGES`) и размер
+(`RUNS_DIR`, `BUDGET`, `WINDOW_HOURS`, `TRANSPORT`, `BROWSER`,
+`COOKIES_FILE`, `UA_FILE`) — в `cian_collect.py`; потолок страниц (`MAX_PAGES`) и размер
 страницы выдачи (`OFFERS_PER_PAGE`) — в `search_page.py`.
 
 Слово `calib` в путях и слово «ступень» (`ladder`) в итоге — наследие
@@ -48,7 +49,7 @@ land-monitor): тот же
 Только как модуль, из папки, где лежит `collector/`:
 
 ```
-python3 -m collector.cian_collect --geojson <файл клеток> [--budget N] [--window-hours H] [--runs-dir runs] [--smoke-only] [--no-start-delay] [--seed N] [--transport urllib|httpx] [--cookies <файл кук>] [--ua <файл UA>]
+python3 -m collector.cian_collect --geojson <файл клеток> [--budget N] [--window-hours H] [--runs-dir runs] [--smoke-only] [--no-start-delay] [--seed N] [--transport urllib|httpx] [--browser http] [--cookies <файл кук>] [--ua <файл UA>]
 ```
 
 `--geojson` обязательный. `--budget` — не меньше 1 (иначе выход с кодом 2 до
@@ -61,6 +62,9 @@ python3 -m collector.cian_collect --geojson <файл клеток> [--budget N]
   (`requirements.txt`, ставится `pip install -r requirements.txt`): без неё
   сборщик с транспортом по умолчанию работает голым `python3`, а
   `--transport httpx` без неё сразу выходит с кодом 2 и подсказкой установки.
+- `--browser` — реализация браузера из словаря `cian_collect.BROWSERS`:
+  сейчас одна, `http` (по умолчанию, `HttpBrowser` над транспортом
+  `--transport`); незнакомое имя — выход argparse с кодом 2.
 - `--cookies`, `--ua` — пути к файлам входного билета. Без флагов — как
   раньше: `cookies.txt` и `ua.txt` из папки запуска (пустой или
   отсутствующий `cookies.txt` — без билета). Названный флагом, но
@@ -220,7 +224,8 @@ python3 -m collector.cian_collect --geojson <файл клеток> [--budget N]
   которую Андрей запускает сам (раздел «Проба с Mac своим билетом»).
 - Локально (сессии разработки) — только тесты pytest с подменённой сетью
   (решение Андрея 10.11): `tests/test_collector.py`,
-  `tests/test_collector_transport.py`, `tests/test_collector_nights.py`,
+  `tests/test_collector_transport.py`, `tests/test_collector_browser.py`,
+  `tests/test_collector_nights.py`,
   `tests/test_collector_status.py`.
 
 ## 45 секторов — заморожено

@@ -1,32 +1,27 @@
 # Отчёт тимлида для PM
 
-**Задача.** block/page-source — «получить страницу N клетки» вынесено из обхода в модуль «источник страниц» с одной реализацией «по ссылке». PR #6 (mih-an/ads_collector). Метка [СТРАНИЦЫ]. Поведение и формат папки прогона не менялись.
+**Задача.** block/browser-interface — «браузер» стал интерфейсом, нынешний класс — реализация `HttpBrowser`; подготовлены место, контракт и проверки для внешней реализации `ChromeBrowser`. PR #7 (mih-an/ads_collector). Метка [БРАУЗЕР]. Поведение и формат папки прогона не менялись.
 
 **Что сделано.**
-- Новый `collector/page_source.py`: Protocol `PageSource` (билет `ticket`, `get_page(key, ring, page)` → `run_folder.PageAnswer` с пустыми `ids`) и `UrlPageSource(browser)` — ссылка, Referer, `browser.fetch`, `classify_page`, перенесены из `Crawl.request_page`.
-- `crawl.py`: `Crawl(settings, tiles_file, source, clock, rnd)`; `request_page` — три строки (страница у источника → запись файла → id); ссылок, Referer, HTML, `classify_page`, `Browser` не знает (страж 21.78). Бюджет, паузы, повторы, деление, night.log, plan.json, запись файлов — в обходе.
-- `cian_collect.py`: `PAGE_SOURCE = "url"`, словарь `PAGE_SOURCES` (по образцу `TRANSPORTS`); `enter_cian` отдаёт источник. Флага запуска нет — реализация одна.
-- `run_folder.py`: поле `PageAnswer.offers`; `write_page(…, body)` вместо `html` (`.html.gz` остаётся).
-- Документы: CLAUDE.md §6/§10, TEST_PLAN, ROADMAP (п. 8 задания), раздел 2 `collector_architecture.md` (граница и место второй реализации), README.
+- `collector/browser.py` — только интерфейс: `Ticket`, `FetchedPage`, `Browser(Protocol)` (`ticket`, `fetch(url, referer)`); лист пакета. `collector/http_browser.py` — `HttpBrowser` (бывший `Browser`: заголовки, распаковка, длительность, сбой → код 0), логика прежняя.
+- `cian_collect.py`: `BROWSER = "http"`, словарь `BROWSERS`, `make_http_browser(settings, rnd, transport_factory)` (билет из файлов + транспорт + `HttpBrowser`), `enter_cian` в две строки, флаг `--browser`, поле `Settings.browser`. `crawl.py` и `page_source.py` про `HttpBrowser`, заголовки и транспорт не знают (страж 21.78).
+- `docs/reference/browser_contract.md` — контракт для промпта PM: поля `FetchedPage`, правила `fetch`, билет и как его читает обход, раздел «только ChromeBrowser», стенд и набор 21.86, что делает тимлид при вставке (раздел 8).
+- DECISIONS (п. 7), ROADMAP (п. 8), TEST_PLAN, CLAUDE.md §6/§10, README, раздел 2 `collector_architecture.md`, `.claude/agents/` (data-checker, reviewer, coder, planner).
 
-**Кейсы.** Новые 21.83 (граница источника: OK / BLOCK / конец выдачи / сломанный формат / сбой сети, ссылка и Referer, один запрос на вызов), 21.84 (выбор по `PAGE_SOURCES` / `PAGE_SOURCE`), 21.85 (обход над подделкой с телом не-HTML); правка стража 21.78. Тестов 684 → 731, покрытие 100 %, ruff, mypy чисто; эталоны ночей совпали без пересборки (прогон на a71fc5c, раздел 4 PR).
+**Кейсы.** Новые 21.86 (контракт браузера, 14 тестов / 20 запусков на стенде `HttpStand`; следующему блоку — `ChromeStand` и строка в `STANDS`) и 21.87 (выбор браузера); правка стража 21.78; 21.24, 21.29, 21.30 — общая часть переехала в 21.86. Тестов 794, покрытие 100 %, ruff и mypy чисто; эталоны ночей совпали без пересборки (раздел 4 PR).
 
-**Решения уровня 1.** `docs/DECISIONS.md`, строки 2026-11-16 · block/page-source (8 строк) и строка решения Андрея 2026-11-15.
+**Решения уровня 1.** `docs/DECISIONS.md`, строки 2026-11-16 · block/browser-interface без пометки «допущение»; решения Андрея — строки 2026-11-16 (PR #6) и 2026-11-17.
 
-**Вопросы уровня 2 — допущения** (раздел 6 PR, рекомендация А сделана):
-1. Поле «вид тела» (HTML/JSON) в ответ источника не добавлено — формат JSON-страниц ещё не решён.
-2. Ответ источника — `PageAnswer`: 9 полей п. 2 задания плюс ключ, номер, id (второй почти одинаковый тип не заведён).
+**Вопросы уровня 2.** Открытых нет: Андрей 16.11 принял вариант А по всем 7 допущениям раздела 6 (тело редиректа; `body` Chrome — тело ответа, не DOM, с фактом его пробы в Chrome; рамка билета/`size`/`neterr`; Chrome идёт по редиректу сам; раздел работ при вставке; `http_browser.py`; `.claude/agents/*`) — строки решений Андрея 2026-11-16 в DECISIONS. Там же решение для блока вставки: билет Chrome — `ua` открытого Chrome, `has_ticket` — есть cookies cian.ru, `age_h = None` (вписано в контракт, раздел 5); новый порядок ROADMAP: Вставка Chrome → Проба с Mac → Источник кликом → …; транспорт и интерфейс `Browser` не трогаем.
 
-**Ошибки в ранее слитом коде.** Ошибок нет. Пробел в тестах (был до блока): передачу заголовка `waf-verdict` в `classify_page` не держал ни один тест — теперь держит 21.83.
+**Ошибки в ранее слитом коде.** Нет. Пробел (был до блока): тождество `rnd` обхода и сборки билета не закреплено тестом — в «Мелочах» ROADMAP.
 
 **Открытые места.**
-- Вторая реализация потребует правки `cian_collect.py` (не только строки словаря): тип создателя `Callable[[Browser], PageSource]`, сборка источника без `Browser`, флаг, ленивый импорт и проверка библиотеки; обязательный `ticket` у `PageSource` — решить в блоке «Chrome кликом».
-- `ids` от источника всегда пусты, обход заполняет их после записи файла (21.36); вторая реализация не должна их заполнять — проверить в её блоке.
-- Имя `Crawl.request_page` оставлено (на него ссылаются документы), хотя запрос делает источник.
-- «Единый класс страница поиска» (Мелочи ROADMAP) закрыт частично: `PageAnswer` — один тип от источника до записи, `FetchedPage` остаётся.
-- «Просмотры лотов воронки» в ROADMAP — только название; состав даст PM.
-- Ревью: 2 круга (второй — правка проверок в тестах), блокеров не было; несделанные замечания — раздел 8 PR.
+- Вставка Chrome поменяет вид `BROWSERS` (поле библиотеки) и тексты 21.87; где живут 6 настроек Chrome (константы или `Settings`) — решить при вставке.
+- Страж 21.78 для `chrome_browser.py` (playwright, `subprocess`, `time` в функции-крае) — в следующем блоке.
+- При `age_h = None` текст итога `crawl.summary_text` даст «билет: есть, None ч» — поправить текст (и кейс) в блоке «Вставка Chrome»; в контракте отмечено.
+- Несделанные мелочи ревью — раздел 8 PR.
 
-**Рекомендация следующего шага.** Андрей отвечает на допущения и сливает PR #6. Затем «Chrome кликом» — после длинного теста Андрея и решения о библиотеке (Playwright — уровень 2, внешняя зависимость).
+**Рекомендация следующего шага.** Андрей сливает PR #7; PM пишет промпт для `ChromeBrowser` по `browser_contract.md` (разделы 2–7), затем блок «Вставка Chrome» (все страницы по ссылке) и сразу «Проба с Mac».
 
-**Какие docs/ менялись.** `docs/DECISIONS.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md`, `docs/reference/collector_architecture.md` (раздел 2), `docs/process/CURRENT_TASK.md`, `docs/process/TEAMLEAD_REPORT.md`; вне `docs/` — `CLAUDE.md`, `README.md`, `collector/README.md`.
+**Какие docs/ менялись.** `docs/DECISIONS.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md`, `docs/reference/browser_contract.md` (новый), `docs/reference/collector_architecture.md` (раздел 2), `docs/process/CURRENT_TASK.md`, `docs/process/TEAMLEAD_REPORT.md`; вне `docs/` — `CLAUDE.md`, `README.md`, `collector/README.md`, `.claude/agents/`.
