@@ -1,5 +1,6 @@
 """Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61,
-21.78, 21.81–21.85, 21.87, 21.90, 21.91.
+21.78, 21.81–21.85, 21.87, 21.90, 21.91, 21.92 (что нажать и что ловить при
+клике — search_page).
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
@@ -44,7 +45,10 @@ page_loader (загрузчик страницы), crawl (обход); чере�
   путь, профиль, cc.PORT_WAIT_S, cc.POLL_S) по имени модуля в момент
   вызова — её подменяет 21.90 (Chrome не запускается);
   cc.read_chrome_ticket(вкладка chrome_browser.ChromeTab) → Ticket;
-  константы cc.GOTO_TIMEOUT_MS, cc.WAIT_UNTIL, cc.PORT_WAIT_S, cc.POLL_S;
+  константы cc.GOTO_TIMEOUT_MS, cc.WAIT_UNTIL, cc.PORT_WAIT_S, cc.POLL_S,
+  cc.CLICK_TIMEOUT_MS, cc.LOAD_TIMEOUT_MS, cc.URL_TIMEOUT_MS (едут в
+  chrome_browser.TabSettings); рука chrome_human.Human — на cc.time.sleep и
+  cc.time.monotonic в момент вызова;
 - crawl.ticket_text(has_ticket, age_h) — слова о билете в итоге (21.54);
 - chrome_browser.ChromeTab(page, timeout_error, error),
   chrome_browser.ChromeBrowser, chrome_browser.ChromeConnectError;
@@ -115,10 +119,13 @@ from collector_support import (  # noqa: F401 — no_network, no_chrome: авт�
     write_ticket,
 )
 from test_collector_browser import (
+    SEARCH_OFFERS_URL,
+    FakeElement,
     FakePage,
     FakePlaywrightError,
     FakeTimeoutError,
     SiteAnswer,
+    box,
 )
 
 import collector
@@ -951,6 +958,56 @@ def test_21_13_servicepipe_marker_beyond_200000_is_block():
         None,
         [],
     )
+
+
+def test_21_92_click_constants():
+    """21.92 Что нажать на странице выдачи — знание ЦИАН в search_page:
+    параметр номера страницы в ссылке PAGE_PARAM = "p", текст кнопки
+    NEXT_BUTTON_TEXT = "Дальше". Модуль 21."""
+    assert (search_page.PAGE_PARAM, search_page.NEXT_BUTTON_TEXT) == ("p", "Дальше")
+
+
+@pytest.mark.parametrize(
+    ("url", "resource_type", "expected"),
+    [
+        ("https://www.cian.ru/cat.php?deal_type=sale&p=2", "document", True),
+        ("https://api.cian.ru/search-offers/v2/search-offers-desktop/", "xhr", True),
+        ("https://api.cian.ru/search-offers/v2/search-offers-desktop/", "fetch", True),
+        (
+            "https://api.cian.ru/search-offers/v1/get-infinite-search-result-desktop/",
+            "xhr",
+            False,
+        ),
+        (
+            "https://api.cian.ru/search-offers/v1/get-infinite-search-result-desktop/",
+            "fetch",
+            False,
+        ),
+        (
+            "https://api.cian.ru/search-offers/v2/search-offers-desktop/",
+            "script",
+            False,
+        ),
+        ("https://api.cian.ru/geo/v1/suggest/", "xhr", False),
+        ("https://static.cian.ru/image.png", "image", False),
+    ],
+    ids=[
+        "документ",
+        "xhr search-offers",
+        "fetch search-offers",
+        "xhr get-infinite-search-result",
+        "fetch get-infinite-search-result",
+        "скрипт search-offers",
+        "xhr другого API",
+        "картинка",
+    ],
+)
+def test_21_92_is_next_page_response(url, resource_type, expected):
+    """21.92 is_next_page_response(адрес, вид запроса) — ответ ли это на клик
+    «следующая страница»: документ — да; xhr или fetch с search-offers в
+    адресе — да; get-infinite-search-result (блок рекомендаций того же API)
+    — нет; прочие — нет. Модуль 21."""
+    assert search_page.is_next_page_response(url, resource_type) is expected
 
 
 # ═════════════════════════ Б. Геометрия и ссылка ═════════════════════════
@@ -5028,7 +5085,9 @@ class FakeChromePage(FakePage):
     goto_kwargs; на первый переход — 403 «no», проба проваливается, прогон
     кончается сразу; второго перехода быть не должно — подделка упадёт:
     ответов больше нет) плюс то, из чего читается билет: evaluate(выражение)
-    записывает выражение и отдаёт UA, context.cookies — куки."""
+    записывает выражение и на navigator.userAgent отдаёт UA (прочие скрипты
+    — как у FakePage: размер окна, остаток до низа, поиск ссылки),
+    context.cookies — куки."""
 
     def __init__(self, user_agent: str, cookies: list[dict]) -> None:
         super().__init__([SiteAnswer(403, "no")])
@@ -5036,9 +5095,11 @@ class FakeChromePage(FakePage):
         self.context = FakeChromeContext(cookies)
         self.evaluated: list[str] = []
 
-    def evaluate(self, expression: str) -> str:
+    def evaluate(self, expression: str, arg: object = None) -> object:
         self.evaluated.append(expression)
-        return self.user_agent
+        if expression == "navigator.userAgent":
+            return self.user_agent
+        return super().evaluate(expression, arg)
 
 
 def chrome_tab_of(page: FakeChromePage) -> chrome_browser.ChromeTab:
@@ -5172,6 +5233,48 @@ def test_21_90_make_chrome_browser(env, monkeypatch):
         2,
         [],
     )
+
+
+def test_21_90_make_chrome_browser_click_timeouts(env, monkeypatch):
+    """21.90 make_chrome_browser собирает TabSettings из констант
+    cian_collect CLICK_TIMEOUT_MS = 60 000, LOAD_TIMEOUT_MS = 60 000,
+    URL_TIMEOUT_MS = 30 000 (числа пробы click_test.py): клик ждёт ответ
+    60 000 мс, затем load — 60 000 мс и адрес с номером страницы —
+    30 000 мс. Модуль 21."""
+    page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
+    page.answers = [SiteAnswer(200, "{}", resource_type="xhr", url=SEARCH_OFFERS_URL)]
+    page.elements = [FakeElement(box(500, 700), href="/cat.php?p=2", text="2")]
+    replace_connect_chrome_tab(monkeypatch, chrome_tab_of(page))
+    settings = settings_of(env.folder)
+    made = cc.make_chrome_browser(settings, random.Random(1), env.transport.factory)
+    target = browser.ClickTarget(link_param="p", link_value="2", else_text="Дальше")
+    made.click_and_catch(target, search_page.is_next_page_response)
+    waits = [
+        (event[0], event[-1])
+        for event in page.events
+        if event[0] in {"expect", "load", "wait_url"}
+    ]
+    assert ((cc.CLICK_TIMEOUT_MS, cc.LOAD_TIMEOUT_MS, cc.URL_TIMEOUT_MS), waits) == (
+        (60_000, 60_000, 30_000),
+        [("expect", 60_000), ("load", 60_000), ("wait_url", 30_000)],
+    )
+
+
+def test_21_90_make_chrome_browser_human_clock(env, monkeypatch):
+    """21.90 Рука ChromeBrowser из make_chrome_browser — на sleep и
+    monotonic модуля time сборщика (подменённые часы env): прокрутка
+    страницы зовёт monotonic и сон этих часов и долистывает страницу.
+    Модуль 21."""
+    page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
+    replace_connect_chrome_tab(monkeypatch, chrome_tab_of(page))
+    settings = settings_of(env.folder)
+    made = cc.make_chrome_browser(settings, random.Random(1), env.transport.factory)
+    made.scroll_page(0.0)
+    assert (
+        env.clock.monotonic_calls > 0,
+        len(env.clock.pauses) > 0,
+        page.left_px() <= 300,
+    ) == (True, True, True)
 
 
 def test_21_90_chrome_connect_error_exits(env, monkeypatch):
@@ -5367,8 +5470,9 @@ def test_21_61_run_as_module(tmp_path, monkeypatch):
 
 COLLECTOR_DIR = REPO_ROOT / "collector"
 # Без часов и сети: правила, интерфейс транспорта, интерфейс браузера,
-# браузер над транспортом (monotonic приходит в HttpBrowser аргументом) и
-# загрузчик страницы.
+# браузер над транспортом (monotonic приходит в HttpBrowser аргументом),
+# загрузчик страницы и рука человека (sleep и monotonic приходят в Human
+# аргументами, случайность — rnd; DECISIONS block/click-pages).
 RULE_MODULES = (
     "crawl.py",
     "search_page.py",
@@ -5378,6 +5482,7 @@ RULE_MODULES = (
     "browser.py",
     "http_browser.py",
     "page_loader.py",
+    "chrome_human.py",
 )
 # Реализации транспорта: сеть живёт только в них.
 TRANSPORT_MODULES = ("urllib_transport.py", "httpx_transport.py")
@@ -5392,15 +5497,18 @@ NO_DISK_MODULES = (
     "browser.py",
     "page_loader.py",
     "chrome_browser.py",
+    "chrome_human.py",
 )
 # Листья пакета: не импортируют никого из collector (2.1 документа);
-# browser — интерфейс браузера (Ticket, FetchedPage, Browser) — тоже лист.
+# browser — интерфейс браузера (Ticket, FetchedPage, Browser) — тоже лист;
+# chrome_human — рука человека над вкладкой, которую ей дают аргументом.
 LEAF_MODULES = (
     "search_page.py",
     "geometry.py",
     "run_folder.py",
     "transport.py",
     "browser.py",
+    "chrome_human.py",
 )
 # Все модули пакета, кроме файла запуска cian_collect.py.
 PACKAGE_MODULES = (
@@ -5418,14 +5526,15 @@ PACKAGE_MODULES = (
 # ему напрямую нельзя. Реализации браузера (http_browser, chrome_browser) не
 # знают ни crawl, ни page_loader: их собирает cian_collect (DECISIONS
 # block/browser-interface, block/chrome-insert); chrome_browser берёт из
-# пакета только browser и search_page.
+# пакета только browser, search_page и руку человека chrome_human
+# (DECISIONS block/click-pages).
 LAYER_IMPORTS = {
     "crawl.py": frozenset(
         {"page_loader", "browser", "search_page", "geometry", "run_folder"}
     ),
     "page_loader.py": frozenset({"browser", "search_page", "run_folder"}),
     "http_browser.py": frozenset({"browser", "transport", "search_page"}),
-    "chrome_browser.py": frozenset({"browser", "search_page"}),
+    "chrome_browser.py": frozenset({"browser", "search_page", "chrome_human"}),
     "urllib_transport.py": frozenset({"transport"}),
     "httpx_transport.py": frozenset({"transport"}),
 }
@@ -5442,7 +5551,7 @@ ALLOWED_OS = {"os", "os.path", "os.path.basename"}
 PACKAGE_NAMES = {"collector", "crawl", "search_page", "geometry", "run_folder"}
 PACKAGE_NAMES |= {"transport", "browser", "urllib_transport", "httpx_transport"}
 PACKAGE_NAMES |= {"cian_collect", "status", "page_loader", "http_browser"}
-PACKAGE_NAMES |= {"chrome_browser"}
+PACKAGE_NAMES |= {"chrome_browser", "chrome_human"}
 # Имена ссылки, разбора и браузера, которых обход не называет: страницу ему
 # отдаёт загрузчик страницы одним вызовом load_page (DECISIONS,
 # block/page-source и block/click-pages; кейс 21.78).
@@ -5789,6 +5898,7 @@ urllib_transport_imports = functools.partial(module_imports, name="urllib_transp
 httpx_transport_imports = functools.partial(module_imports, name="httpx_transport")
 http_browser_imports = functools.partial(module_imports, name="http_browser")
 chrome_browser_imports = functools.partial(module_imports, name="chrome_browser")
+chrome_human_imports = functools.partial(module_imports, name="chrome_human")
 eager_httpx_transport_imports = functools.partial(
     module_level_imports, name="httpx_transport"
 )
@@ -5965,10 +6075,10 @@ def test_21_78_package_modules_listed():
 @pytest.mark.parametrize("name", RULE_MODULES)
 def test_21_78_no_network_or_clock_imports(name):
     """21.78 Модули правил (crawl, search_page, geometry, run_folder),
-    transport, browser, http_browser и page_loader не импортируют time,
-    socket, urllib.request, urllib.error, http: сеть — в реализациях
-    транспорта, часы — в cian_collect (monotonic приходит в HttpBrowser
-    аргументом). Модуль 21."""
+    transport, browser, http_browser, page_loader и chrome_human не
+    импортируют time, socket, urllib.request, urllib.error, http: сеть — в
+    реализациях транспорта, часы — в cian_collect (monotonic приходит в
+    HttpBrowser аргументом, sleep и monotonic — в Human). Модуль 21."""
     assert network_or_clock_imports(collector_source(name)) == []
 
 
@@ -5994,8 +6104,8 @@ def test_21_78_no_wall_clock_or_random_calls(name):
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_disk_in_crawl_search_page_transport(name):
-    """21.78 crawl, search_page, transport, browser, page_loader и
-    chrome_browser не зовут open, не обращаются к os.* (кроме
+    """21.78 crawl, search_page, transport, browser, page_loader,
+    chrome_browser и chrome_human не зовут open, не обращаются к os.* (кроме
     os.path.basename), не импортируют gzip, io, pathlib, shutil: диск —
     только в run_folder и низу geometry. Модуль 21."""
     assert disk_use(collector_source(name)) == []
@@ -6003,11 +6113,11 @@ def test_21_78_no_disk_in_crawl_search_page_transport(name):
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
-    """21.78 crawl, search_page, transport, browser, page_loader и
-    chrome_browser не печатают в stdout (print, sys.stdout): по таблице 2.4
-    документа stdout — только run_folder.say (через него обход печатает эхо
-    строк night.log и итог) и cian_collect (строка паузы старта и печать
-    сетки). Модуль 21."""
+    """21.78 crawl, search_page, transport, browser, page_loader,
+    chrome_browser и chrome_human не печатают в stdout (print, sys.stdout):
+    по таблице 2.4 документа stdout — только run_folder.say (через него
+    обход печатает эхо строк night.log и итог) и cian_collect (строка паузы
+    старта и печать сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 
@@ -6062,6 +6172,17 @@ def test_21_78_browsers_imported_only_by_cian_collect(name, implementation):
     с интерфейсом Browser, реализацию собирает cian_collect (DECISIONS
     block/browser-interface, block/chrome-insert). Модуль 21."""
     assert module_imports(collector_source(name), implementation) == []
+
+
+@pytest.mark.parametrize(
+    "name", [m for m in PACKAGE_MODULES if m != "chrome_browser.py"]
+)
+def test_21_78_chrome_human_imported_only_by_chrome(name):
+    """21.78 Руку человека chrome_human в пакете импортирует только
+    chrome_browser (и cian_collect, который собирает Human): обход, загрузчик
+    страницы и прочие модули о ней не знают (DECISIONS block/click-pages).
+    Модуль 21."""
+    assert chrome_human_imports(collector_source(name)) == []
 
 
 def test_21_78_chrome_edge_imports_only_in_connect():
@@ -6136,8 +6257,8 @@ def test_21_78_layer_order(name):
     transport, http_browser и реализации транспорта напрямую не
     импортирует; page_loader берёт только browser, search_page и
     run_folder; http_browser — только browser, transport и search_page,
-    chrome_browser — только browser и search_page, реализации транспорта —
-    только transport. Модуль 21."""
+    chrome_browser — только browser, search_page и chrome_human, реализации
+    транспорта — только transport. Модуль 21."""
     source = collector_source(name)
     assert foreign_package_imports(source, LAYER_IMPORTS[name]) == []
 
@@ -6159,9 +6280,9 @@ def test_21_78_no_relative_imports(name):
 
 @pytest.mark.parametrize("name", LEAF_MODULES)
 def test_21_78_leaf_modules_import_no_package(name):
-    """21.78 search_page, geometry, run_folder, transport и browser не
-    импортируют никого из пакета collector (правило импорта, 2.1
-    документа). Модуль 21."""
+    """21.78 search_page, geometry, run_folder, transport, browser и
+    chrome_human не импортируют никого из пакета collector (правило
+    импорта, 2.1 документа). Модуль 21."""
     assert package_imports(collector_source(name)) == []
 
 
@@ -6317,6 +6438,14 @@ GUARD_SAMPLES = [
     (chrome_browser_layer_imports, "from collector import http_browser"),
     # обход собирает ChromeBrowser сам
     (forbidden_page_names, "site = ChromeBrowser(tab, ticket, monotonic, 1, 'load')"),
+    # руку человека chrome_human импортирует кто-то, кроме chrome_browser и
+    # cian_collect: обход, загрузчик страницы или любой другой модуль пакета
+    (chrome_human_imports, "from collector import chrome_human"),
+    (chrome_human_imports, "from collector.chrome_human import Human"),
+    (chrome_human_imports, "import collector.chrome_human as ch"),
+    (crawl_layer_imports, "from collector import chrome_human"),
+    (page_loader_layer_imports, "from collector.chrome_human import Human"),
+    (package_imports, "import chrome_human"),
     # интерфейс браузера распаковывает тело сам
     (compression_imports, "import zlib"),
     (compression_imports, "from gzip import decompress"),
@@ -6495,6 +6624,26 @@ CHROME_CIAN_COLLECT_CLEAN_SAMPLE = """
 from collector import chrome_browser, http_browser
 """
 
+# Образец разрешённого chrome_browser: из пакета — типы интерфейса браузера,
+# search_page и рука человека chrome_human.
+CHROME_BROWSER_HUMAN_CLEAN_SAMPLE = """
+from collector import search_page
+from collector.browser import ClickTarget, FetchedPage, Ticket
+from collector.chrome_human import Human
+"""
+
+# Образец разрешённого руке человека chrome_human: тип random.Random в
+# подсказке, вызовы методов rnd, сон и часы — переданные функции.
+CHROME_HUMAN_CLEAN_SAMPLE = """
+import math
+import random
+from collections.abc import Callable
+
+
+def pause(sleep: Callable[[float], None], rnd: random.Random) -> None:
+    sleep(rnd.uniform(1.5, 3.0) + math.hypot(1, 1))
+"""
+
 
 @pytest.mark.parametrize(
     ("check", "sample"),
@@ -6535,6 +6684,12 @@ from collector import chrome_browser, http_browser
         (wall_clock_or_random_uses, CHROME_BROWSER_CLEAN_SAMPLE),
         (playwright_imports, CHROME_CIAN_COLLECT_CLEAN_SAMPLE),
         (subprocess_imports, CHROME_CIAN_COLLECT_CLEAN_SAMPLE),
+        (chrome_browser_layer_imports, CHROME_BROWSER_HUMAN_CLEAN_SAMPLE),
+        (package_imports, CHROME_HUMAN_CLEAN_SAMPLE),
+        (network_or_clock_imports, CHROME_HUMAN_CLEAN_SAMPLE),
+        (wall_clock_or_random_uses, CHROME_HUMAN_CLEAN_SAMPLE),
+        (disk_use, CHROME_HUMAN_CLEAN_SAMPLE),
+        (stdout_use, CHROME_HUMAN_CLEAN_SAMPLE),
     ],
     ids=[
         "сеть и часы",
@@ -6573,6 +6728,12 @@ from collector import chrome_browser, http_browser
         "chrome_browser: время стены и random",
         "cian_collect: chrome_browser наверху без playwright",
         "cian_collect: chrome_browser наверху без subprocess",
+        "chrome_browser: browser, search_page, chrome_human",
+        "chrome_human: лист",
+        "chrome_human: sleep и monotonic аргументами",
+        "chrome_human: rnd, без функций random",
+        "chrome_human: без диска",
+        "chrome_human: stdout",
     ],
 )
 def test_21_78_guard_allows_clean_sample(check, sample):
@@ -6590,6 +6751,7 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     проверок знания обхода не ловит нарушения другой); у page_loader — импорт
     browser, search_page, run_folder; у cian_collect — импорт
     httpx_transport внутри функции и chrome_browser наверху; у
-    chrome_browser — импорт типов browser, playwright, subprocess и time
-    внутри connect_chrome_tab. Модуль 21."""
+    chrome_browser — импорт типов browser, search_page и chrome_human,
+    playwright, subprocess и time внутри connect_chrome_tab; у chrome_human —
+    стандартная библиотека, переданные sleep и rnd. Модуль 21."""
     assert check(sample) == []

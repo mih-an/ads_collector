@@ -2,11 +2,13 @@
 
 Используются tests/test_collector.py, tests/test_collector_nights.py,
 tests/test_collector_transport.py, tests/test_collector_browser.py,
-tests/test_collector_chrome_browser.py и tests/test_collector_status.py.
+tests/test_collector_chrome_browser.py, tests/test_collector_chrome_human.py
+и tests/test_collector_status.py.
 Здесь две группы. Общее для нескольких файлов: запрет сети (no_network —
-во всех шести файлах), предохранитель от настоящего Chrome (no_chrome — в
+во всех семи файлах), предохранитель от настоящего Chrome (no_chrome — в
 test_collector.py, test_collector_nights.py, test_collector_transport.py,
-test_collector_browser.py, test_collector_chrome_browser.py; не
+test_collector_browser.py, test_collector_chrome_browser.py,
+test_collector_chrome_human.py; не
 подключается только в test_collector_status.py — status.py сам зовёт
 subprocess), подставные часы (FakeTime, frozen_datetime), билет во
 временной папке, ответ ЦИАН Reply, фальшивый транспорт FakeTransport
