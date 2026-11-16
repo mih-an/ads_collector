@@ -1233,6 +1233,7 @@ def test_21_92_offer_link_pattern(link, expected):
         ("https://notcian.ru/sale/suburban/312345678/", "foreign_url"),
         ("https://example.com/?next=https://www.cian.ru/", "foreign_url"),
         ("about:blank", "foreign_url"),
+        ("https://evil.example.com/captcha/", "captcha"),
     ],
     ids=[
         "krasnogorsk.cian.ru",
@@ -1244,11 +1245,13 @@ def test_21_92_offer_link_pattern(link, expected):
         "notcian.ru",
         "cian.ru только в параметре",
         "пустая вкладка",
+        "капча на чужом сайте",
     ],
 )
 def test_21_92_card_block_reason(url, expected):
     """21.92 card_block_reason(адрес открытой карточки): captcha в адресе
-    (без учёта регистра, как в пробе) → "captcha"; хост не cian.ru и не
+    (без учёта регистра, как в пробе; и на чужом сайте — проверяется
+    первой) → "captcha"; хост не cian.ru и не
     поддомен *.cian.ru → "foreign_url"; cian.ru, www.cian.ru,
     krasnogorsk.cian.ru → None (решение тимлида block/click-pages).
     Модуль 21."""
@@ -5180,14 +5183,21 @@ def test_21_98_cards_need_click_loader(env, monkeypatch, capsys):
 
 
 def test_21_98_cards_need_click_loader_before_start_pause(
-    env, monkeypatch, playwright_installed
+    env, monkeypatch, capsys, playwright_installed
 ):
     """21.98 --cards --browser chrome без --page-loader click — выход до
     паузы старта (её нет даже без --no-start-delay) и до подключения к
-    Chrome: connect_chrome_tab и фабрику транспорта не зовут. Модуль 21."""
+    Chrome: connect_chrome_tab и фабрику транспорта не зовут; строка ошибки
+    называет --page-loader. Модуль 21."""
     connects = replace_connect_chrome_tab(monkeypatch, None)
     main_exit(env, monkeypatch, "--cards", "--browser", "chrome")
-    assert (env.clock.pauses, connects, env.transport.made) == ([], [], [])
+    error = error_line(capsys.readouterr().err)
+    assert (
+        env.clock.pauses,
+        connects,
+        env.transport.made,
+        "--page-loader" in error,
+    ) == ([], [], [], True)
 
 
 # Список браузеров — словарь cc.BROWSERS «имя → cc.BrowserChoice(library,
@@ -5676,10 +5686,11 @@ def test_21_90_make_chrome_browser_human_clock(env, monkeypatch):
 
 def test_21_98_make_chrome_browser_card_settings(env, monkeypatch):
     """21.98 make_chrome_browser собирает настройки карточки в TabSettings:
-    новая вкладка ждётся CARD_OPEN_TIMEOUT_MS (30 000 мс), клавиша «в новой
-    вкладке» — new_tab_key(sys.platform), передний план — Settings.front (с
-    front вкладка карточки, затем вкладка выдачи — на передний план).
-    Модуль 21."""
+    новая вкладка ждётся CARD_OPEN_TIMEOUT_MS, клавиша «в новой вкладке» —
+    по платформе sys.platform в момент сборки (на Windows — Control),
+    передний план — Settings.front (с front вкладка карточки, затем вкладка
+    выдачи — на передний план). Модуль 21."""
+    monkeypatch.setattr(cc.sys, "platform", "win32")
     page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
     page.elements = [offer_link(FakeCardPage())]
     replace_connect_chrome_tab(monkeypatch, chrome_tab_of(page))
@@ -5688,8 +5699,8 @@ def test_21_98_make_chrome_browser_card_settings(env, monkeypatch):
     made.view_card(search_page.OFFER_LINK_PATTERN, search_page.card_block_reason)
     fronts = [entry for entry in page.context.log if entry[1] == "front"]
     assert (page.context.waits, page.context.opened_with, fronts) == (
-        [30_000],
-        [(cc.new_tab_key(sys.platform),)],
+        [cc.CARD_OPEN_TIMEOUT_MS],
+        [("Control",)],
         [("карточка", "front"), ("выдача", "front")],
     )
 

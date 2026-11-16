@@ -39,7 +39,6 @@ cc.PAGE_LOADERS, флаги --cards и --front.
 import gzip
 import json
 import random
-import sys
 import urllib.parse
 from pathlib import Path
 
@@ -61,6 +60,7 @@ from test_collector import (
     CLICK_NIGHT,
     EPOCH,
     LOADER_NET_ERROR,
+    LOADER_TICKET_UA,
     MOMENT,
     A,
     B,
@@ -87,9 +87,12 @@ from test_collector import (
     write_features,
 )
 from test_collector_browser import (
+    CAPTCHA_CARD_PLAIN_URL,
+    CAPTCHA_CARD_URL,
     CARD_HTML,
     CARD_PLAIN_URL,
     CARD_TRAFFIC_BYTES,
+    CARD_URL,
     INFINITE_URL,
     MAIN_FRAME,
     SEARCH_OFFERS_URL,
@@ -1524,12 +1527,13 @@ def planned(total, offers_on_page: int, per_tile=PER_TILE) -> list[set[int]]:
 
 @pytest.mark.parametrize(
     ("total", "offers_on_page"),
-    [(5, 5), (28, 28), (100, 10), (None, 3), (56, 28)],
+    [(5, 5), (28, 28), (100, 10), (None, 3), (None, 28), (56, 28)],
     ids=[
         "одна короткая страница",
         "ровно одна полная страница",
         "страница 1 короткая при большом totalOffers",
         "totalOffers нет",
+        "totalOffers нет, страница полная",
         "две страницы",
     ],
 )
@@ -1568,7 +1572,10 @@ def test_21_98_plan_card_pages_capped():
     страницу) — заходы только на страницах до потолка, без последней.
     Модуль 21."""
     union = set().union(*planned(5000, 28))
-    assert union <= set(range(1, search_page.MAX_PAGES)) and 1 in union
+    assert (union <= set(range(1, search_page.MAX_PAGES)), len(union) > 3) == (
+        True,
+        True,
+    )
 
 
 def test_21_98_plan_card_pages_by_rnd():
@@ -1674,6 +1681,18 @@ def test_21_98_visit_card_knowledge_from_search_page(monkeypatch):
         reason("https://www.cian.ru/captcha/?redirect_url=x"),
         reason(CARD_PLAIN_URL),
     ) == (search_page.OFFER_LINK_PATTERN, "captcha", None)
+
+
+def test_21_98_click_after_card(monkeypatch):
+    """21.98 Главный сценарий: заход на карточку страницы 1 не сбивает
+    листание — следующая страница той же клетки идёт кликом, вкладка после
+    неё — (клетка, 2, удачно). Модуль 21."""
+    fake_plans(monkeypatch, {1})
+    loader, site = cards_loader([clicked_fixture("T0611_p2.html.xz")])
+    loader.load_page(KEY, RING, 1)
+    loader.visit_card()
+    loader.load_page(KEY, RING, 2)
+    assert (site.calls[-1][0], loader.tab) == ("click", (KEY, 2, True))
 
 
 def test_21_98_visit_card_once(monkeypatch):
@@ -1821,6 +1840,7 @@ def card_answer(**changes):
 CARD_CAPTCHA = {
     "verdict": "BLOCK",
     "detail": "captcha",
+    "url": CAPTCHA_CARD_PLAIN_URL,
     "traffic": 0,
     "seconds": 0.0,
     "body": CARD_HTML,
@@ -1890,22 +1910,42 @@ def test_21_98_card_line_keys(env):
 
 def test_21_98_card_line_values(env):
     """21.98 Строка event=card — клетка и страница захода, адрес без
-    параметров, трафик в байтах, длительность листания в секундах, вердикт
-    и деталь (у OK — «-»). Модуль 21."""
+    параметров, трафик в байтах, длительность листания в секундах с одним
+    знаком после запятой, вердикт и деталь (у OK — «-»; решение тимлида
+    block/click-pages, допущение (г)). Модуль 21."""
     run, _ = card_crawl(env, single_pages(), [card_answer()])
     (line,) = events(collected(run), "card")
-    view_s = float(line.pop("view_s"))
-    assert (line, view_s) == (
+    assert line == {
+        "event": "card",
+        "sector": B,
+        "page": "1",
+        "url": CARD_PLAIN_URL,
+        "traffic": str(CARD_TRAFFIC_BYTES),
+        "view_s": "37.0",
+        "verdict": "OK",
+        "err": "-",
+    }
+
+
+def test_21_98_card_block_line(env):
+    """21.98 Блок на карточке тоже пишет строку event=card — verdict=BLOCK,
+    err — деталь карточки (card_captcha, без пометки билета, как err строки
+    запроса), адрес без параметров — и она идёт перед строкой STOP (решение
+    тимлида block/click-pages, допущение (г)). Модуль 21."""
+    run, _ = card_crawl(env, single_pages(), [card_answer(**CARD_CAPTCHA)])
+    records = log_records(collected(run))
+    names = [record.get("event") for record in records]
+    (line,) = [record for record in records if record.get("event") == "card"]
+    fields = {k: line[k] for k in ("sector", "page", "url", "verdict", "err")}
+    assert (fields, names.index("card") < names.index("STOP")) == (
         {
-            "event": "card",
             "sector": B,
             "page": "1",
-            "url": CARD_PLAIN_URL,
-            "traffic": str(CARD_TRAFFIC_BYTES),
-            "verdict": "OK",
-            "err": "-",
+            "url": CAPTCHA_CARD_PLAIN_URL,
+            "verdict": "BLOCK",
+            "err": "card_captcha",
         },
-        pytest.approx(37.0, abs=0.5),
+        True,
     )
 
 
@@ -2008,10 +2048,17 @@ def test_21_98_card_block_stop_line(env):
 
 def test_21_98_card_block_file(env):
     """21.98 Блок на карточке — файл raw/_block_<клетка>_p<N>_0_<ЧЧММСС>.txt
-    (код 0: ответа страницы нет), в нём тело вкладки карточки. Модуль 21."""
+    (код 0: ответа страницы нет) по образцу файла блока страницы (21.47):
+    вердикт, деталь карточки (как у страницы — без пометки билета) и http=0;
+    клетка, страница и UA; вместо заголовков — адрес карточки (url: …);
+    тело вкладки карточки (решение тимлида block/click-pages). Модуль 21."""
     run, _ = card_crawl(env, single_pages(), [card_answer(**CARD_CAPTCHA)])
     path = collected(run) / "raw" / f"_block_{B}_p1_0_013140.txt"
-    assert CARD_HTML in path.read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8") == (
+        f"verdict=BLOCK detail=card_captcha http=0\n"
+        f"sector={B} page=1 ua={LOADER_TICKET_UA}\n\n"
+        f"url: {CAPTCHA_CARD_PLAIN_URL}\n\n{CARD_HTML}\n"
+    )
 
 
 def test_21_98_card_error_goes_on(env):
@@ -2046,8 +2093,7 @@ def test_21_98_card_spends_no_budget(env):
 
 # Флаги загрузчика кликом с заходами на карточки.
 CARDS = ("--page-loader", "click", "--cards")
-# Карточка, открывшаяся капчей, и карточка на чужом сайте.
-CAPTCHA_CARD = "https://www.cian.ru/captcha/?redirect_url=x"
+# Карточка на чужом сайте.
 FOREIGN_CARD = "https://evil.example.com/sale/suburban/312345678/"
 
 
@@ -2095,13 +2141,11 @@ def test_21_98_card_run_logged(env, monkeypatch, playwright_installed):
 
 
 def test_21_98_card_run_new_tab_closed(env, monkeypatch, playwright_installed):
-    """21.98 Карточка открыта кликом с клавишей new_tab_key платформы (Cmd
-    на macOS, иначе Ctrl) и после листания закрыта. Модуль 21."""
+    """21.98 Карточка открыта кликом с клавишей платформы (на Windows —
+    Control) и после листания закрыта. Модуль 21."""
+    monkeypatch.setattr(cc.sys, "platform", "win32")
     _, page, card = card_run(env, monkeypatch, *CARDS)
-    assert (page.context.opened_with, card.closed) == (
-        [(cc.new_tab_key(sys.platform),)],
-        True,
-    )
+    assert (page.context.opened_with, card.closed) == ([("Control",)], True)
 
 
 def test_21_98_no_cards_by_default(env, monkeypatch, playwright_installed):
@@ -2120,7 +2164,7 @@ def test_21_98_card_captcha_run_stops(env, monkeypatch, playwright_installed):
     пометкой «билет сгорел» (у вкладки есть куки); вторая клетка не
     запрошена. Модуль 21."""
     run_dir, page, _ = card_run(
-        env, monkeypatch, *CARDS, card=FakeCardPage(url=CAPTCHA_CARD)
+        env, monkeypatch, *CARDS, card=FakeCardPage(url=CAPTCHA_CARD_URL)
     )
     summary = summary_of(run_dir)
     assert (summary["stopped"], summary["stop_detail"], visited_cells(env, page)) == (
@@ -2134,7 +2178,7 @@ def test_21_98_card_captcha_run_block_file(env, monkeypatch, playwright_installe
     """21.98 Карточка с капчей — файл raw/_block_<клетка>_p1_0_<ЧЧММСС>.txt
     с телом вкладки карточки. Модуль 21."""
     run_dir, _, _ = card_run(
-        env, monkeypatch, *CARDS, card=FakeCardPage(url=CAPTCHA_CARD)
+        env, monkeypatch, *CARDS, card=FakeCardPage(url=CAPTCHA_CARD_URL)
     )
     path = run_dir / "raw" / f"_block_{B}_p1_0_013140.txt"
     assert CARD_HTML in path.read_text(encoding="utf-8")
@@ -2170,34 +2214,65 @@ def test_21_98_card_open_error_closes_tab(env, monkeypatch, playwright_installed
     assert (card.closed, page.closed, page.context.pages) == (True, False, [page])
 
 
+# Смены переднего плана за заход с --front: карточка, затем выдача.
+FRONTS = [("карточка", "front"), ("выдача", "front")]
+
+
 @pytest.mark.parametrize(
-    ("flags", "expected"),
+    ("flags", "card_url", "expected"),
     [
-        (("--front",), [("карточка", "front"), ("выдача", "front")]),
-        ((), []),
+        (("--front",), CARD_URL, FRONTS),
+        ((), CARD_URL, []),
+        (("--front",), CAPTCHA_CARD_URL, FRONTS),
     ],
-    ids=["--front", "без --front"],
+    ids=["--front", "без --front", "--front, капча"],
 )
-def test_21_98_front_flag(env, monkeypatch, playwright_installed, flags, expected):
+def test_21_98_front_flag(
+    env, monkeypatch, playwright_installed, flags, card_url, expected
+):
     """21.98 --front: вкладка карточки — на передний план, после закрытия —
-    снова вкладка выдачи; без --front — ни одной смены переднего плана.
-    Модуль 21."""
-    _, page, _ = card_run(env, monkeypatch, *CARDS, *flags)
+    снова вкладка выдачи (и у карточки с капчей); без --front — ни одной
+    смены переднего плана. Модуль 21."""
+    card = FakeCardPage(url=card_url)
+    _, page, _ = card_run(env, monkeypatch, *CARDS, *flags, card=card)
     fronts = [entry for entry in page.context.log if entry[1] == "front"]
     assert fronts == expected
 
 
-def test_21_98_card_run_spends_no_budget(env, monkeypatch, playwright_installed):
-    """21.98 Прогон с заходом на карточку: spent 2 (страницы B и A), в done
-    две задачи. Модуль 21."""
-    run_dir, _, _ = card_run(env, monkeypatch, *CARDS)
-    plan = read_json(run_dir / "plan.json")
-    assert (summary_of(run_dir)["spent"], len(plan["done"])) == (2, 2)
+def page_2_card_run(env, monkeypatch):
+    """Главный сценарий через main: B — стр. 1 по ссылке, стр. 2 и 3 кликом
+    (b_by_clicks), заход на карточку выбран на странице 2 (подмена
+    page_loader.plan_card_pages). → папка прогона."""
+    fake_plans(monkeypatch, {2})
+    run_dir, _ = chrome_run(
+        env, monkeypatch, b_by_clicks(), *CARDS, card=FakeCardPage()
+    )
+    return run_dir
+
+
+def test_21_98_card_between_click_pages(env, monkeypatch, playwright_installed):
+    """21.98 Главный сценарий: заход на карточку на странице 2 B — строка
+    event=card page=2, после неё страница 3 — снова кликом (kind=click).
+    Модуль 21."""
+    run_dir = page_2_card_run(env, monkeypatch)
+    (line,) = events(run_dir, "card")
+    kinds = [(r["page"], r["kind"]) for r in requests_of(run_dir, B)]
+    assert ((line["sector"], line["page"]), kinds) == (
+        (B, "2"),
+        [("1", "ssr"), ("2", "click"), ("3", "click")],
+    )
+
+
+def test_21_79_card_between_click_pages_folder(env, monkeypatch, playwright_installed):
+    """21.79 Папка прогона главного сценария (карточка между страницами
+    кликом) соответствует контракту формата. Модуль 21."""
+    run_dir = page_2_card_run(env, monkeypatch)
+    assert run_folder_violations(run_dir) == []
 
 
 @pytest.mark.parametrize(
     ("card_url", "stopped"),
-    [(CARD_PLAIN_URL, "queue_empty"), (CAPTCHA_CARD, "block")],
+    [(CARD_URL, "queue_empty"), (CAPTCHA_CARD_URL, "block")],
     ids=["удачный заход", "капча на карточке"],
 )
 def test_21_79_card_run_folder(

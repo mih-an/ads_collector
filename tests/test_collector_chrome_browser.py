@@ -34,6 +34,8 @@ from collector_support import (  # noqa: F401 — no_network, no_chrome: авт�
 )
 from test_collector_browser import (
     BOTTOM_PX,
+    CAPTCHA_CARD_PLAIN_URL,
+    CAPTCHA_CARD_URL,
     CARD_HTML,
     CARD_PLAIN_URL,
     CARD_TRAFFIC_BYTES,
@@ -716,10 +718,6 @@ def test_21_98_card_block_reason_gets_url():
     assert seen == [CARD_URL]
 
 
-# Карточка, открывшаяся капчей.
-CAPTCHA_CARD_URL = "https://www.cian.ru/captcha/?redirect_url=x"
-
-
 def captcha_reason(url: str) -> str | None:
     """Признак блока карточки: капча в адресе."""
     return "captcha" if "captcha" in url else None
@@ -727,11 +725,16 @@ def captcha_reason(url: str) -> str | None:
 
 def test_21_98_card_block():
     """21.98 Признак блока сработал (капча или чужой адрес) — CardVisit
-    BLOCK с деталью признака и телом вкладки карточки (content) — для файла
-    _block_*. Модуль 21."""
+    BLOCK с деталью признака, адресом карточки без параметров и телом
+    вкладки карточки (content) — для файла _block_*. Модуль 21."""
     page, _ = card_page(FakeCardPage(url=CAPTCHA_CARD_URL))
     visit = view(page, captcha_reason)
-    assert (visit.verdict, visit.detail, visit.body) == ("BLOCK", "captcha", CARD_HTML)
+    assert (visit.verdict, visit.detail, visit.url, visit.body) == (
+        "BLOCK",
+        "captcha",
+        CAPTCHA_CARD_PLAIN_URL,
+        CARD_HTML,
+    )
 
 
 def test_21_98_card_block_not_viewed_closed():
@@ -788,24 +791,113 @@ def test_21_98_card_open_other_error_propagates():
         view(page)
 
 
+# Журнал вкладок захода с front: карточка вперёд, закрыта, выдача вперёд.
+FRONT_LOG = [("карточка", "front"), ("карточка", "close"), ("выдача", "front")]
+
+
 @pytest.mark.parametrize(
-    ("front", "expected"),
+    ("front", "card_url", "expected"),
     [
-        (
-            True,
-            [("карточка", "front"), ("карточка", "close"), ("выдача", "front")],
-        ),
-        (False, [("карточка", "close")]),
+        (True, CARD_URL, FRONT_LOG),
+        (False, CARD_URL, [("карточка", "close")]),
+        (True, CAPTCHA_CARD_URL, FRONT_LOG),
     ],
-    ids=["--front", "без --front"],
+    ids=["--front", "без --front", "--front, капча"],
 )
-def test_21_98_front_flag(front, expected):
+def test_21_98_front_flag(front, card_url, expected):
     """21.98 TabSettings.front: вкладка карточки — на передний план до
-    листания, после закрытия — снова вкладка выдачи; без front — ни одной
-    смены переднего плана. Модуль 21."""
-    page, _ = card_page()
-    view(page, front=front)
+    листания (и до проверки блока), после закрытия — снова вкладка выдачи;
+    без front — ни одной смены переднего плана. Модуль 21."""
+    page, _ = card_page(FakeCardPage(url=card_url))
+    view(page, captcha_reason, front=front)
     assert page.context.log == expected
+
+
+def test_21_98_card_pause_after_load():
+    """21.98 После ожидания загрузки карточки (событие load с тайм-аутом
+    load_timeout_ms) рука смотрит на неё 1–2,5 с (CARD_LOAD_LOOK_S): за
+    ожиданием во вкладке карточки следует сон в этих границах. Модуль 21."""
+    page, card = card_page()
+    view(page, hand_clock=TickingClock(card.events))
+    place = [i for i, event in enumerate(card.events) if event[0] == "load"]
+    (where,) = place
+    kind, seconds = card.events[where + 1]
+    assert (card.events[where], kind, 1.0 <= seconds <= 2.5) == (
+        ("load", "load", LOAD_TIMEOUT_MS),
+        "sleep",
+        True,
+    )
+
+
+def test_21_98_card_pause_after_close():
+    """21.98 После закрытия карточки — пауза руки 0,5–1,5 с (CARD_CLOSE_S).
+    Модуль 21."""
+    page, card = card_page()
+    view(page, hand_clock=TickingClock(card.events))
+    where = card.events.index(("close",))
+    kind, seconds = card.events[where + 1]
+    assert (kind, 0.5 <= seconds <= 1.5) == ("sleep", True)
+
+
+def test_21_98_card_keeps_older_tabs():
+    """21.98 Ошибка открытия закрывает только вкладки, появившиеся за заход:
+    вкладка, открытая до захода, остаётся (решение тимлида
+    block/click-pages, допущение). Модуль 21."""
+    page, card = card_page()
+    older = FakePage([])
+    older.name = "другая"
+    page.context.add(older)
+    page.context.late = True
+    view(page)
+    assert (card.closed, older.closed, page.context.pages) == (
+        True,
+        False,
+        [page, older],
+    )
+
+
+# Ошибка Playwright уже открытой карточки (как в пробе: заход — не стоп).
+TAB_CLOSED = "Target page, context or browser has been closed"
+
+
+@pytest.mark.parametrize(
+    ("action", "card_url"),
+    [("wheel", CARD_URL), ("close", CARD_URL), ("content", CAPTCHA_CARD_URL)],
+    ids=["при листании", "при закрытии", "при чтении тела блока"],
+)
+def test_21_98_card_error_after_open(action, card_url):
+    """21.98 Ошибка Playwright после открытия вкладки (листание, закрытие,
+    чтение тела карточки с блоком) — CardVisit ERROR, деталь — первая строка
+    текста ошибки, вкладка карточки закрыта. Модуль 21."""
+    card = FakeCardPage(url=card_url)
+    card.crash = FakePlaywrightError(TAB_CLOSED + "\nCall log:\n  - x")
+    card.crash_on = action
+    page, _ = card_page(card)
+    visit = view(page, captcha_reason)
+    assert (visit.verdict, visit.detail, card.closed) == ("ERROR", TAB_CLOSED, True)
+
+
+def test_21_98_front_after_error_after_open():
+    """21.98 С front после ошибки уже открытой карточки вкладка выдачи
+    снова на переднем плане (последнее действие журнала вкладок).
+    Модуль 21."""
+    card = FakeCardPage()
+    card.crash = FakePlaywrightError(TAB_CLOSED)
+    card.crash_on = "wheel"
+    page, _ = card_page(card)
+    view(page, front=True)
+    assert page.context.log[-1] == ("выдача", "front")
+
+
+def test_21_98_other_error_after_open_propagates():
+    """21.98 Исключение уже открытой карточки, которое не ошибка Playwright
+    (ValueError при листании), летит из view_card. Модуль 21."""
+    card = FakeCardPage()
+    card.crash = ValueError("21.98 листание")
+    card.crash_on = "wheel"
+    page, _ = card_page(card)
+    with pytest.raises(ValueError, match="21.98 листание"):
+        view(page)
 
 
 def test_21_98_front_after_open_error():
