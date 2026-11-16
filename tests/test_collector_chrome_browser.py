@@ -342,21 +342,30 @@ def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, cloc
 
 def test_21_89_connect_gives_up_after_wait(fake_playwright, launches, clock):
     """21.89 Порт не ответил за port_wait_s — ChromeConnectError с портом,
-    путём, профилем; Chrome запущен один раз; ожидание — паузами poll_s
-    (часы теста идут на 0,25 с за обращение); Playwright остановлен.
-    Модуль 21."""
-    made = fake_playwright([PortClosed("refused")] * 10)
+    путём, профилем и первой строкой текста последней ошибки подключения
+    Playwright (без хвоста Call log); Chrome запущен один раз; ожидание —
+    паузами poll_s (часы теста идут на 0,25 с за обращение); Playwright
+    остановлен. Модуль 21."""
+    # у каждой попытки свой текст: видно, что в сообщение попала последняя
+    refusals = [
+        PortClosed(f"попытка {n}: connect ECONNREFUSED\nCall log:\n  - ws connect")
+        for n in range(10)
+    ]
+    made = fake_playwright(refusals)
     with pytest.raises(chrome_browser.ChromeConnectError) as caught:
         connect(port_wait_s=1.0)
     text = str(caught.value)
+    last = f"попытка {len(made.endpoints) - 1}: connect ECONNREFUSED"
     assert (
         "9333" in text,
         "/opt/chrome" in text,
         "/home/u/cian-chrome" in text,
+        last in text,
+        "Call log" in text,
         len(launches),
         clock.pauses,
         made.stopped,
-    ) == (True, True, True, 1, [0.5] * 3, True)
+    ) == (True, True, True, True, False, 1, [0.5] * 3, True)
 
 
 def test_21_89_connect_chrome_not_launched(fake_playwright, monkeypatch, clock):

@@ -31,6 +31,7 @@ from collector_support import (
     FAKE_COOKIE,
     PROXY_ENV,
     USER_AGENT,
+    no_chrome,  # noqa: F401 — автофикстура
     no_network,  # noqa: F401 — автофикстура
 )
 
