@@ -1,13 +1,16 @@
 """Модуль 21 «Сборщик ЦИАН»: тесты-«фотография» сборщика, кейсы 21.1–21.61,
-21.78, 21.81–21.85, 21.87.
+21.78, 21.81–21.85, 21.87, 21.90.
 
 Фиксируют, как сборщик работает (решение Андрея 10.11: тесты →
 рефакторинг без изменения поведения → починка). Слои: разбор ответа ЦИАН,
 геометрия и ссылка на выдачу, браузер над транспортом HttpBrowser
 (заголовки, распаковка; общий контракт браузера — 21.86,
 tests/test_collector_browser.py) и источник страниц «по ссылке»
-(UrlPageSource), сценарии прогона, main и выбор браузера (21.87); в конце
-— страж 21.78 (кто что импортирует, модули правил без внешнего мира). Сети
+(UrlPageSource), сценарии прогона, main и выбор браузера (21.87), сборка
+браузера chrome (21.90: флаги --chrome-*, билет из вкладки, main --browser
+chrome — на подделке вкладки FakeChromePage, без Chrome и playwright; сам
+ChromeBrowser — tests/test_collector_chrome_browser.py); в конце — страж
+21.78 (кто что импортирует, модули правил без внешнего мира). Сети
 нет: main получает фабрику фальшивого транспорта FakeTransport
 (tests/collector_support.py), обход — тот же транспорт через HttpBrowser и
 UrlPageSource или подделку источника страниц FakePageSource (21.85);
@@ -28,12 +31,22 @@ page_source (источник страниц), crawl (обход); через cc
 - browser.Ticket(cookie_header, ua, age_h) и browser.FetchedPage(code,
   body, size, ms, neterr, headers) — билет и ответ браузера: тесты
   собирают их сами (ожидаемый билет, браузер тестовой сборки 21.87);
-- cc.BROWSERS — словарь «имя → сборка браузера(settings, rnd, фабрика
-  транспорта)» и умолчание cc.BROWSER; словарь читают build_parser
-  (choices флага --browser) и enter_cian в момент вызова: 21.87 добавляет
-  в него свою сборку;
+- cc.BROWSERS — словарь «имя → cc.BrowserChoice(library, ticket_files,
+  make)», make — сборка браузера(settings, rnd, фабрика транспорта), и
+  умолчание cc.BROWSER; словарь читают build_parser (choices флага
+  --browser), check_args (библиотека, файлы билета) и enter_cian в момент
+  вызова: 21.87 добавляет в него свою сборку;
 - cc.make_http_browser(settings, rnd, фабрика транспорта) → HttpBrowser
   с атрибутами ticket и transport — сборка браузера http (21.87);
+- cc.make_chrome_browser(settings, rnd, фабрика транспорта) → ChromeBrowser
+  — сборка браузера chrome; она зовёт chrome_browser.connect_chrome_tab(порт,
+  путь, профиль, cc.PORT_WAIT_S, cc.POLL_S) по имени модуля в момент
+  вызова — её подменяет 21.90 (Chrome не запускается);
+  cc.read_chrome_ticket(вкладка chrome_browser.ChromeTab) → Ticket;
+  константы cc.GOTO_TIMEOUT_MS, cc.WAIT_UNTIL, cc.PORT_WAIT_S, cc.POLL_S;
+- crawl.ticket_text(has_ticket, age_h) — слова о билете в итоге (21.54);
+- модуль collector.chrome_browser берётся importlib.import_module внутри
+  помощников: файл собирается и без него (коммит «тесты»);
 - cc.time (time, sleep, monotonic — make_http_browser передаёт его в
   HttpBrowser) и
   cc.datetime (now, astimezone, strftime, isoformat) — их подменяют часы
@@ -62,9 +75,11 @@ import ast
 import functools
 import gzip
 import importlib
+import importlib.machinery
 import json
 import lzma
 import math
+import os
 import random
 import re
 import runpy
@@ -75,7 +90,7 @@ import zlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from collector_support import (  # noqa: F401 — no_network: автофикстура
@@ -287,7 +302,8 @@ def run_main(env, monkeypatch, features, replies, *args, seed="1", start_delay=F
 def settings_of(folder: Path, **changes):
     """Settings ночи сценария: файл клеток и runs/ в папке теста, бюджет 50,
     окно 1 ч, без пробы-only и паузы старта, seed 1, транспорт urllib,
-    билет — cookies.txt и ua.txt, браузер http; changes перекрывают."""
+    билет — cookies.txt и ua.txt, браузер http, Chrome — порт 9222, путь
+    /opt/chrome, профиль /tmp/chrome-profile; changes перекрывают."""
     settings = crawl.Settings(
         budget=50,
         window_hours=1.0,
@@ -299,6 +315,9 @@ def settings_of(folder: Path, **changes):
         transport="urllib",
         cookies_file="cookies.txt",
         ua_file="ua.txt",
+        chrome_port=9222,
+        chrome_path="/opt/chrome",
+        chrome_profile="/tmp/chrome-profile",
         browser="http",
     )
     return replace(settings, **changes)
@@ -3605,6 +3624,18 @@ def test_21_54_printed_split_and_no_ticket(env, monkeypatch, capsys):
     assert [line for line in lines if line in wanted] == wanted
 
 
+@pytest.mark.parametrize(
+    ("has_ticket", "age_h", "expected"),
+    [(True, 5.7, "есть, 5.7 ч"), (True, None, "есть"), (False, None, "нет")],
+    ids=["с возрастом", "без возраста (Chrome)", "нет билета"],
+)
+def test_21_54_ticket_text(has_ticket, age_h, expected):
+    """21.54 Слова о билете в итоге (crawl.ticket_text): билет с возрастом —
+    «есть, 5.7 ч»; билет без возраста (age_h None, билет из Chrome) —
+    «есть» без часов; нет билета — «нет». Внутреннее. Модуль 21."""
+    assert crawl.ticket_text(has_ticket, age_h) == expected
+
+
 def test_21_55_plan(env, monkeypatch):
     """21.55 plan.json пробы (--smoke-only): аргументы ночи, билет, проба,
     итог, клетки без колец, задача пробы в done, очередь без клетки пробы;
@@ -4377,29 +4408,61 @@ def test_21_84_page_source_picks_creator(env, monkeypatch):
     assert (asked, env.transport.sent) == ([[(B, 1), (A, 1)]], [])
 
 
-# Список браузеров — словарь cc.BROWSERS «имя → сборка браузера(settings,
-# rnd, фабрика транспорта)» и умолчание cc.BROWSER (DECISIONS,
-# block/browser-interface): флаг --browser, choices — из словаря; словарь
-# читается в момент вызова. Чтение билета и выбор транспорта — дело сборки
-# HttpBrowser (make_http_browser), а не общего входа.
+# Список браузеров — словарь cc.BROWSERS «имя → cc.BrowserChoice(library,
+# ticket_files, make)» и умолчание cc.BROWSER (DECISIONS,
+# block/browser-interface и block/chrome-insert): флаг --browser, choices —
+# из словаря; ранняя проверка библиотеки (library) и файлов билета
+# (ticket_files) — по полям выбранного браузера; словарь читается в момент
+# вызова. Чтение билета и выбор транспорта — дело сборки браузера
+# (make_http_browser, make_chrome_browser), а не общего входа. Имена
+# BrowserChoice, make_chrome_browser и модуль chrome_browser берутся внутри
+# тестов: пока их нет, красные только эти тесты, а не сбор всего файла.
 
 
-def test_21_87_browsers_only_http():
-    """21.87 Список браузеров — словарь cc.BROWSERS с одним ключом http →
-    cc.make_http_browser; умолчание cc.BROWSER — http. Модуль 21."""
-    browsers, default = cc.BROWSERS, cc.BROWSER
-    assert (browsers, default) == ({"http": cc.make_http_browser}, "http")
+@pytest.fixture
+def playwright_installed(monkeypatch):
+    """Библиотека playwright «установлена»: в sys.modules — подделка модуля
+    со спецификацией, её находит importlib.util.find_spec. Почему
+    ModuleSpec: у модуля с __spec__ None find_spec бросает ValueError.
+    Настоящий playwright тестам не нужен — Chrome не запускается."""
+    fake = ModuleType("playwright")
+    fake.__spec__ = importlib.machinery.ModuleSpec("playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright", fake)
+
+
+def test_21_87_browsers_dict():
+    """21.87 Список браузеров — словарь cc.BROWSERS с ключами chrome и http:
+    make — cc.make_http_browser и cc.make_chrome_browser, library — None и
+    "playwright", ticket_files — True и False; умолчание cc.BROWSER — http.
+    Модуль 21."""
+    browsers = {
+        name: (choice.library, choice.ticket_files, choice.make)
+        for name, choice in cc.BROWSERS.items()
+    }
+    assert (browsers, cc.BROWSER) == (
+        {
+            "http": (None, True, cc.make_http_browser),
+            "chrome": ("playwright", False, cc.make_chrome_browser),
+        },
+        "http",
+    )
 
 
 @pytest.mark.parametrize(
-    "flag", [[], ["--browser", "http"]], ids=["без флага", "--browser http"]
+    ("flag", "expected"),
+    [
+        ([], "http"),
+        (["--browser", "http"], "http"),
+        (["--browser", "chrome"], "chrome"),
+    ],
+    ids=["без флага", "--browser http", "--browser chrome"],
 )
-def test_21_87_settings_browser(flag):
-    """21.87 read_settings без --browser и с --browser http —
-    Settings.browser == "http": запуск с прежними аргументами — прежний
+def test_21_87_settings_browser(playwright_installed, flag, expected):
+    """21.87 read_settings: Settings.browser — как флаг --browser (http,
+    chrome); без флага — http: запуск с прежними аргументами — прежний
     браузер. Модуль 21."""
     settings = cc.read_settings(["--geojson", "x.geojson", "--seed", "1", *flag])
-    assert settings.browser == "http"
+    assert settings.browser == expected
 
 
 def test_21_87_unknown_browser_exit_2(capsys):
@@ -4437,7 +4500,8 @@ class FakeBrowser:
 
 def test_21_87_flag_takes_maker_from_dict(env, monkeypatch):
     """21.87 --browser fake берёт сборку из словаря BROWSERS в момент вызова:
-    сборка, добавленная под именем fake, зовётся один раз с (Settings с
+    сборка, добавленная под именем fake (cc.BrowserChoice без библиотеки и
+    без файлов билета), зовётся один раз с (Settings с
     browser == "fake", rnd в состоянии Random(seed) в момент сборки, фабрика
     транспорта из main): при --seed 1 без паузы старта состояние rnd в
     момент вызова равно random.Random(1).getstate();
@@ -4450,7 +4514,8 @@ def test_21_87_flag_takes_maker_from_dict(env, monkeypatch):
         calls.append((settings, rnd.getstate(), transport_factory))
         return FakeBrowser()
 
-    monkeypatch.setitem(cc.BROWSERS, "fake", make_fake_browser)
+    choice = cc.BrowserChoice(library=None, ticket_files=False, make=make_fake_browser)
+    monkeypatch.setitem(cc.BROWSERS, "fake", choice)
     run_dir = run_main(env, monkeypatch, CELLS, {}, "--browser", "fake")
     plan = read_json(run_dir / "plan.json")
     # фабрика — связанный метод: каждое обращение даёт новый объект, равный
@@ -4512,6 +4577,320 @@ def test_21_87_make_http_browser_ua_from_rnd(env):
     assert expected != cc.USER_AGENTS[0]
     made = cc.make_http_browser(settings, random.Random(5), env.transport.factory)
     assert made.ticket.ua == expected
+
+
+def test_21_87_playwright_missing_exits(env, monkeypatch, capsys):
+    """21.87 --browser chrome, а библиотеки playwright нет — выход с кодом 2;
+    в строке ошибки — флаг --browser, библиотека playwright и команда
+    установки pip install -r requirements.txt (как --transport httpx в
+    21.81). Модуль 21."""
+    monkeypatch.setitem(sys.modules, "playwright", None)  # find_spec — None
+    stop = main_exit(env, monkeypatch, "--browser", "chrome")
+    error = error_line(capsys.readouterr().err)
+    words = ("--browser", "playwright", "pip install -r requirements.txt")
+    assert (stop.code, [word for word in words if word not in error]) == (2, [])
+
+
+def test_21_87_playwright_missing_exits_before_start_pause(env, monkeypatch):
+    """21.87 Нет playwright при --browser chrome — выход до паузы старта (её
+    нет даже без --no-start-delay) и до подключения к Chrome:
+    connect_chrome_tab не зовут, фабрику транспорта тоже. Модуль 21."""
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    connects = connect_to(monkeypatch, None)
+    main_exit(env, monkeypatch, "--browser", "chrome")
+    assert (env.clock.pauses, connects, env.transport.made) == ([], [], [])
+
+
+def test_21_87_library_check_from_browsers(env, monkeypatch, capsys):
+    """21.87 Ранняя проверка библиотеки браузера — по полю library выбора из
+    словаря BROWSERS: сборка fake с библиотекой, которой нет, — выход с
+    кодом 2, в строке ошибки флаг --browser и имя библиотеки. Модуль 21."""
+
+    def make_unreachable(settings, rnd, transport_factory):
+        raise AssertionError("сборка браузера без библиотеки не должна зваться")
+
+    choice = cc.BrowserChoice(
+        library=MISSING_LIBRARY, ticket_files=False, make=make_unreachable
+    )
+    monkeypatch.setitem(cc.BROWSERS, "fake", choice)
+    stop = main_exit(env, monkeypatch, "--browser", "fake")
+    error = error_line(capsys.readouterr().err)
+    words = ("--browser", MISSING_LIBRARY)
+    assert (stop.code, [word for word in words if word not in error]) == (2, [])
+
+
+def test_21_87_http_without_playwright(env, monkeypatch):
+    """21.87 Без библиотеки playwright (sys.modules['playwright'] = None)
+    запуск с браузером по умолчанию идёт: фабрика транспорта получает
+    ("urllib", строка Cookie билета). Модуль 21."""
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    run_main(env, monkeypatch, CELLS, FAILED_SMOKE)
+    assert env.transport.made == [("urllib", FAKE_COOKIE)]
+
+
+# ─────────────── сборка браузера chrome (21.90): подделка вкладки ───────────────
+# Chrome и playwright не нужны: chrome_browser.connect_chrome_tab подменяется
+# (connect_to) и отдаёт ChromeTab над подделкой вкладки FakeChromePage.
+
+# UA вкладки Chrome — не тот, что в ua.txt папки env: plan.json покажет,
+# откуда взят билет.
+CHROME_UA = "Agent/chrome-tab (21.90)"
+# Куки вкладки — как их отдаёт Playwright: словари с name, value, domain.
+CHROME_COOKIES = [
+    {"name": "a", "value": "1", "domain": ".cian.ru", "path": "/"},
+    {"name": "b", "value": "2", "domain": "www.cian.ru", "path": "/"},
+]
+
+
+class FakeChromeRequest:
+    """Запрос Playwright без редиректа: redirected_from None, response() —
+    ответ на него."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.redirected_from = None
+        self.answer: FakeChromeResponse | None = None
+
+    def response(self) -> "FakeChromeResponse | None":
+        return self.answer
+
+
+class FakeChromeResponse:
+    """Ответ Playwright 403 «no»: код, заголовки, тело байтами, запрос."""
+
+    def __init__(self, url: str) -> None:
+        self.status = 403
+        self.headers: dict[str, str] = {}
+        self.request = FakeChromeRequest(url)
+        self.request.answer = self
+
+    def body(self) -> bytes:
+        return b"no"
+
+
+class FakeChromeContext:
+    """Контекст вкладки: cookies(*urls) записывает аргументы вызова в
+    cookie_calls и отдаёт куки вкладки."""
+
+    def __init__(self, cookies: list[dict]) -> None:
+        self.given = cookies
+        self.cookie_calls: list[tuple] = []
+
+    def cookies(self, *urls: object) -> list[dict]:
+        self.cookie_calls.append(urls)
+        return list(self.given)
+
+
+class FakeChromePage:
+    """Подделка вкладки Chrome: evaluate(выражение) записывает выражение и
+    отдаёт UA; context.cookies — куки; goto(url, **kwargs) записывает
+    переход и его настройки и отдаёт ответ 403 «no» — проба проваливается,
+    прогон кончается сразу."""
+
+    def __init__(self, user_agent: str, cookies: list[dict]) -> None:
+        self.user_agent = user_agent
+        self.context = FakeChromeContext(cookies)
+        self.evaluated: list[str] = []
+        self.visits: list[str] = []
+        self.goto_kwargs: list[dict] = []
+
+    def evaluate(self, expression: str) -> str:
+        self.evaluated.append(expression)
+        return self.user_agent
+
+    def goto(self, url: str, **kwargs: object) -> FakeChromeResponse:
+        self.visits.append(url)
+        self.goto_kwargs.append(kwargs)
+        return FakeChromeResponse(url)
+
+
+class FakeTabError(Exception):
+    """Ошибка Playwright подделки вкладки."""
+
+
+class FakeTabTimeout(FakeTabError):
+    """Тайм-аут подделки вкладки: как у Playwright, подкласс ошибки."""
+
+
+def chrome_browser_module():
+    """Модуль collector.chrome_browser — в момент вызова: без него падают
+    только тесты Chrome, а не сбор файла."""
+    return importlib.import_module("collector.chrome_browser")
+
+
+def chrome_tab_of(page: FakeChromePage):
+    """chrome_browser.ChromeTab над подделкой вкладки page."""
+    return chrome_browser_module().ChromeTab(
+        page=page, timeout_error=FakeTabTimeout, error=FakeTabError
+    )
+
+
+def connect_to(monkeypatch, outcome) -> list[tuple]:
+    """Подменяет chrome_browser.connect_chrome_tab на время теста: вызов
+    записывается (порт, путь, профиль, ожидание порта, шаг опроса);
+    outcome-исключение бросается, иное — отдаётся как вкладка. → список
+    вызовов."""
+    calls: list[tuple] = []
+
+    def fake_connect(port, chrome_path, profile_dir, port_wait_s, poll_s):
+        calls.append((port, chrome_path, profile_dir, port_wait_s, poll_s))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(chrome_browser_module(), "connect_chrome_tab", fake_connect)
+    return calls
+
+
+def test_21_90_chrome_flags_defaults(tmp_path, monkeypatch):
+    """21.90 Без флагов --chrome-*: порт 9222, путь — стандартный путь Chrome
+    на macOS, профиль — папка chrome-profile в папке запуска, абсолютным
+    путём. Модуль 21."""
+    monkeypatch.chdir(tmp_path)
+    settings = cc.read_settings(["--geojson", "x.geojson", "--seed", "1"])
+    assert (settings.chrome_port, settings.chrome_path, settings.chrome_profile) == (
+        9222,
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        os.path.abspath("chrome-profile"),
+    )
+
+
+def test_21_90_chrome_flags_parsed():
+    """21.90 --chrome-port 9333 --chrome-path /opt/chrome --chrome-profile
+    /x/p — поля Settings chrome_port (число), chrome_path, chrome_profile.
+    Модуль 21."""
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--chrome-port", "9333"]
+    argv += ["--chrome-path", "/opt/chrome", "--chrome-profile", "/x/p"]
+    settings = cc.read_settings(argv)
+    assert (settings.chrome_port, settings.chrome_path, settings.chrome_profile) == (
+        9333,
+        "/opt/chrome",
+        "/x/p",
+    )
+
+
+def test_21_90_chrome_ignores_ticket_flags(tmp_path, playwright_installed):
+    """21.90 --browser chrome с несуществующими файлами --cookies и --ua —
+    выхода нет: билет Chrome берёт из вкладки, файлы билета не проверяются.
+    Модуль 21."""
+    argv = ["--geojson", "x.geojson", "--seed", "1", "--browser", "chrome"]
+    argv += ["--cookies", str(tmp_path / "нет-кук.txt")]
+    argv += ["--ua", str(tmp_path / "нет-ua.txt")]
+    assert cc.read_settings(argv).browser == "chrome"
+
+
+def test_21_90_read_chrome_ticket():
+    """21.90 read_chrome_ticket(вкладка): две куки вкладки → cookie_header
+    «a=1; b=2» в порядке списка; ua — ответ вкладки на ровно
+    navigator.userAgent; age_h None; куки спрошены один раз, ровно для
+    search_page.CIAN_BASE_URL. Модуль 21."""
+    page = FakeChromePage(CHROME_UA, CHROME_COOKIES)
+    ticket = cc.read_chrome_ticket(chrome_tab_of(page))
+    assert (ticket, page.evaluated, page.context.cookie_calls) == (
+        browser.Ticket(cookie_header="a=1; b=2", ua=CHROME_UA, age_h=None),
+        ["navigator.userAgent"],
+        [(search_page.CIAN_BASE_URL,)],
+    )
+
+
+def test_21_90_read_chrome_ticket_no_cookies():
+    """21.90 У вкладки нет кук → cookie_header None, has_ticket False; куки
+    спрошены ровно для search_page.CIAN_BASE_URL. Модуль 21."""
+    page = FakeChromePage(CHROME_UA, [])
+    ticket = cc.read_chrome_ticket(chrome_tab_of(page))
+    assert (ticket.cookie_header, ticket.has_ticket, page.context.cookie_calls) == (
+        None,
+        False,
+        [(search_page.CIAN_BASE_URL,)],
+    )
+
+
+def test_21_90_make_chrome_browser(env, monkeypatch):
+    """21.90 make_chrome_browser(settings, rnd, фабрика транспорта):
+    connect_chrome_tab получает (chrome_port, chrome_path, chrome_profile
+    Settings, cc.PORT_WAIT_S, cc.POLL_S); результат — ChromeBrowser над этой
+    вкладкой с билетом из неё; переход — с тайм-аутом cc.GOTO_TIMEOUT_MS и
+    событием загрузки load; часы — monotonic модуля time сборщика: один
+    fetch даёт ms 250.0 и ровно два обращения к часам; фабрику транспорта
+    не зовут. Модуль 21."""
+    page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
+    connects = connect_to(monkeypatch, chrome_tab_of(page))
+    settings = settings_of(env.folder)
+    made = cc.make_chrome_browser(settings, random.Random(1), env.transport.factory)
+    url = search_page.page_url(rect_ring(A))
+    fetched = made.fetch(url)
+    assert (
+        type(made) is chrome_browser_module().ChromeBrowser,
+        connects,
+        made.ticket,
+        page.visits,
+        page.goto_kwargs,
+        cc.WAIT_UNTIL,
+        fetched.ms,
+        env.clock.monotonic_calls,
+        env.transport.made,
+    ) == (
+        True,
+        [(9222, "/opt/chrome", "/tmp/chrome-profile", cc.PORT_WAIT_S, cc.POLL_S)],
+        browser.Ticket(cookie_header="a=1", ua=CHROME_UA, age_h=None),
+        [url],
+        [{"wait_until": cc.WAIT_UNTIL, "timeout": cc.GOTO_TIMEOUT_MS}],
+        "load",
+        250.0,
+        2,
+        [],
+    )
+
+
+def test_21_90_chrome_connect_error_exits(env, monkeypatch):
+    """21.90 connect_chrome_tab бросил ChromeConnectError — выход
+    (SystemExit) без трассировки; в тексте — «--browser chrome» и текст
+    ошибки. Модуль 21."""
+    error = chrome_browser_module().ChromeConnectError("Chrome не открыл порт 9222")
+    connect_to(monkeypatch, error)
+    settings = settings_of(env.folder)
+    with pytest.raises(SystemExit) as stop:
+        cc.make_chrome_browser(settings, random.Random(1), env.transport.factory)
+    text = str(stop.value.code)
+    assert ("--browser chrome" in text, "Chrome не открыл порт 9222" in text) == (
+        True,
+        True,
+    )
+
+
+def test_21_90_main_with_chrome(env, monkeypatch, capsys, playwright_installed):
+    """21.90 main --browser chrome на подделке вкладки (на пробу — 403):
+    plan.json — user_agent вкладки (не из ua.txt), ticket true,
+    cookie_age_h null, stop_detail http_403|cookie_expired_or_burned; строка
+    start в night.log — ticket=1 cookie_age_h=None; фабрику транспорта не
+    звали; один переход вкладки; строка итога кончается «билет: есть».
+    Модуль 21."""
+    page = FakeChromePage(CHROME_UA, CHROME_COOKIES)
+    connect_to(monkeypatch, chrome_tab_of(page))
+    run_dir = run_main(env, monkeypatch, CELLS, {}, "--browser", "chrome")
+    plan = read_json(run_dir / "plan.json")
+    start = log_records(run_dir)[0]
+    out = capsys.readouterr().out.splitlines()
+    head = [line for line in out if line.startswith("ночь 2026-11-10")]
+    assert (
+        plan["user_agent"],
+        plan["ticket"],
+        plan["cookie_age_h"],
+        plan["stop_detail"],
+        (start["ticket"], start["cookie_age_h"]),
+        env.transport.made,
+        len(page.visits),
+        [line.endswith("билет: есть") for line in head],
+    ) == (
+        CHROME_UA,
+        True,
+        None,
+        "http_403|cookie_expired_or_burned",
+        ("1", "None"),
+        [],
+        1,
+        [True],
+    )
 
 
 def test_21_82_ticket_flags_paths(env, monkeypatch):
@@ -4666,12 +5045,17 @@ RULE_MODULES = (
 )
 # Реализации транспорта: сеть живёт только в них.
 TRANSPORT_MODULES = ("urllib_transport.py", "httpx_transport.py")
+# Реализация браузера на Chrome: часы, запуск Chrome и playwright — только
+# внутри функции-края connect_chrome_tab (DECISIONS block/chrome-insert).
+CHROME_EDGE = "connect_chrome_tab"
+CHROME_EDGE_IMPORTS = {"playwright", "subprocess", "time"}
 NO_DISK_MODULES = (
     "crawl.py",
     "search_page.py",
     "transport.py",
     "browser.py",
     "page_source.py",
+    "chrome_browser.py",
 )
 # Листья пакета: не импортируют никого из collector (2.1 документа);
 # browser — интерфейс браузера (Ticket, FetchedPage, Browser) — тоже лист.
@@ -4683,20 +5067,29 @@ LEAF_MODULES = (
     "browser.py",
 )
 # Все модули пакета, кроме файла запуска cian_collect.py.
-PACKAGE_MODULES = ("__init__.py", *RULE_MODULES, *TRANSPORT_MODULES, "status.py")
+PACKAGE_MODULES = (
+    "__init__.py",
+    *RULE_MODULES,
+    *TRANSPORT_MODULES,
+    "chrome_browser.py",
+    "status.py",
+)
 # Порядок слоёв (crawl → page_source → browser; http_browser → browser,
 # transport, search_page; циклов нет): что модуль может взять из пакета.
 # crawl до транспорта не доходит: страницы ему отдаёт источник страниц, из
 # browser — только тип Ticket (решения Андрея 12.11 и 15.11, DECISIONS
 # block/page-source); transport и реализации транспорта ему напрямую нельзя.
-# Реализацию браузера HttpBrowser (http_browser) не знают ни crawl, ни
-# page_source: её собирает cian_collect (DECISIONS block/browser-interface).
+# Реализации браузера (http_browser, chrome_browser) не знают ни crawl, ни
+# page_source: их собирает cian_collect (DECISIONS block/browser-interface,
+# block/chrome-insert); chrome_browser берёт из пакета только browser и
+# search_page.
 LAYER_IMPORTS = {
     "crawl.py": frozenset(
         {"page_source", "browser", "search_page", "geometry", "run_folder"}
     ),
     "page_source.py": frozenset({"browser", "search_page", "run_folder"}),
     "http_browser.py": frozenset({"browser", "transport", "search_page"}),
+    "chrome_browser.py": frozenset({"browser", "search_page"}),
     "urllib_transport.py": frozenset({"transport"}),
     "httpx_transport.py": frozenset({"transport"}),
 }
@@ -4713,11 +5106,12 @@ ALLOWED_OS = {"os", "os.path", "os.path.basename"}
 PACKAGE_NAMES = {"collector", "crawl", "search_page", "geometry", "run_folder"}
 PACKAGE_NAMES |= {"transport", "browser", "urllib_transport", "httpx_transport"}
 PACKAGE_NAMES |= {"cian_collect", "status", "page_source", "http_browser"}
+PACKAGE_NAMES |= {"chrome_browser"}
 # Имена ссылки, разбора и браузера, которых обход не называет: страницу ему
 # отдаёт источник страниц одним вызовом get_page (DECISIONS,
 # block/page-source; кейс 21.78).
 CRAWL_FORBIDDEN_NAMES = {"page_url", "classify_page", "Browser", "FetchedPage", "fetch"}
-CRAWL_FORBIDDEN_NAMES |= {"HttpBrowser"}
+CRAWL_FORBIDDEN_NAMES |= {"HttpBrowser", "ChromeBrowser"}
 CLOCK_CLASSES = {"datetime", "date"}
 WALL_CLOCK_ATTRS = {"now", "today", "utcnow"}
 
@@ -5058,9 +5452,50 @@ cian_collect_imports = functools.partial(module_imports, name="cian_collect")
 urllib_transport_imports = functools.partial(module_imports, name="urllib_transport")
 httpx_transport_imports = functools.partial(module_imports, name="httpx_transport")
 http_browser_imports = functools.partial(module_imports, name="http_browser")
+chrome_browser_imports = functools.partial(module_imports, name="chrome_browser")
 eager_httpx_transport_imports = functools.partial(
     module_level_imports, name="httpx_transport"
 )
+
+
+def imports_outside(source: str, function: str, names: set[str]) -> list[str]:
+    """Импорты модулей names (по первому имени: playwright.sync_api —
+    playwright) вне функции function: на верхнем уровне, в теле класса, в
+    других функциях."""
+    tree = ast.parse(source)
+    inside = {
+        id(node)
+        for func in ast.walk(tree)
+        if isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef)
+        and func.name == function
+        for node in ast.walk(func)
+    }
+    found = []
+    for node in ast.walk(tree):
+        if id(node) in inside or not isinstance(node, ast.Import | ast.ImportFrom):
+            continue
+        found += [
+            f"строка {line}: {module}"
+            for line, module in node_imports(node)
+            if module.split(".")[0] in names
+        ]
+    return found
+
+
+# chrome_browser: playwright, subprocess и time — только внутри функции-края
+# connect_chrome_tab; модуль импортируется без playwright (21.89).
+chrome_edge_imports_outside = functools.partial(
+    imports_outside, function=CHROME_EDGE, names=CHROME_EDGE_IMPORTS
+)
+
+
+def playwright_imports(source: str) -> list[str]:
+    """Импорты внешней библиотеки playwright в любой форме."""
+    return [
+        f"строка {line}: {module}"
+        for line, module in imported_modules(source)
+        if module.split(".")[0] == "playwright"
+    ]
 
 
 def package_imports(source: str) -> list[str]:
@@ -5096,7 +5531,8 @@ def foreign_package_imports(source: str, allowed: frozenset[str]) -> list[str]:
 # Образцы слоёв: реализациям транспорта из пакета можно только transport;
 # crawl — только page_source, browser, search_page, geometry, run_folder;
 # page_source — только browser, search_page, run_folder; http_browser —
-# только browser, transport, search_page.
+# только browser, transport, search_page; chrome_browser — только browser,
+# search_page.
 transport_layer_imports = functools.partial(
     foreign_package_imports, allowed=LAYER_IMPORTS["urllib_transport.py"]
 )
@@ -5108,6 +5544,9 @@ page_source_layer_imports = functools.partial(
 )
 http_browser_layer_imports = functools.partial(
     foreign_package_imports, allowed=LAYER_IMPORTS["http_browser.py"]
+)
+chrome_browser_layer_imports = functools.partial(
+    foreign_package_imports, allowed=LAYER_IMPORTS["chrome_browser.py"]
 )
 
 
@@ -5197,31 +5636,34 @@ def test_21_78_transports_no_clock_imports(name):
     assert clock_imports(collector_source(name)) == []
 
 
-@pytest.mark.parametrize("name", (*RULE_MODULES, *TRANSPORT_MODULES))
+@pytest.mark.parametrize(
+    "name", (*RULE_MODULES, *TRANSPORT_MODULES, "chrome_browser.py")
+)
 def test_21_78_no_wall_clock_or_random_calls(name):
-    """21.78 Модули правил, transport, browser, http_browser, page_source и
-    реализации транспорта не обращаются к часам стены (datetime.now,
-    .today, .utcnow) и к модулю random — ни вызовом, ни ссылкой: время и
-    случайность приходят через Clock и аргумент rnd; подсказка типа
-    random.Random можно. Модуль 21."""
+    """21.78 Модули правил, transport, browser, http_browser, page_source,
+    реализации транспорта и chrome_browser не обращаются к часам стены
+    (datetime.now, .today, .utcnow) и к модулю random — ни вызовом, ни
+    ссылкой: время и случайность приходят через Clock и аргумент rnd;
+    подсказка типа random.Random можно. Модуль 21."""
     assert wall_clock_or_random_uses(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_disk_in_crawl_search_page_transport(name):
-    """21.78 crawl, search_page, transport, browser и page_source не зовут
-    open, не обращаются к os.* (кроме os.path.basename), не импортируют
-    gzip, io, pathlib, shutil: диск — только в run_folder и низу
-    geometry. Модуль 21."""
+    """21.78 crawl, search_page, transport, browser, page_source и
+    chrome_browser не зовут open, не обращаются к os.* (кроме
+    os.path.basename), не импортируют gzip, io, pathlib, shutil: диск —
+    только в run_folder и низу geometry. Модуль 21."""
     assert disk_use(collector_source(name)) == []
 
 
 @pytest.mark.parametrize("name", NO_DISK_MODULES)
 def test_21_78_no_stdout_in_crawl_search_page_transport(name):
-    """21.78 crawl, search_page, transport, browser и page_source не
-    печатают в stdout (print, sys.stdout): по таблице 2.4 документа stdout —
-    только run_folder.say (через него обход печатает эхо строк night.log и
-    итог) и cian_collect (строка паузы старта и печать сетки). Модуль 21."""
+    """21.78 crawl, search_page, transport, browser, page_source и
+    chrome_browser не печатают в stdout (print, sys.stdout): по таблице 2.4
+    документа stdout — только run_folder.say (через него обход печатает эхо
+    строк night.log и итог) и cian_collect (строка паузы старта и печать
+    сетки). Модуль 21."""
     assert stdout_use(collector_source(name)) == []
 
 
@@ -5256,7 +5698,7 @@ def test_21_78_transports_no_disk_no_stdout(name):
 def test_21_78_cian_collect_not_imported(name):
     """21.78 cian_collect никем в пакете не импортируется (__init__, crawl,
     search_page, geometry, run_folder, transport, browser, http_browser,
-    page_source, транспорты, status). Модуль 21."""
+    page_source, транспорты, chrome_browser, status). Модуль 21."""
     assert module_imports(collector_source(name), "cian_collect") == []
 
 
@@ -5268,13 +5710,33 @@ def test_21_78_transports_imported_only_by_cian_collect(name, implementation):
     assert module_imports(collector_source(name), implementation) == []
 
 
+@pytest.mark.parametrize("implementation", ["http_browser", "chrome_browser"])
 @pytest.mark.parametrize("name", PACKAGE_MODULES)
-def test_21_78_http_browser_imported_only_by_cian_collect(name):
-    """21.78 Реализацию браузера http_browser (HttpBrowser) никто в пакете,
-    кроме cian_collect, не импортирует: crawl и page_source работают с
-    интерфейсом Browser, реализацию собирает cian_collect (DECISIONS
-    block/browser-interface). Модуль 21."""
-    assert http_browser_imports(collector_source(name)) == []
+def test_21_78_browsers_imported_only_by_cian_collect(name, implementation):
+    """21.78 Реализации браузера (http_browser, chrome_browser) никто в
+    пакете, кроме cian_collect, не импортирует: crawl и page_source работают
+    с интерфейсом Browser, реализацию собирает cian_collect (DECISIONS
+    block/browser-interface, block/chrome-insert). Модуль 21."""
+    assert module_imports(collector_source(name), implementation) == []
+
+
+def test_21_78_chrome_edge_imports_only_in_connect():
+    """21.78 chrome_browser.py импортирует playwright, subprocess и time
+    только внутри функции-края connect_chrome_tab: не на верхнем уровне, не
+    в классах и не в других функциях. Модуль 21."""
+    source = collector_source("chrome_browser.py")
+    assert chrome_edge_imports_outside(source) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ("cian_collect.py", *(m for m in PACKAGE_MODULES if m != "chrome_browser.py")),
+)
+def test_21_78_playwright_only_in_chrome_browser(name):
+    """21.78 Ни один модуль пакета, кроме chrome_browser, не импортирует
+    playwright: без библиотеки сборщик с браузером http работает.
+    Модуль 21."""
+    assert playwright_imports(collector_source(name)) == []
 
 
 @pytest.mark.parametrize(
@@ -5284,7 +5746,8 @@ def test_21_78_http_browser_imported_only_by_cian_collect(name):
 def test_21_78_network_only_in_urllib_transport(name):
     """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
     __init__, правила, transport, browser, http_browser, page_source,
-    httpx_transport, status), не импортирует socket, urllib.request,
+    httpx_transport, chrome_browser, status), не импортирует socket,
+    urllib.request,
     urllib.error, http: сеть stdlib — в urllib_transport. Модуль 21."""
     assert network_imports(collector_source(name)) == []
 
@@ -5313,14 +5776,16 @@ def test_21_78_layer_order(name):
     transport, http_browser и реализации транспорта напрямую не
     импортирует; page_source берёт только browser, search_page и
     run_folder; http_browser — только browser, transport и search_page,
-    реализации транспорта — только transport. Модуль 21."""
+    chrome_browser — только browser и search_page, реализации транспорта —
+    только transport. Модуль 21."""
     source = collector_source(name)
     assert foreign_package_imports(source, LAYER_IMPORTS[name]) == []
 
 
 def test_21_78_crawl_knows_only_page_source():
     """21.78 crawl.py не называет page_url, classify_page, Browser,
-    HttpBrowser, FetchedPage, fetch; из browser берёт только тип Ticket.
+    HttpBrowser, ChromeBrowser, FetchedPage, fetch; из browser берёт только
+    тип Ticket.
     Модуль 21."""
     assert crawl_page_knowledge(collector_source("crawl.py")) == []
 
@@ -5455,6 +5920,36 @@ GUARD_SAMPLES = [
     (http_browser_layer_imports, "from collector import crawl"),
     (http_browser_layer_imports, "from collector import page_source"),
     (http_browser_layer_imports, "from collector import urllib_transport"),
+    # chrome_browser импортирует playwright, subprocess или time вне
+    # функции-края connect_chrome_tab: на верхнем уровне, в другой функции,
+    # в теле класса
+    (chrome_edge_imports_outside, "import time"),
+    (chrome_edge_imports_outside, "import subprocess"),
+    (chrome_edge_imports_outside, "from playwright.sync_api import Error"),
+    (chrome_edge_imports_outside, "import playwright"),
+    (chrome_edge_imports_outside, "def fetch(self, url):\n    import time"),
+    (
+        chrome_edge_imports_outside,
+        "def connect_chrome_tab():\n    pass\n\n\n"
+        "def other():\n    from playwright.sync_api import Error",
+    ),
+    (chrome_edge_imports_outside, "class Tab:\n    import subprocess"),
+    # playwright импортирует модуль пакета, кроме chrome_browser
+    (playwright_imports, "import playwright"),
+    (playwright_imports, "from playwright.sync_api import sync_playwright"),
+    # chrome_browser импортирует кто-то, кроме cian_collect: обход,
+    # источник страниц или любой другой модуль пакета
+    (crawl_layer_imports, "from collector import chrome_browser"),
+    (page_source_layer_imports, "from collector.chrome_browser import ChromeBrowser"),
+    (chrome_browser_imports, "from collector import chrome_browser"),
+    (chrome_browser_imports, "import collector.chrome_browser as cb"),
+    (package_imports, "import chrome_browser"),
+    # chrome_browser импортирует транспорт, обход или HttpBrowser
+    (chrome_browser_layer_imports, "from collector import transport"),
+    (chrome_browser_layer_imports, "from collector import crawl"),
+    (chrome_browser_layer_imports, "from collector import http_browser"),
+    # обход собирает ChromeBrowser сам
+    (forbidden_page_names, "site = ChromeBrowser(tab, ticket, monotonic, 1, 'load')"),
     # интерфейс браузера распаковывает тело сам
     (compression_imports, "import zlib"),
     (compression_imports, "from gzip import decompress"),
@@ -5612,6 +6107,27 @@ TRANSPORTS = {
 }
 """
 
+# Образец разрешённого chrome_browser: из пакета — типы интерфейса браузера;
+# playwright, subprocess и time — внутри функции-края connect_chrome_tab.
+CHROME_BROWSER_CLEAN_SAMPLE = """
+from collector.browser import FetchedPage, Ticket
+
+
+def connect_chrome_tab(port, chrome_path, profile_dir, port_wait_s, poll_s):
+    import subprocess
+    import time
+
+    from playwright.sync_api import Error, TimeoutError, sync_playwright
+
+    return subprocess, time, Error, TimeoutError, sync_playwright
+"""
+
+# Образец разрешённого cian_collect: chrome_browser импортируется наверху,
+# как http_browser, — playwright он при этом не тянет.
+CHROME_CIAN_COLLECT_CLEAN_SAMPLE = """
+from collector import chrome_browser, http_browser
+"""
+
 
 @pytest.mark.parametrize(
     ("check", "sample"),
@@ -5645,6 +6161,12 @@ TRANSPORTS = {
         (page_source_layer_imports, PAGE_SOURCE_CLEAN_SAMPLE),
         (eager_httpx_transport_imports, LAZY_CLEAN_SAMPLE),
         (httpx_imports, LAZY_CLEAN_SAMPLE),
+        (chrome_edge_imports_outside, CHROME_BROWSER_CLEAN_SAMPLE),
+        (chrome_browser_layer_imports, CHROME_BROWSER_CLEAN_SAMPLE),
+        (disk_use, CHROME_BROWSER_CLEAN_SAMPLE),
+        (stdout_use, CHROME_BROWSER_CLEAN_SAMPLE),
+        (wall_clock_or_random_uses, CHROME_BROWSER_CLEAN_SAMPLE),
+        (playwright_imports, CHROME_CIAN_COLLECT_CLEAN_SAMPLE),
     ],
     ids=[
         "сеть и часы",
@@ -5676,6 +6198,12 @@ TRANSPORTS = {
         "page_source: browser, search_page, run_folder",
         "cian_collect: httpx_transport внутри функции",
         "cian_collect: без httpx",
+        "chrome_browser: playwright, subprocess, time внутри connect_chrome_tab",
+        "chrome_browser: browser",
+        "chrome_browser: без диска",
+        "chrome_browser: stdout",
+        "chrome_browser: время стены и random",
+        "cian_collect: chrome_browser наверху без playwright",
     ],
 )
 def test_21_78_guard_allows_clean_sample(check, sample):
@@ -5692,5 +6220,7 @@ def test_21_78_guard_allows_clean_sample(check, sample):
     self.source.get_page и search_page.offer_ids (а каждая из двух
     проверок знания обхода не ловит нарушения другой); у page_source — импорт
     browser, search_page, run_folder; у cian_collect — импорт
-    httpx_transport внутри функции. Модуль 21."""
+    httpx_transport внутри функции и chrome_browser наверху; у
+    chrome_browser — импорт типов browser, playwright, subprocess и time
+    внутри connect_chrome_tab. Модуль 21."""
     assert check(sample) == []
