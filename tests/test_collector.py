@@ -119,6 +119,9 @@ from collector_support import (  # noqa: F401 — no_network, no_chrome: авт�
     write_ticket,
 )
 from test_collector_browser import (
+    BOTTOM_PX,
+    CLICKED_URL,
+    INFINITE_URL,
     SEARCH_OFFERS_URL,
     FakeElement,
     FakePage,
@@ -970,24 +973,12 @@ def test_21_92_click_constants():
 @pytest.mark.parametrize(
     ("url", "resource_type", "expected"),
     [
-        ("https://www.cian.ru/cat.php?deal_type=sale&p=2", "document", True),
-        ("https://api.cian.ru/search-offers/v2/search-offers-desktop/", "xhr", True),
-        ("https://api.cian.ru/search-offers/v2/search-offers-desktop/", "fetch", True),
-        (
-            "https://api.cian.ru/search-offers/v1/get-infinite-search-result-desktop/",
-            "xhr",
-            False,
-        ),
-        (
-            "https://api.cian.ru/search-offers/v1/get-infinite-search-result-desktop/",
-            "fetch",
-            False,
-        ),
-        (
-            "https://api.cian.ru/search-offers/v2/search-offers-desktop/",
-            "script",
-            False,
-        ),
+        (CLICKED_URL, "document", True),
+        (SEARCH_OFFERS_URL, "xhr", True),
+        (SEARCH_OFFERS_URL, "fetch", True),
+        (INFINITE_URL, "xhr", False),
+        (INFINITE_URL, "fetch", False),
+        (SEARCH_OFFERS_URL, "script", False),
         ("https://api.cian.ru/geo/v1/suggest/", "xhr", False),
         ("https://static.cian.ru/image.png", "image", False),
     ],
@@ -5273,7 +5264,7 @@ def test_21_90_make_chrome_browser_human_clock(env, monkeypatch):
     assert (
         env.clock.monotonic_calls > 0,
         len(env.clock.pauses) > 0,
-        page.left_px() <= 300,
+        page.left_px() <= BOTTOM_PX,
     ) == (True, True, True)
 
 
@@ -6095,7 +6086,8 @@ def test_21_78_transports_no_clock_imports(name):
 )
 def test_21_78_no_wall_clock_or_random_calls(name):
     """21.78 Модули правил, transport, browser, http_browser, page_loader,
-    реализации транспорта и chrome_browser не обращаются к часам стены
+    chrome_human, реализации транспорта и chrome_browser не обращаются к
+    часам стены
     (datetime.now, .today, .utcnow) и к модулю random — ни вызовом, ни
     ссылкой: время и случайность приходят через Clock и аргумент rnd;
     подсказка типа random.Random можно. Модуль 21."""
@@ -6152,7 +6144,8 @@ def test_21_78_transports_no_disk_no_stdout(name):
 def test_21_78_cian_collect_not_imported(name):
     """21.78 cian_collect никем в пакете не импортируется (__init__, crawl,
     search_page, geometry, run_folder, transport, browser, http_browser,
-    page_loader, транспорты, chrome_browser, status). Модуль 21."""
+    page_loader, chrome_human, транспорты, chrome_browser, status).
+    Модуль 21."""
     assert module_imports(collector_source(name), "cian_collect") == []
 
 
@@ -6227,7 +6220,8 @@ def test_21_78_subprocess_only_in_chrome_browser_and_status(name):
 def test_21_78_network_only_in_urllib_transport(name):
     """21.78 Ни один модуль пакета, кроме urllib_transport (cian_collect,
     __init__, правила, transport, browser, http_browser, page_loader,
-    httpx_transport, chrome_browser, status), не импортирует socket,
+    chrome_human, httpx_transport, chrome_browser, status), не импортирует
+    socket,
     urllib.request,
     urllib.error, http: сеть stdlib — в urllib_transport. Модуль 21."""
     assert network_imports(collector_source(name)) == []

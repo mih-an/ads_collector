@@ -63,7 +63,7 @@ class SiteAnswer:
     На клик (ChromeStand) тот же ответ приходит ответом на запрос вида
     resource_type («document» — загрузка страницы в главном фрейме, «xhr»,
     «fetch») с адреса url (пусто — CLICKED_URL); сбой — ответа за тайм-аут
-    нет."""
+    нет; body_error — ответ пришёл, а его body() бросает эту ошибку."""
 
     status: int = 200
     text: str = ""
@@ -72,6 +72,7 @@ class SiteAnswer:
     crash: BaseException | None = None
     resource_type: str = "document"
     url: str = ""
+    body_error: BaseException | None = None
 
 
 def reply_of(answer: SiteAnswer) -> Reply:
@@ -157,7 +158,8 @@ class FakeResponse:
     """Ответ Playwright: код, заголовки (имена в нижнем регистре, как отдаёт
     Playwright), тело байтами (body()) и текстом (text()), запрос; url и
     frame — как у запроса. Тело ответа-редиректа недоступно — как у
-    Playwright, body() у него бросает ошибку."""
+    Playwright, body() у него бросает ошибку; body_error — та же ошибка у
+    любого ответа (тело не дошло)."""
 
     def __init__(
         self, status: int, headers: dict[str, str], raw: bytes, request: FakeRequest
@@ -176,9 +178,13 @@ class FakeResponse:
     def frame(self) -> object:
         return self.request.frame
 
+    body_error: BaseException | None = None  # body() бросает это, если задано
+
     def body(self) -> bytes:
         if 300 <= self.status < 400:
             raise FakePlaywrightError("Response body is unavailable for redirect")
+        if self.body_error is not None:
+            raise self.body_error
         return self.raw
 
     def text(self) -> str:
@@ -189,6 +195,9 @@ class FakeResponse:
 CLICKED_URL = "https://www.cian.ru/cat.php?deal_type=sale&p=2"
 # Адрес ответа API выдачи на клик (следующая страница) и адрес блока
 # рекомендаций, который ЦИАН грузит тем же API, — это не следующая страница.
+# Адреса выдуманные, совпадает только подстрока search-offers (и
+# get-infinite-search-result); настоящего ответа на клик в записях пробы нет —
+# DECISIONS, строка block/click-pages о data.offersSerialized.
 SEARCH_OFFERS_URL = "https://api.cian.ru/search-offers/v2/search-offers-desktop/"
 INFINITE_URL = (
     "https://api.cian.ru/search-offers/v1/get-infinite-search-result-desktop/"
@@ -196,17 +205,23 @@ INFINITE_URL = (
 # Главный фрейм фальшивой вкладки и чужой (реклама во фрейме).
 MAIN_FRAME = "главный фрейм"
 FOREIGN_FRAME = "чужой фрейм"
+# «Низ страницы» в тестах: до конца страницы не больше стольких пикселей
+# (BOTTOM_PX пробы click_test.py).
+BOTTOM_PX = 300
 
 
 @dataclass
 class FakeElement:
     """Элемент страницы: ссылка (href) или кнопка (text), рамка bounding_box
-    в пикселях окна ({"x", "y", "width", "height"} или None) и активность."""
+    в пикселях окна ({"x", "y", "width", "height"} или None), активность и
+    ошибка прокрутки к нему (scroll_error: её бросает
+    scroll_into_view_if_needed, например тайм-аут)."""
 
     box: dict[str, float] | None
     href: str | None = None
     text: str = ""
     enabled: bool = True
+    scroll_error: BaseException | None = None
 
     def holds(self, x: float, y: float) -> bool:
         """Точка (x, y) внутри рамки элемента."""
@@ -252,34 +267,41 @@ class FakeLocator:
     def is_enabled(self, **kwargs: object) -> bool:
         return self.one().enabled
 
-    def scroll_into_view_if_needed(self, timeout: float | None = None) -> None:
-        self.page.events.append(("scroll_into_view", self.one(), timeout))
+    def scroll_into_view_if_needed(self, *, timeout: float | None = None) -> None:
+        element = self.one()
+        self.page.events.append(("scroll_into_view", element, timeout))
+        if element.scroll_error is not None:
+            raise element.scroll_error
 
     def bounding_box(self, **kwargs: object) -> dict[str, float] | None:
         return self.one().box
 
-    def click(self, modifiers: list[str] | None = None, **kwargs: object) -> None:
+    def click(self, *, modifiers: list[str] | None = None, **kwargs: object) -> None:
         element = self.one()
         self.page.events.append(("locator_click", element, modifiers))
         self.page.clicked_on(element)
 
 
 class FakeMouse:
-    """Мышь вкладки: move и click пишутся в события; колесо (wheel)
-    прокручивает страницу; position — где мышь сейчас."""
+    """Мышь вкладки: move и click пишутся в события; клик мимо элементов
+    страницы до сайта не доходит (ответа не будет); колесо (wheel)
+    прокручивает страницу."""
 
     def __init__(self, page: "FakePage") -> None:
         self.page = page
-        self.position: tuple[float, float] | None = None
 
     def move(self, x: float, y: float, **kwargs: object) -> None:
-        self.position = (x, y)
         self.page.events.append(("move", x, y))
 
-    def click(self, x: float, y: float, delay: float | None = None, **kwargs) -> None:
+    def click(
+        self, x: float, y: float, *, delay: float | None = None, **kwargs: object
+    ) -> None:
         self.page.events.append(("click", x, y, delay))
         under = [element for element in self.page.elements if element.holds(x, y)]
-        self.page.clicked_on(under[-1] if under else None)
+        if under:
+            self.page.clicked_on(under[-1])
+        else:
+            self.page.clicked.append(None)
 
     def wheel(self, delta_x: float, delta_y: float) -> None:
         self.page.events.append(("wheel", delta_y))
@@ -345,7 +367,8 @@ class FakePage:
     Для клика и прокрутки (21.86, 21.93, 21.94): элементы страницы elements;
     mouse, keyboard; locator('a[href="<href>"]') — ссылки с этим href;
     get_by_text(текст, exact) — элементы с этим текстом; клик (мышью по
-    элементу или locator.click) берёт следующий ответ сайта из answers, а
+    элементу или locator.click; мимо элементов — нет) берёт следующий ответ
+    сайта из answers, а
     expect_response(предикат, timeout) отдаёт его на выходе блока (ResponseWaiter);
     wait_for_load_state(state, timeout) и wait_for_url(предикат адреса,
     timeout) пишутся в события и бросают load_error / url_error, если заданы;
@@ -409,7 +432,7 @@ class FakePage:
         href = found.group(1)
         return FakeLocator(self, [e for e in self.elements if e.href == href])
 
-    def get_by_text(self, text: str, exact: bool = False) -> FakeLocator:
+    def get_by_text(self, text: str, *, exact: bool = False) -> FakeLocator:
         def matches(element: FakeElement) -> bool:
             if exact:
                 return element.text == text
@@ -429,25 +452,27 @@ class FakePage:
             resource_type=answer.resource_type,
             frame=MAIN_FRAME,
         )
-        return FakeResponse(
+        response = FakeResponse(
             answer.status, answer.headers, answer.text.encode(), request
         )
+        response.body_error = answer.body_error
+        return response
 
     def expect_response(
-        self, predicate: Callable, timeout: float | None = None
+        self, predicate: Callable, *, timeout: float | None = None
     ) -> ResponseWaiter:
         if not callable(predicate):
             raise AssertionError("подделка вкладки ждёт ответ только по предикату")
         return ResponseWaiter(self, predicate, timeout)
 
     def wait_for_load_state(
-        self, state: str = "load", timeout: float | None = None
+        self, state: str = "load", *, timeout: float | None = None
     ) -> None:
         self.events.append(("load", state, timeout))
         if self.load_error is not None:
             raise self.load_error
 
-    def wait_for_url(self, url: Any, timeout: float | None = None) -> None:
+    def wait_for_url(self, url: Any, *, timeout: float | None = None) -> None:
         self.events.append(("wait_url", url, timeout))
         if self.url_error is not None:
             raise self.url_error
@@ -515,9 +540,10 @@ class TickingClock:
 
 def stand_human(clock: TickingClock, seed: int = 1) -> Any:
     """Настоящая рука человека chrome_human.Human на часах clock и
-    random.Random(seed). Импорт внутри функции: этот файл импортируют
-    test_collector.py и test_collector_chrome_browser.py, а руку — только
-    тесты, которым она нужна."""
+    random.Random(seed). Импорт внутри функции — временно: пока модуля
+    chrome_human нет (коммит «тесты» П2), этот файл и импортирующие его
+    test_collector.py и test_collector_chrome_browser.py должны собираться;
+    в П3 импорт поднимается наверх."""
     from collector import chrome_human
 
     return chrome_human.Human(clock.sleep, clock.monotonic, random.Random(seed))
@@ -582,7 +608,7 @@ class ChromeStand:
 
     @property
     def at_bottom(self) -> bool:
-        return self.page.left_px() <= 300
+        return self.page.left_px() <= BOTTOM_PX
 
 
 STANDS = {"http": HttpStand, "chrome": ChromeStand}
@@ -866,6 +892,29 @@ def test_21_86_click_catches_document(clicking_stand):
         "страница 2",
         True,
     )
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_21_86_click_error_status_is_answer(clicking_stand, status):
+    """21.86 Ответ-ошибка на клик (403, 429) — ClickedPage с кодом и телом,
+    neterr None, а не исключение (решение тимлида block/click-pages: правила
+    ответа клика — те же, что у fetch). Модуль 21."""
+    fetched = click_once(clicking_stand, [SiteAnswer(status, "запрет")]).fetched
+    assert (fetched.code, fetched.body, fetched.neterr) == (status, "запрет", None)
+
+
+def test_21_86_click_redirect_is_answer(clicking_stand):
+    """21.86 Ответ 302 на клик с Location и WAF-Verdict — ClickedPage: код
+    302, в заголовках location и waf-verdict (имена в нижнем регистре),
+    neterr None. Тело 3xx в общий контракт не входит. Модуль 21."""
+    headers = {"Location": OTHER_URL, "WAF-Verdict": "challenge"}
+    fetched = click_once(clicking_stand, [SiteAnswer(302, "", headers)]).fetched
+    assert (
+        fetched.code,
+        fetched.headers.get("location"),
+        fetched.headers.get("waf-verdict"),
+        fetched.neterr,
+    ) == (302, OTHER_URL, "challenge", None)
 
 
 def test_21_86_nothing_to_click(clicking_stand):

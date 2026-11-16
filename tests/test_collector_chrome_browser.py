@@ -49,6 +49,7 @@ from test_collector_browser import (
     ticket_of,
 )
 
+from collector import browser as browser_types
 from collector import chrome_browser, search_page
 
 URL = "https://www.cian.ru/cat.php?p=2"
@@ -226,8 +227,12 @@ LINK_P3 = FakeElement(box(200, 700), href="/cat.php?deal_type=sale&p=3", text="3
 LINK_P3_LAST = FakeElement(
     box(300, 700), href="/cat.php?deal_type=sale&p=3&from=pager", text="3"
 )
+# Та же ссылка ещё раз ниже в разметке (локатор по href найдёт обе).
+LINK_P3_TWIN = FakeElement(box(300, 760), href=LINK_P3_LAST.href, text="3")
 BACK_BUTTON = FakeElement(box(400, 700), text="Назад")
 NEXT_BUTTON = FakeElement(box(500, 700), text="Дальше")
+# Второй элемент с текстом «Дальше» — ниже в разметке.
+NEXT_BUTTON_LOW = FakeElement(box(500, 760), text="Дальше →")
 # Ответ API выдачи на клик.
 JSON_ANSWER = SiteAnswer(200, CLICK_JSON, resource_type="xhr", url=SEARCH_OFFERS_URL)
 
@@ -251,29 +256,54 @@ def kinds(page: FakePage) -> list[str]:
 
 
 def test_21_93_clicks_last_link_with_page():
-    """21.93 Есть ссылки с p=3 — нажата последняя из них, а не ссылка p=2 и
-    не «Дальше». Модуль 21."""
-    elements = [LINK_P2, LINK_P3, LINK_P3_LAST, NEXT_BUTTON]
+    """21.93 Есть ссылки с p=3 — нажата последняя из них (последняя ссылка
+    с p=3, а среди элементов с её href — последний), а не ссылка p=2 и не
+    «Дальше». Модуль 21."""
+    elements = [LINK_P2, LINK_P3, LINK_P3_LAST, LINK_P3_TWIN, NEXT_BUTTON]
     page = click_page(elements, [JSON_ANSWER])
     click(page, "3")
-    assert page.clicked == [LINK_P3_LAST]
+    assert page.clicked == [LINK_P3_TWIN]
 
 
 def test_21_93_falls_back_to_next_button():
-    """21.93 Ссылки с p=3 нет — нажата кнопка «Дальше». Модуль 21."""
-    page = click_page([LINK_P2, BACK_BUTTON, NEXT_BUTTON], [JSON_ANSWER])
+    """21.93 Ссылки с p=3 нет — нажат последний элемент с текстом «Дальше».
+    Модуль 21."""
+    elements = [LINK_P2, BACK_BUTTON, NEXT_BUTTON, NEXT_BUTTON_LOW]
+    page = click_page(elements, [JSON_ANSWER])
     click(page, "3")
-    assert page.clicked == [NEXT_BUTTON]
+    assert page.clicked == [NEXT_BUTTON_LOW]
+
+
+def test_21_93_other_link_param():
+    """21.93 Параметр номера страницы берётся из ClickTarget: при
+    link_param="page" нажата ссылка с page=3, а не с p=3. Модуль 21."""
+    by_page = FakeElement(box(600, 700), href="/cat.php?page=3", text="3")
+    page = click_page([LINK_P3, by_page], [JSON_ANSWER])
+    target = browser_types.ClickTarget(
+        link_param="page", link_value="3", else_text="Дальше"
+    )
+    browser_over(page).click_and_catch(target, search_page.is_next_page_response)
+    assert page.clicked == [by_page]
+
+
+def test_21_93_box_unknown_clicks_element():
+    """21.93 Рамку ссылки не узнать — клик самим элементом (locator.click):
+    нажата эта ссылка, ответ пойман. Модуль 21."""
+    boxless = FakeElement(None, href=LINK_P3.href, text="3")
+    page = click_page([boxless], [JSON_ANSWER])
+    clicked = click(page, "3")
+    assert (page.clicked, clicked.fetched.body) == ([boxless], CLICK_JSON)
 
 
 def test_21_93_disabled_button_is_nothing():
     """21.93 Ссылки с p=3 нет, «Дальше» неактивна — click_and_catch отдаёт
-    None: мышь не двигается, клика и ожидания ответа нет. Модуль 21."""
+    None: прокрутки к элементу нет, мышь не двигается, клика и ожидания
+    ответа нет. Модуль 21."""
     disabled = FakeElement(box(500, 700), text="Дальше", enabled=False)
     page = click_page([LINK_P2, disabled], [JSON_ANSWER])
     result = click(page, "3")
-    touched = {"move", "click", "locator_click", "expect"} & set(kinds(page))
-    assert (result, touched) == (None, set())
+    actions = {"scroll_into_view", "move", "click", "locator_click", "expect"}
+    assert (result, actions & set(kinds(page))) == (None, set())
 
 
 def test_21_93_aim_then_expect_then_click():
@@ -404,6 +434,81 @@ def test_21_93_wait_timeouts_are_not_failures(wait):
     setattr(page, wait, FakeTimeoutError("Timeout exceeded"))
     fetched = click(page, "3").fetched
     assert (fetched.code, fetched.body, fetched.neterr) == (200, CLICK_JSON, None)
+
+
+def test_21_93_load_timeout_still_waits_url():
+    """21.93 Тайм-аут ожидания load не обрывает клик: после него всё равно
+    ждётся адрес с номером страницы и идёт пауза руки (последнее событие —
+    сон). Модуль 21."""
+    page = click_page([LINK_P3], [JSON_ANSWER])
+    page.load_error = FakeTimeoutError("Timeout exceeded")
+    click(page, "3")
+    order = kinds(page)
+    assert (order.index("load") < order.index("wait_url"), order[-1]) == (
+        True,
+        "sleep",
+    )
+
+
+def test_21_93_aim_timeout_is_click_timeout():
+    """21.93 Тайм-аут прицела (прокрутка к элементу не удалась за
+    тайм-аут) — тоже сбой клика: код 0, neterr "click_timeout", клика и
+    ожидания ответа нет, ровно два обращения к monotonic браузера (решение
+    7 Андрея: клик без ответа — сбой сети; решение тимлида block/click-pages).
+    Модуль 21."""
+    stuck = FakeElement(
+        box(200, 700),
+        href=LINK_P3.href,
+        text="3",
+        scroll_error=FakeTimeoutError("Timeout 15000ms exceeded"),
+    )
+    clock = FakeTime(EPOCH)
+    page = click_page([stuck], [JSON_ANSWER])
+    fetched = click(page, "3", clock).fetched
+    touched = {"click", "locator_click", "expect"} & set(kinds(page))
+    assert (fetched.code, fetched.neterr, touched, clock.monotonic_calls) == (
+        0,
+        "click_timeout",
+        set(),
+        2,
+    )
+
+
+def test_21_93_redirect_answer_empty_body():
+    """21.93 Ответ 302 на клик — как у fetch (контракт, раздел 6): код и
+    заголовки ответа, тело пустое, size 0 (тело 3xx у Chrome недоступно).
+    Модуль 21."""
+    answer = SiteAnswer(302, "", {"Location": OTHER_URL})
+    page = click_page([LINK_P3], [answer])
+    fetched = click(page, "3").fetched
+    assert (fetched.code, fetched.headers, fetched.body, fetched.size) == (
+        302,
+        {"location": OTHER_URL},
+        "",
+        0,
+    )
+
+
+def test_21_93_unavailable_body_is_empty():
+    """21.93 Ответ на клик пришёл, а body() бросил ошибку Playwright без
+    net::ERR_* — ответ с кодом и заголовками, тело пустое, size 0, neterr
+    None (решение тимлида block/click-pages). Модуль 21."""
+    answer = SiteAnswer(
+        200,
+        CLICK_JSON,
+        {"Content-Type": "application/json"},
+        resource_type="xhr",
+        url=SEARCH_OFFERS_URL,
+        body_error=FakePlaywrightError("Response body is unavailable"),
+    )
+    page = click_page([LINK_P3], [answer])
+    fetched = click(page, "3").fetched
+    assert (fetched.code, fetched.body, fetched.size, fetched.neterr) == (
+        200,
+        "",
+        0,
+        None,
+    )
 
 
 def test_21_93_no_monotonic_when_nothing():
