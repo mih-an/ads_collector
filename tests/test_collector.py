@@ -4710,8 +4710,9 @@ class FakeChromeContext:
 
 class FakeChromePage(FakePage):
     """Фальшивая вкладка стенда ChromeStand (переходы: goto, visits,
-    goto_kwargs; на любой переход — 403 «no», проба проваливается, прогон
-    кончается сразу) плюс то, из чего читается билет: evaluate(выражение)
+    goto_kwargs; на первый переход — 403 «no», проба проваливается, прогон
+    кончается сразу; второго перехода быть не должно — подделка упадёт:
+    ответов больше нет) плюс то, из чего читается билет: evaluate(выражение)
     записывает выражение и отдаёт UA, context.cookies — куки."""
 
     def __init__(self, user_agent: str, cookies: list[dict]) -> None:
@@ -5749,8 +5750,10 @@ def test_21_78_browsers_imported_only_by_cian_collect(name, implementation):
 
 def test_21_78_chrome_edge_imports_only_in_connect():
     """21.78 chrome_browser.py импортирует playwright, subprocess и time
-    только внутри функции-края connect_chrome_tab: не на верхнем уровне, не
-    в классах и не в других функциях. Модуль 21."""
+    только внутри функции-края connect_chrome_tab верхнего уровня модуля:
+    не на верхнем уровне, не в классах (в том числе в методе класса с тем же
+    именем connect_chrome_tab — это нарушение) и не в других функциях.
+    Модуль 21."""
     source = collector_source("chrome_browser.py")
     assert chrome_edge_imports_outside(source) == []
 
