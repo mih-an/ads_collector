@@ -1,27 +1,32 @@
 # Отчёт тимлида для PM
 
-**Задача.** block/browser-interface — «браузер» стал интерфейсом, нынешний класс — реализация `HttpBrowser`; подготовлены место, контракт и проверки для внешней реализации `ChromeBrowser`. PR #7 (mih-an/ads_collector). Метка [БРАУЗЕР]. Поведение и формат папки прогона не менялись.
+**Задача.** block/chrome-insert — вставлен готовый `ChromeBrowser` внешней реализации; запуск `--browser chrome`; все страницы по ссылке; формат папки прогона прежний. PR #8 (mih-an/ads_collector). Метка [CHROME].
 
 **Что сделано.**
-- `collector/browser.py` — только интерфейс: `Ticket`, `FetchedPage`, `Browser(Protocol)` (`ticket`, `fetch(url, referer)`); лист пакета. `collector/http_browser.py` — `HttpBrowser` (бывший `Browser`: заголовки, распаковка, длительность, сбой → код 0), логика прежняя.
-- `cian_collect.py`: `BROWSER = "http"`, словарь `BROWSERS`, `make_http_browser(settings, rnd, transport_factory)` (билет из файлов + транспорт + `HttpBrowser`), `enter_cian` в две строки, флаг `--browser`, поле `Settings.browser`. `crawl.py` и `page_source.py` про `HttpBrowser`, заголовки и транспорт не знают (страж 21.78).
-- `docs/reference/browser_contract.md` — контракт для промпта PM: поля `FetchedPage`, правила `fetch`, билет и как его читает обход, раздел «только ChromeBrowser», стенд и набор 21.86, что делает тимлид при вставке (раздел 8).
-- DECISIONS (п. 7), ROADMAP (п. 8), TEST_PLAN, CLAUDE.md §6/§10, README, раздел 2 `collector_architecture.md`, `.claude/agents/` (data-checker, reviewer, coder, planner).
+- `collector/chrome_browser.py` — внешний файл; правки: адрес `http://127.0.0.1:<порт>` (п. 2 задания) и по ревью — текст `ChromeConnectError` с причиной последней ошибки подключения (`try_connect`).
+- `cian_collect.py`: `BrowserChoice(library, ticket_files, make)`, `BROWSERS` с `http` и `chrome`; `make_chrome_browser` (`connect_chrome_tab` → `read_chrome_ticket` → `ChromeBrowser`; `ChromeConnectError` → выход без трассировки); билет: UA вкладки, куки `context.cookies(https://www.cian.ru)` строкой, `age_h = None`; флаги `--chrome-port/-path/-profile`, константы `GOTO_TIMEOUT_MS=45000`, `WAIT_UNTIL="load"`, `PORT_WAIT_S=30`, `POLL_S=0.5`; ранняя проверка playwright — код 2 до паузы старта; при chrome файлы `--cookies/--ua` не проверяются.
+- `crawl.py`: три поля `Settings`, `ticket_text` — «билет: есть» без часов.
+- `requirements.txt` (playwright==1.65.2), `.gitignore` (`/chrome-profile/`), README «Запуск с Chrome на Маке», контракт, TEST_PLAN, ROADMAP (Windows), CLAUDE.md §1/§5/§6/§10, раздел 2 архитектуры, `.claude/agents/*`, `docs/PR_TEMPLATE.md`.
 
-**Кейсы.** Новые 21.86 (контракт браузера, 14 тестов / 20 запусков на стенде `HttpStand`; следующему блоку — `ChromeStand` и строка в `STANDS`) и 21.87 (выбор браузера); правка стража 21.78; 21.24, 21.29, 21.30 — общая часть переехала в 21.86. Тестов 794, покрытие 100 %, ruff и mypy чисто; эталоны ночей совпали без пересборки (раздел 4 PR).
+**Кейсы.** Новые 21.88 (ChromeBrowser сверх контракта), 21.89 (край подключения), 21.90 (сборка, билет, флаги, `main --browser chrome`); правки 21.54, 21.78 (playwright/subprocess/time только в `connect_chrome_tab`; subprocess ещё в `status.py`), 21.86 (стенды http и chrome), 21.87. Тестов 927, покрытие 100 %, ruff и mypy чисто; эталоны ночей совпали без пересборки. Автофикстура `no_chrome` закрывает настоящий playwright и `Popen` в тестах.
 
-**Решения уровня 1.** `docs/DECISIONS.md`, строки 2026-11-16 · block/browser-interface без пометки «допущение»; решения Андрея — строки 2026-11-16 (PR #6) и 2026-11-17.
+**Решения уровня 1.** `docs/DECISIONS.md`, строки 2026-11-16 · block/chrome-insert без пометки «допущение».
 
-**Вопросы уровня 2.** Открытых нет: Андрей 16.11 принял вариант А по всем 7 допущениям раздела 6 (тело редиректа; `body` Chrome — тело ответа, не DOM, с фактом его пробы в Chrome; рамка билета/`size`/`neterr`; Chrome идёт по редиректу сам; раздел работ при вставке; `http_browser.py`; `.claude/agents/*`) — строки решений Андрея 2026-11-16 в DECISIONS. Там же решение для блока вставки: билет Chrome — `ua` открытого Chrome, `has_ticket` — есть cookies cian.ru, `age_h = None` (вписано в контракт, раздел 5); новый порядок ROADMAP: Вставка Chrome → Проба с Mac → Источник кликом → …; транспорт и интерфейс `Browser` не трогаем.
+**Вопросы уровня 2 (допущения, раздел 6 PR).**
+1. О данных: билет Chrome — куки для https://www.cian.ru (не все поддомены cian.ru).
+2. О данных: блок 403/429 с пустым телом Chrome может отдать ошибкой `net::ERR_HTTP_RESPONSE_CODE_FAILURE` → сбой сети с повторами вместо BLOCK. В 101 прошлом прогоне кодов 4xx нет вовсе — не обрабатываем, записано в контракте.
+3. `connect_over_cdp` без `no_defaults=True` (как в пробе 16.11).
+4. `.gitignore` и правка `.claude/agents/*`, `PR_TEMPLATE.md` — вне строки «Общие файлы».
+Все — «Меняет план: нет».
 
-**Ошибки в ранее слитом коде.** Нет. Пробел (был до блока): тождество `rnd` обхода и сборки билета не закреплено тестом — в «Мелочах» ROADMAP.
+**Ошибки в ранее слитом коде.** Нет.
 
 **Открытые места.**
-- Вставка Chrome поменяет вид `BROWSERS` (поле библиотеки) и тексты 21.87; где живут 6 настроек Chrome (константы или `Settings`) — решить при вставке.
-- Страж 21.78 для `chrome_browser.py` (playwright, `subprocess`, `time` в функции-крае) — в следующем блоке.
-- При `age_h = None` текст итога `crawl.summary_text` даст «билет: есть, None ч» — поправить текст (и кейс) в блоке «Вставка Chrome»; в контракте отмечено.
-- Несделанные мелочи ревью — раздел 8 PR.
+- Поведение настоящего Chrome не проверено тестами: `body()` на самоперезагружающейся странице проверки, `evaluate` UA сразу после холодного старта, `load` 45 с, захват первой вкладки уже открытого Chrome, драйвер Playwright живёт до выхода.
+- Windows: `start_new_session` не действует — «Мелочи» ROADMAP.
+- Страж разрешает `chrome_browser` → `search_page`, хотя модуль его не берёт (architect, для сведения).
+- При `--browser chrome` библиотека `--transport` всё равно проверяется (в README).
 
-**Рекомендация следующего шага.** Андрей сливает PR #7; PM пишет промпт для `ChromeBrowser` по `browser_contract.md` (разделы 2–7), затем блок «Вставка Chrome» (все страницы по ссылке) и сразу «Проба с Mac».
+**Рекомендация следующего шага.** Андрей отвечает на допущения 1–2 и сливает PR #8; сразу — проба с Мака по команде из README (`--smoke-only`), затем обычный прогон; после пробы — блок «Источник кликом». PM: в файлах прогона Chrome новое сочетание `ticket: true` + `cookie_age_h: null` — учесть в стороже/загрузчике land-monitor.
 
-**Какие docs/ менялись.** `docs/DECISIONS.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md`, `docs/reference/browser_contract.md` (новый), `docs/reference/collector_architecture.md` (раздел 2), `docs/process/CURRENT_TASK.md`, `docs/process/TEAMLEAD_REPORT.md`; вне `docs/` — `CLAUDE.md`, `README.md`, `collector/README.md`, `.claude/agents/`.
+**Какие docs/ менялись.** `docs/DECISIONS.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md`, `docs/PR_TEMPLATE.md`, `docs/reference/browser_contract.md`, `docs/reference/collector_architecture.md` (раздел 2), `docs/process/CURRENT_TASK.md`, `docs/process/TEAMLEAD_REPORT.md`; вне `docs/` — `CLAUDE.md`, `collector/README.md`, `.claude/agents/`, `requirements.txt`, `.gitignore`.
