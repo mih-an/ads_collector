@@ -18,8 +18,8 @@ block/browser-interface и block/chrome-insert.
   `ChromeBrowser` (сборка, строка `BROWSERS`, ранняя проверка playwright,
   страж, тест-план, документы).
 
-Обход (`crawl.py`) и источник страниц (`page_source.py`) знают только
-интерфейс `Browser`; `page_source.py` и `HttpBrowser` при вставке второй
+Обход (`crawl.py`) и загрузчик страницы (`page_loader.py`) знают только
+интерфейс `Browser`; `page_loader.py` и `HttpBrowser` при вставке второй
 реализации не менялись. В `crawl.py` при вставке `ChromeBrowser` добавлены
 только три поля `Settings` (флаги `--chrome-*`) и текст итога «билет: есть»
 для билета без возраста (раздел 5); правила обхода не менялись.
@@ -39,7 +39,7 @@ class Browser(Protocol):
 
 - `ticket` — входной билет `Ticket` (раздел 5), атрибут, а не метод.
 - `fetch(url, referer)` — один переход по `url`; ответ — `FetchedPage`
-  (раздел 3). Источник страниц всегда зовёт `fetch(url, referer)`:
+  (раздел 3). Загрузчик страницы «по ссылке» всегда зовёт `fetch(url, referer)`:
   у страницы 1 `referer` — `None`, у страницы N — ссылка страницы N−1.
 
 `Browser` — `typing.Protocol`: реализация не наследует его, достаточно
@@ -47,7 +47,7 @@ class Browser(Protocol):
 
 Что реализации можно импортировать из пакета: `collector.browser`
 (`Ticket`, `FetchedPage`) и, если нужно, `collector.search_page` (константы
-контракта ЦИАН, например `CIAN_BASE_URL`). Нельзя: `crawl`, `page_source`,
+контракта ЦИАН, например `CIAN_BASE_URL`). Нельзя: `crawl`, `page_loader`,
 `cian_collect`, `http_browser`, реализации транспорта. Время — только через
 переданную функцию `monotonic` (раздел 3), без `time`, `datetime.now` и
 `random`; печати в stdout и записи на диск нет. Единственное исключение —
@@ -134,7 +134,9 @@ Chrome и ожидание порта живут только в ней; что 
 - **`summary.json`**: `ticket` ← `has_ticket`, `cookie_age_h` ← `age_h`;
   текст итога в stdout (`crawl.ticket_text`) — «билет: есть, N ч», «билет:
   есть» (возраста нет) или «билет: нет».
-- **`night.log`**, строка `event=start`: `ticket=1|0`, `cookie_age_h=`.
+- **`night.log`**, строка `event=start`: `ticket=1|0`, `cookie_age_h=` ←
+  `age_h`; возраста нет (`None`) — пустое значение `cookie_age_h=`, не
+  `None` (решение Андрея 10, block/click-pages).
 - **`raw/_block_*.txt` и `raw/_broken_*.note.txt`**: `ua=` ← `ua`.
 
 У `HttpBrowser` билет собирает `cian_collect.make_http_browser` из файлов
@@ -153,8 +155,8 @@ Chrome и ожидание порта живут только в ней; что 
 - `age_h = None`: возраст cookies не считаем — Chrome обновляет их сам,
   даты создания у cookie нет.
 
-Для обхода это значит: `cookie_age_h` в `plan.json`, `summary.json` и
-строке `start` — `null` / `None`; текст итога при билете — «билет: есть»
+Для обхода это значит: `cookie_age_h` в `plan.json` и `summary.json` —
+`null`, в строке `start` — пустое значение (`cookie_age_h=`); текст итога при билете — «билет: есть»
 без часов; пометка «билет сгорел» ставится по `has_ticket`, возраст в
 ней не участвует (`crawl.burned_mark`). `ChromeBrowser` билет только
 хранит и отдаёт.

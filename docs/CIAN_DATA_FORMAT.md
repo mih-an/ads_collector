@@ -257,7 +257,10 @@ runs_mini/                     ручные мини-тесты — та же с
 `night.log` — строки `ISO-время \t k=v \t k=v ...`. Запросы:
 `n= sector= page= kind=(smoke|ssr) http= ms= offers= bytes= total= verdict= err=`
 (`kind=smoke` — до block/simplify-2; с PR #4 всегда `ssr`).
-События: `event=start` (budget, window_h, ticket, cookie_age_h, order),
+События: `event=start` (budget, window_h, ticket, cookie_age_h, order; у
+`cookie_age_h` без возраста кук — нет билета или билет из Chrome — пустое
+значение `cookie_age_h=`, раньше было `cookie_age_h=None`; решение Андрея 10,
+block/click-pages),
 `event=sector_end` (why=short_page|redirect_to_p1_301|empty_page|smoke_empty;
 `smoke_empty` — до block/simplify-2),
 `event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent).

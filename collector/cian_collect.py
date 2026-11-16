@@ -5,8 +5,9 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 случайность по seed, файл клеток [E-42] и сетка (в stdout), часы crawl.Clock,
 пауза старта, вход на ЦИАН. enter_cian — браузер из BROWSERS (http: билет из
 файлов и транспорт make_transport; chrome: вкладка connect_chrome_tab и билет
-из неё) → источник страниц из PAGE_SOURCES. main запускает обход и печатает
-итог. Сети здесь нет; сервер и запуск — collector/README.md.
+из неё) → загрузчик страницы из PAGE_LOADERS (флаг --page-loader). main
+запускает обход и печатает итог. Сети здесь нет; сервер и запуск —
+collector/README.md.
 """
 
 from __future__ import annotations
@@ -24,14 +25,14 @@ from datetime import datetime
 from collector import (
     chrome_browser,
     http_browser,
-    page_source,
+    page_loader,
     search_page,
     urllib_transport,
 )
 from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
-from collector.page_source import PageSource
+from collector.page_loader import PageLoader
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
@@ -231,15 +232,29 @@ BROWSERS: dict[str, BrowserChoice] = {
 }
 
 
-# ───────────────────────── ИСТОЧНИКИ СТРАНИЦ ─────────────────────────
+# ──────────────────────── ЗАГРУЗЧИКИ СТРАНИЦЫ ────────────────────────
 
-# Одно место для списка источников страниц, по образцу TRANSPORTS. Словарь
-# и умолчание PAGE_SOURCE читаются в момент вызова: так 21.84 подставляет
-# свой создатель и своё имя. Флага запуска нет, пока реализация одна: имя
-# без выбора не проверить (DECISIONS, block/page-source).
-PAGE_SOURCE = "url"
-PAGE_SOURCES: dict[str, Callable[[Browser], PageSource]] = {
-    "url": page_source.UrlPageSource,
+# загрузчик по умолчанию — «по ссылке»: прежние аргументы — прежний обход
+PAGE_LOADER = "url"
+
+# создание загрузчика по браузеру, Settings, rnd и часам обхода (DECISIONS,
+# block/click-pages)
+PageLoaderMaker = Callable[[Browser, Settings, random.Random, Clock], PageLoader]
+
+
+def make_url_loader(
+    browser: Browser, settings: Settings, rnd: random.Random, clock: Clock
+) -> PageLoader:
+    """Загрузчик «по ссылке» над браузером; Settings, rnd и часы ему пока не
+    нужны — сигнатура общая для всех создателей PAGE_LOADERS."""
+    return page_loader.UrlPageLoader(browser)
+
+
+# Одно место для списка загрузчиков страницы, по образцу TRANSPORTS: из него
+# choices флага --page-loader и создание загрузчика. Читается в момент
+# вызова: так 21.84 добавляет в него свой создатель.
+PAGE_LOADERS: dict[str, PageLoaderMaker] = {
+    "url": make_url_loader,
 }
 
 
@@ -274,6 +289,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(BROWSERS),
         default=BROWSER,
         help="реализация браузера",
+    )
+    ap.add_argument(
+        "--page-loader",
+        choices=list(PAGE_LOADERS),
+        default=PAGE_LOADER,
+        help="как загружать страницы выдачи",
     )
     ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
     ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
@@ -348,6 +369,7 @@ def read_settings(argv: list[str]) -> Settings:
         seed=seed,
         transport=args.transport,
         browser=args.browser,
+        page_loader=args.page_loader,
         cookies_file=args.cookies or COOKIES_FILE,
         ua_file=args.ua or UA_FILE,
         chrome_port=args.chrome_port,
@@ -380,18 +402,21 @@ def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> 
 
 
 def enter_cian(
-    settings: Settings, rnd: random.Random, transport_factory: TransportFactory
-) -> PageSource:
+    settings: Settings,
+    rnd: random.Random,
+    transport_factory: TransportFactory,
+    clock: Clock,
+) -> PageLoader:
     """Вход на ЦИАН: браузер флага --browser из BROWSERS (со своим билетом)
-    → источник страниц PAGE_SOURCES[PAGE_SOURCE] над ним."""
+    → загрузчик страницы флага --page-loader из PAGE_LOADERS над ним."""
     browser = BROWSERS[settings.browser].make(settings, rnd, transport_factory)
-    return PAGE_SOURCES[PAGE_SOURCE](browser)
+    return PAGE_LOADERS[settings.page_loader](browser, settings, rnd, clock)
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
     пауза старта (первый вызов случайности после seed), затем вход на ЦИАН
-    (билет, транспорт, браузер) — готовый источник страниц для обхода."""
+    (билет, транспорт, браузер) — готовый загрузчик страницы для обхода."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -408,15 +433,15 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     clock = Clock(now=now_local, sleep=time.sleep)
     pause_before_start(settings, rnd, clock)
     # билет — после паузы старта: возраст кук и UA (порядок случайности)
-    source = enter_cian(settings, rnd, transport_factory)
-    return Crawl(settings, tiles_file, source, clock, rnd)
+    loader = enter_cian(settings, rnd, transport_factory, clock)
+    return Crawl(settings, tiles_file, loader, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
     """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
     settings = read_settings(sys.argv[1:])
     # вся сборка внешнего мира: часы, rnd, пауза старта, билет, транспорт,
-    # источник страниц
+    # загрузчик страницы
     crawl = build_crawl(settings, transport_factory)
     crawl.collect()
     crawl.print_summary()

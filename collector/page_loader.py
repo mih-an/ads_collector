@@ -1,11 +1,11 @@
 """
-page_source.py — источник страниц: «дай страницу N клетки» для обхода.
+page_loader.py — загрузчик страницы: «дай страницу N клетки» для обхода.
 
-PageSource — что обход знает об источнике: билет ticket и get_page(ключ
+PageLoader — что обход знает о загрузчике: билет ticket и load_page(ключ
 клетки, кольцо, номер) → run_folder.PageAnswer с пустыми ids (id считает
-обход после записи файла, 21.36). UrlPageSource — реализация «по ссылке»:
+обход после записи файла, 21.36). UrlPageLoader — реализация «по ссылке»:
 ссылка и Referer, интерфейс browser.Browser, разбор search_page.classify_page.
-Повторов нет — один get_page = один запрос (повторы — в crawl.Crawl).
+Повторов нет — один load_page = один запрос (повторы — в crawl.Crawl).
 Без часов, диска и печати.
 """
 
@@ -17,20 +17,20 @@ from collector import run_folder, search_page
 from collector.browser import Browser, Ticket
 
 
-class PageSource(Protocol):
-    """Источник страниц для обхода: вторая реализация — новый файл; в
-    cian_collect.py — строка PAGE_SOURCES, флаг, проверка библиотеки и сборка
-    источника; crawl.py не трогается (решение Андрея 15.11)."""
+class PageLoader(Protocol):
+    """Загрузчик страницы для обхода: новая реализация — строка в
+    cian_collect.PAGE_LOADERS (флаг --page-loader) и её создатель; crawl.py
+    не трогается (решение Андрея 15.11, DECISIONS block/click-pages)."""
 
     ticket: Ticket
 
-    def get_page(self, key: str, ring: list, page: int) -> run_folder.PageAnswer:
+    def load_page(self, key: str, ring: list, page: int) -> run_folder.PageAnswer:
         """Страница page клетки key с кольцом ring: один запрос, ответ
         разобран, ids пусты; повтор после сбоя сети — тот же вызов ещё раз."""
 
 
-class UrlPageSource:
-    """Источник «по ссылке»: каждая страница — переход браузера по ссылке
+class UrlPageLoader:
+    """Загрузчик «по ссылке»: каждая страница — переход браузера по ссылке
     page_url, как у человека, листающего выдачу; браузер — любая реализация
     интерфейса browser.Browser (21.86)."""
 
@@ -38,7 +38,7 @@ class UrlPageSource:
         self.browser = browser
         self.ticket = browser.ticket
 
-    def get_page(self, key: str, ring: list, page: int) -> run_folder.PageAnswer:
+    def load_page(self, key: str, ring: list, page: int) -> run_folder.PageAnswer:
         """Ссылка страницы, браузер, разбор ответа → PageAnswer (21.83)."""
         # Referer страницы N — ссылка страницы N-1 с тем же джиттером (21.24)
         referer = search_page.page_url(ring, page - 1) if page > 1 else None

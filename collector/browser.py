@@ -1,5 +1,5 @@
 """
-browser.py — интерфейс браузера: что обход и источник страниц знают о браузере.
+browser.py — интерфейс браузера: что обход и загрузчик страницы знают о браузере.
 
 Browser — атрибут ticket и fetch(url, referer) → FetchedPage; реализации —
 HttpBrowser (http_browser.py), будущий ChromeBrowser (chrome_browser.py).
@@ -40,8 +40,8 @@ class FetchedPage(NamedTuple):
 
 
 class Browser(Protocol):
-    """Браузер для источника страниц: вторая реализация — новый файл и
-    сборка в cian_collect.py (строка BROWSERS); обход и источник страниц
+    """Браузер для загрузчика страницы: вторая реализация — новый файл и
+    сборка в cian_collect.py (строка BROWSERS); обход и загрузчик страницы
     не трогаются (DECISIONS, block/browser-interface)."""
 
     ticket: Ticket

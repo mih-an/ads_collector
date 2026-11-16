@@ -1,14 +1,15 @@
 """
 crawl.py — обход выдачи ЦИАН: данные, правила обхода и класс обхода Crawl.
 
-Данные: Settings, Clock (часы и сон), TileState, PageTask, CrawlState.
-Правила — функции без внешнего мира: интервал и паузы, деление [E-42],
-«билет сгорел», итог пробы, учёт страницы, дочитанность [E-21], ступень,
-повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
-очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
-пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
-внешний мир — только источник страниц (page_source.PageSource), Clock, rnd,
-run_folder (запись и печать say) и TilesFile.record_split.
+Данные: Settings, Clock (часы и сон), TileState, PageTask, CrawlState,
+итог страницы PageOutcome. Правила — функции без внешнего мира: интервал и
+паузы, деление [E-42], «билет сгорел», итог пробы, учёт страницы,
+дочитанность [E-21], ступень, повторы, итог страницы, словари plan.json и
+summary.json, текст итога. Crawl ведёт прогон: очередь (проба — стр. 1
+первой клетки), листание, деление, бюджет, стоп; пауза старта и вход на
+ЦИАН — до обхода, в cian_collect.build_crawl; внешний мир — только
+загрузчик страницы (page_loader.PageLoader), Clock, rnd, run_folder (запись
+и печать say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from datetime import datetime
 
 from collector import geometry, run_folder, search_page
 from collector.browser import Ticket
-from collector.page_source import PageSource
+from collector.page_loader import PageLoader
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -42,6 +43,9 @@ class Settings:
     transport: str
     # браузер: реализация из cian_collect.BROWSERS (флаг --browser)
     browser: str
+    # загрузчик страницы: создатель из cian_collect.PAGE_LOADERS (флаг
+    # --page-loader)
+    page_loader: str
     # «входной билет»: куки и UA браузера, прошедшего проверку WAF (флаги
     # --cookies и --ua; умолчания — в cian_collect)
     cookies_file: str
@@ -132,6 +136,25 @@ class CrawlState:
     split_events: list[dict] = field(default_factory=list)
     done: list[PageTask] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PageOutcome:
+    """Итог страницы (и клетки) для обхода (решение Андрея 2, 21.91): kind —
+    "read" (прочитана), "end" (конец клетки) или "stop" (стоп прогона);
+    reason — у стопа значение stopped (budget_exhausted, block, …)."""
+
+    kind: str
+    reason: str = ""
+
+    @property
+    def stopped(self) -> bool:
+        """Прогон остановлен: дальше ни страниц, ни клеток."""
+        return self.kind == "stop"
+
+
+READ = PageOutcome("read")
+TILE_END = PageOutcome("end")
 
 
 # ─────────────────────────────── правила ───────────────────────────────
@@ -231,6 +254,16 @@ def task_state(verdict: str, attempts: int, retries: int) -> str:
     if verdict == search_page.NET_ERROR and attempts <= retries:
         return "net_error"
     return "failed"
+
+
+def page_outcome(state: str, stopped: str | None) -> PageOutcome:
+    """Итог страницы по окончательному состоянию задачи (21.91): done —
+    прочитана, page_end — конец клетки, failed — стоп с причиной stopped."""
+    if state == "done":
+        return READ
+    if state == "page_end":
+        return TILE_END
+    return PageOutcome("stop", stopped or "")
 
 
 # «Ступень» — наследие калибровки ЦИАН-контура: ступень бюджета пройдена —
@@ -477,22 +510,22 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); страницы и билет — только у источника страниц source (готовый
-    источник из cian_collect.build_crawl), часы и сон — через clock,
+    (say); страницы и билет — только у загрузчика страницы loader (готовый
+    загрузчик из cian_collect.build_crawl), часы и сон — через clock,
     случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        source: PageSource,
+        loader: PageLoader,
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
-        self.source = source
+        self.loader = loader
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -555,8 +588,8 @@ class Crawl:
         try:
             while state.pending and self.budget_left():
                 key = state.pending.pop(0)
-                self.download_tile(key)
-                if state.stopped:
+                # решает итог клетки, а не общая state.stopped (решение 2, 21.91)
+                if self.download_tile(key).stopped:
                     break  # прогон остановлен (провал пробы, блок, сеть, бюджет)
                 self.save_plan()
                 self.pause_between_tiles()
@@ -572,33 +605,35 @@ class Crawl:
 
     # ── клетка ────────────────────────────────────────────────────
 
-    def download_tile(self, key: str) -> None:
+    def download_tile(self, key: str) -> PageOutcome:
         """Клетка целиком: стр. 1 → стоп / деление на четверти / стр. 2…N до
-        конца набора; между страницами — пауза. Стоп прогона — в state.stopped."""
+        конца набора; между страницами — пауза. → итог последней страницы."""
         tile = self.tiles[key]
         page = 1
+        outcome = TILE_END  # читать нечего — клетка кончилась
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
-            self.download_page(key, page)
-            if self.state.stopped:
-                return  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
+            outcome = self.download_page(key, page)
+            if outcome.stopped:
+                return outcome  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
             if page == 1 and self.split_into_quarters(key):
-                return  # родитель выбыл, дети в очереди
+                return outcome  # родитель выбыл, дети в очереди
             page += 1
             # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
             if not read_out(tile, page):
                 self.pause_between_pages()
+        return outcome
 
-    def download_page(self, key: str, page: int) -> None:
+    def download_page(self, key: str, page: int) -> PageOutcome:
         """Одна страница клетки; сбой сети — повторы с растущей паузой, сколько
         пауз в Settings.net_retry_pauses. Каждая попытка — запрос, строка
-        night.log, задача plan.json и единица бюджета."""
+        night.log, задача plan.json и единица бюджета. → итог страницы (21.91)."""
         attempts = 0  # повторов этой страницы уже было
         while True:
             if not self.budget_left():
                 self.state.stopped = "budget_exhausted"
-                return
+                return PageOutcome("stop", self.state.stopped)
             origin = "seed" if page == 1 else "expanded"
             task = PageTask(sector=key, page=page, origin=origin, attempts=attempts)
             verdict = self.try_page(task)
@@ -606,7 +641,7 @@ class Crawl:
                 self.mark_end(key, task.detail)
             answered = task.state != "net_error"  # окончательный ответ страницы
             if answered:
-                return
+                return page_outcome(task.state, self.state.stopped)
             self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
 
@@ -645,7 +680,7 @@ class Crawl:
         пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
         «билет сгорел»)."""
         detail = burned_mark(
-            answer.verdict, answer.detail, self.source.ticket.has_ticket
+            answer.verdict, answer.detail, self.loader.ticket.has_ticket
         )
         state = self.state
         state.stop_class, state.stop_detail = answer.verdict, detail
@@ -679,10 +714,10 @@ class Crawl:
     # ── один запрос ───────────────────────────────────────────────
 
     def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
-        """Сам запрос, без решений: страница у источника одним вызовом
-        (`source.get_page`), запись файла страницы, `_broken_*` или `_block_*`,
+        """Сам запрос, без решений: страница у загрузчика одним вызовом
+        (`loader.load_page`), запись файла страницы, `_broken_*` или `_block_*`,
         id объявлений. Бюджет, очередь и стоп не трогает."""
-        answer = self.source.get_page(key, self.tiles[key].ring, page)
+        answer = self.loader.load_page(key, self.tiles[key].ring, page)
         answer = self._write_answer(answer)
         # id считаются после записи: сбой разбора id не отменяет уже
         # записанный файл (тест 21.36)
@@ -691,7 +726,7 @@ class Crawl:
     def _write_answer(self, answer: run_folder.PageAnswer) -> run_folder.PageAnswer:
         """Файл ответа: страница у OK, _broken_* у API_CHANGED с телом (к детали —
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
-        ua = self.source.ticket.ua
+        ua = self.loader.ticket.ua
         if answer.verdict == search_page.OK:
             # тело каждой страницы как есть [E-22]
             self.folder.write_page(
@@ -826,14 +861,18 @@ class Crawl:
 
     def _log_start(self) -> None:
         """Первая строка night.log: с чем прогон стартует."""
+        ticket = self.loader.ticket
+        # нет возраста кук (нет билета или билет из Chrome) — пустое значение,
+        # не «None»; 0.0 остаётся 0.0 (решение Андрея 10, block/click-pages)
+        age_h = "" if ticket.age_h is None else ticket.age_h
         self.log(
             event="start",
             budget=self.settings.budget,
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.source.ticket.has_ticket),
-            cookie_age_h=self.source.ticket.age_h,
+            ticket=int(ticket.has_ticket),
+            cookie_age_h=age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
         )
@@ -860,7 +899,7 @@ class Crawl:
             plan_payload(
                 self.state,
                 self.settings,
-                self.source.ticket,
+                self.loader.ticket,
                 self.started_at,
                 self.tiles,
             ),
@@ -871,7 +910,7 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.source.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.loader.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
