@@ -206,17 +206,20 @@ class FakeChrome:
 
 
 class FakePlaywright:
-    """Запущенный Playwright: connect_over_cdp отдаёт исходы по порядку —
+    """Запущенный Playwright: connect_over_cdp записывает адрес (endpoints) и
+    именованные аргументы (connect_kwargs) и отдаёт исходы по порядку —
     исключение бросает, Chrome возвращает; stop() записывается."""
 
     def __init__(self, outcomes: list) -> None:
         self.outcomes = list(outcomes)
         self.endpoints: list[str] = []
+        self.connect_kwargs: list[dict[str, object]] = []
         self.stopped = False
         self.chromium = self
 
-    def connect_over_cdp(self, endpoint: str) -> FakeChrome:
+    def connect_over_cdp(self, endpoint: str, **kwargs: object) -> FakeChrome:
         self.endpoints.append(endpoint)
+        self.connect_kwargs.append(kwargs)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
@@ -287,12 +290,14 @@ def connect(port_wait_s: float = 1.0) -> chrome_browser.ChromeTab:
 
 def test_21_89_connect_to_open_chrome(fake_playwright, launches, clock):
     """21.89 Chrome открыт: подключение к http://127.0.0.1:<порт> (не
-    localhost), без запуска; первая вкладка; классы ошибок из
+    localhost) с no_defaults=True — без умолчаний Playwright (решение
+    Андрея 16.11), без запуска; первая вкладка; классы ошибок из
     playwright.sync_api. Модуль 21."""
     made = fake_playwright([FakeChrome(FakeContext(["вкладка 1", "вкладка 2"]))])
     tab = connect()
-    assert (made.endpoints, launches, tab) == (
+    assert (made.endpoints, made.connect_kwargs, launches, tab) == (
         ["http://127.0.0.1:9333"],
+        [{"no_defaults": True}],
         [],
         chrome_browser.ChromeTab("вкладка 1", PortTimeout, PortClosed),
     )
@@ -308,7 +313,9 @@ def test_21_89_connect_opens_new_tab_when_none(fake_playwright, launches, clock)
 
 def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, clock):
     """21.89 Порт молчит — один запуск с портом и профилем, отдельная сессия,
-    stdout и stderr в DEVNULL; повтор раз в poll_s до успеха. Модуль 21."""
+    stdout и stderr в DEVNULL; повтор раз в poll_s до успеха, каждая
+    попытка — подключение с no_defaults=True, без умолчаний Playwright
+    (решение Андрея 16.11). Модуль 21."""
     chrome = FakeChrome(FakeContext(["вкладка"]))
     made = fake_playwright([PortClosed("ECONNREFUSED"), PortTimeout("slow"), chrome])
     tab = connect()
@@ -320,6 +327,7 @@ def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, cloc
         kwargs["stdout"],
         kwargs["stderr"],
         made.endpoints,
+        made.connect_kwargs,
         clock.pauses,
         tab.page,
         made.stopped,
@@ -334,6 +342,7 @@ def test_21_89_connect_launches_chrome_and_waits(fake_playwright, launches, cloc
         subprocess.DEVNULL,
         subprocess.DEVNULL,
         ["http://127.0.0.1:9333"] * 3,
+        [{"no_defaults": True}] * 3,
         [0.5, 0.5],
         "вкладка",
         False,
