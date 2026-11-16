@@ -158,9 +158,10 @@ def make_http_browser(
 
 # Одно место для списка браузеров, по образцу TRANSPORTS: из него choices
 # флага --browser и сборка браузера. Читается в момент вызова: так тесты
-# добавляют в него свою сборку (21.87). Следующая строка — "chrome" из
-# collector/chrome_browser.py; playwright импортируется только внутри его
-# функции сборки, как httpx в make_httpx.
+# добавляют в него свою сборку (21.87). Следующая строка — "chrome":
+# make_chrome_browser здесь импортирует collector/chrome_browser.py лениво,
+# как make_httpx; playwright — только внутри функции подключения к Chrome
+# в chrome_browser.py (docs/reference/browser_contract.md, раздел 8).
 BROWSERS: dict[str, BrowserMaker] = {
     "http": make_http_browser,
 }
