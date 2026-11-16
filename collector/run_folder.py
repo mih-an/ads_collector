@@ -4,8 +4,9 @@ run_folder.py — папка прогона сборщика ЦИАН: имен�
 Создаёт папку прогона (RunFolder.create), получает готовые словари и ответ на
 запрос (PageAnswer, его создаёт загрузчик страницы); пишет папку
 <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log (say — печать обхода в stdout: эхо
-night.log, итог), plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
-_broken_* с .note.txt, _block_*.txt, снимок охвата polygons.geojson.gz и
+night.log, итог), plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и
+.html.gz (у ответа на клик — .click.gz), _broken_* с .note.txt, _block_*.txt,
+снимок охвата polygons.geojson.gz и
 summary.json (последним). Тексты служебных файлов — чистыми функциями;
 время модуль сам не берёт: метка и штамп приходят аргументом.
 """
@@ -20,8 +21,15 @@ from dataclasses import dataclass
 from datetime import datetime
 
 # вид запроса в night.log, plan.json, имени и записке _broken_*: поле наших
-# файлов ради совместимости формата, не контракт ЦИАН — все страницы GET cat.php
+# файлов ради совместимости формата, не контракт ЦИАН — страница по ссылке
+# (GET cat.php) — ssr, страница кликом — click (DECISIONS block/click-pages)
 PAGE_KIND = "ssr"
+CLICK_KIND = "click"
+# вид файла тела страницы: <клетка>_p<N>.html.gz — ответ по ссылке или
+# документ клика; <клетка>_p<N>.click.gz — ответ API на клик целиком
+# (решение Андрея 5)
+HTML_BODY = "html"
+CLICK_BODY = "click"
 
 
 @dataclass(frozen=True)
@@ -33,7 +41,8 @@ class PageAnswer:
     ответа, без хвоста «|saved:<имя файла>» и без пометки
     «|cookie_expired_or_burned». Хвост ночь добавляет к ответу после записи
     _broken_* (Crawl._write_answer), пометку — только к итогу при стопе
-    (crawl.burned_mark)."""
+    (crawl.burned_mark). kind — как пришла страница (PAGE_KIND или
+    CLICK_KIND), body_ext — вид файла тела (HTML_BODY или CLICK_BODY)."""
 
     key: str
     page: int
@@ -47,6 +56,8 @@ class PageAnswer:
     ms: float
     body: str
     headers: dict
+    kind: str = PAGE_KIND
+    body_ext: str = HTML_BODY
 
 
 def folder_label(started_at: datetime, smoke_only: bool) -> str:
@@ -72,7 +83,7 @@ def broken_note(answer: PageAnswer, ua: str) -> str:
     без пометки «|cookie_expired_or_burned» (их добавляет ночь после записи)."""
     return (
         f"verdict=API_CHANGED detail={answer.detail} http={answer.code} "
-        f"kind={PAGE_KIND}\n"
+        f"kind={answer.kind}\n"
         f"sector={answer.key} page={answer.page} ua={ua}\n"
     )
 
@@ -141,23 +152,28 @@ class RunFolder:
             json.dump(payload, fh, ensure_ascii=False, indent=1)
         os.replace(tmp, self.plan)
 
-    def write_page(self, key: str, page: int, data: dict, body: str) -> None:
+    def write_page(
+        self, key: str, page: int, data: dict, body: str, body_ext: str = HTML_BODY
+    ) -> None:
         """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
-        объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
-        ответа целиком, как есть (страховка от тихой поломки вырезки). Тело —
-        любой текст, не обязательно HTML (решение Андрея 15.11; DECISIONS,
-        block/page-source); имя файла — по формату. Прогоны до 18.09 —
-        исторический формат (.json, HTML только у p1)."""
+        объявлений как отдал ЦИАН, без отбора полей; тело ответа целиком, как
+        есть (страховка от тихой поломки вырезки) — <клетка>_p<N>.html.gz или,
+        у ответа API на клик (body_ext CLICK_BODY), <клетка>_p<N>.click.gz.
+        Тело — любой текст, не обязательно HTML (решение Андрея 15.11;
+        DECISIONS, block/page-source); имя файла — по формату. Прогоны до
+        18.09 — исторический формат (.json, HTML только у p1)."""
         base = os.path.join(self.raw, f"{key}_p{page}")
         with gzip.open(base + ".json.gz", "wt", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False)
-        with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as fh:
+        with gzip.open(f"{base}.{body_ext}.gz", "wt", encoding="utf-8") as fh:
             fh.write(body)
 
     def write_broken(self, answer: PageAnswer, ua: str, hms: str) -> str:
         """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
-        hms — время ЧЧММСС. → имя файла с телом (без пути)."""
-        name = f"_broken_{answer.key}_p{answer.page}_{PAGE_KIND}_{answer.code}_{hms}"
+        hms — время ЧЧММСС; вид запроса в имени — answer.kind, расширение
+        .html.gz у любого тела (DECISIONS block/click-pages). → имя файла с
+        телом (без пути)."""
+        name = f"_broken_{answer.key}_p{answer.page}_{answer.kind}_{answer.code}_{hms}"
         path = os.path.join(self.raw, name + ".html.gz")
         with gzip.open(path, "wt", encoding="utf-8") as fh:
             fh.write(answer.body)

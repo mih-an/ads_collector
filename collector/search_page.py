@@ -2,10 +2,11 @@
 search_page.py — контракт выдачи ЦИАН: ссылка на страницу поиска и разбор ответа.
 
 Получает кольцо полигона и номер страницы (page_url) или код, тело и
-заголовки ответа (classify_page → Classified). Отдаёт ссылку, класс ответа
-(OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью, totalOffers и
-объявления, id объявлений и оценку числа страниц; при листании кликом — что
-нажать и какой ответ ловить. Чистые функции: без сети, диска и часов.
+заголовки ответа (classify_page, у ответа на клик — classify_click →
+Classified). Отдаёт ссылку, класс ответа (OK, PAGE_END, BLOCK, API_CHANGED,
+NET_ERROR) с деталью, totalOffers и объявления, id объявлений и оценку числа
+страниц; при листании кликом — что нажать, какой ответ ловить и признаки
+конца выдачи. Чистые функции: без сети, диска и часов.
 """
 
 from __future__ import annotations
@@ -41,6 +42,15 @@ NEXT_BUTTON_TEXT = "Дальше"
 NEXT_PAGE_API = "search-offers"
 RECOMMENDATIONS_API = "get-infinite-search-result"
 API_REQUEST_KINDS = ("xhr", "fetch")
+# Ответ API на клик: объявления и счётчик (решение Андрея 5; путь —
+# допущение о данных, DECISIONS block/click-pages)
+CLICK_OFFERS_PATH = "data.offersSerialized"
+CLICK_TOTAL_PATH = "data.offerCount"
+# Конец выдачи при листании кликом (решение Андрея 6): нажимать нечего —
+# нет ни ссылки на следующую страницу, ни активной «Дальше»; клик принёс те
+# же id, что на прошлой странице
+NO_NEXT_PAGE = "no_next_page"
+SAME_IDS = "same_ids"
 
 CAPTCHA_MARKERS = (
     "geetest",
@@ -286,29 +296,72 @@ def classify_page(  # noqa: PLR0913
         return Classified(hv[0], hv[1], None, [])
     state = extract_initial_state(body)
     if state is None:
-        # порядок важен: капчу и Servicepipe проверяем только когда офферов нет,
-        # иначе слово "recaptcha" в постороннем скрипте страницы даст ложный
-        # BLOCK. Servicepipe — раньше капчи, для страховки: если на его
-        # странице окажется маркер капчи (в 2 образцах 10.11 его нет), капча
-        # дала бы пометку «билет сгорел» вопреки решению Андрея 10.11 (З155).
-        # Признак ищется во всём теле, не в начале.
-        if SERVICEPIPE_MARKER in body:
-            return Classified(BLOCK, "servicepipe", None, [])
-        if _has_captcha(body):
-            return Classified(BLOCK, "captcha", None, [])
-        return Classified(API_CHANGED, "no_initial_state", None, [])
+        return _without_offers(body, "no_initial_state")
     res = state["results"]
     return _finish(res.get("totalOffers"), res.get("offers") or [], page)
+
+
+def _without_offers(body: str, detail: str) -> Classified:
+    """Ответ 200 без объявлений: проверка Servicepipe → BLOCK servicepipe,
+    капча → BLOCK captcha, иначе API_CHANGED с деталью detail."""
+    # порядок важен: капчу и Servicepipe проверяем только когда офферов нет,
+    # иначе слово "recaptcha" в постороннем скрипте страницы даст ложный
+    # BLOCK. Servicepipe — раньше капчи, для страховки: если на его
+    # странице окажется маркер капчи (в 2 образцах 10.11 его нет), капча
+    # дала бы пометку «билет сгорел» вопреки решению Андрея 10.11 (З155).
+    # Признак ищется во всём теле, не в начале.
+    if SERVICEPIPE_MARKER in body:
+        return Classified(BLOCK, "servicepipe", None, [])
+    if _has_captcha(body):
+        return Classified(BLOCK, "captcha", None, [])
+    return Classified(API_CHANGED, detail, None, [])
+
+
+def classify_click(
+    code: int, body: str, neterr: str | None = None, page: int = 2
+) -> Classified:
+    """Ответ API выдачи на клик «следующая страница» (JSON): объявления —
+    data.offersSerialized, totalOffers — data.offerCount; коды и пустая
+    выдача — как у classify_page (21.92). → (вердикт, деталь, totalOffers,
+    offers)"""
+    if neterr:
+        return Classified(NET_ERROR, neterr, None, [])
+    # 3xx ответа API тоже сюда: location разбору клика не передаётся
+    # (DECISIONS block/click-pages, ревью тестов П3)
+    hv = _classify_http(code)
+    if hv:
+        return Classified(hv[0], hv[1], None, [])
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return _without_offers(body, "click_not_json")
+    offers = get_path(payload, CLICK_OFFERS_PATH)
+    if not isinstance(offers, list):
+        return Classified(API_CHANGED, "no_offers_serialized", None, [])
+    return _finish(get_path(payload, CLICK_TOTAL_PATH), offers, page)
+
+
+def _raw_id(item):
+    """Сырой id объявления (id или cianId) как отдал ЦИАН; нет — None."""
+    if not isinstance(item, dict):
+        return None
+    return item.get("id") or item.get("cianId")
 
 
 def offer_ids(offers: list) -> list[int]:
     out = []
     for o in offers:
-        if isinstance(o, dict):
-            oid = o.get("id") or o.get("cianId")
-            if oid is not None:
-                out.append(int(oid))
+        oid = _raw_id(o)
+        if oid is not None:
+            out.append(int(oid))
     return out
+
+
+def raw_ids(offers: list) -> frozenset:
+    """Множество сырых id страницы — для сверки «те же id» при листании
+    кликом: без превращения в число, ошибку разбора id ловит обход после
+    записи файла [E-22] (DECISIONS block/click-pages)."""
+    return frozenset(_raw_id(o) for o in offers) - {None}
 
 
 def pages_for(total: int | None) -> int:

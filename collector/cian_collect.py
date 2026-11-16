@@ -230,11 +230,13 @@ def make_chrome_browser(
 class BrowserChoice:
     """Браузер флага --browser: library — модуль, который должен быть
     установлен (None — хватает стандартной библиотеки); ticket_files — билет
-    из файлов --cookies и --ua (их проверяет check_args); make — сборка."""
+    из файлов --cookies и --ua (их проверяет check_args); make — сборка;
+    clicks — умеет кликать (нужно --page-loader click, проверяет check_args)."""
 
     library: str | None
     ticket_files: bool
     make: BrowserMaker
+    clicks: bool = False
 
 
 # Одно место для списка браузеров, по образцу TRANSPORTS: из него choices
@@ -243,7 +245,7 @@ class BrowserChoice:
 BROWSERS: dict[str, BrowserChoice] = {
     "http": BrowserChoice(library=None, ticket_files=True, make=make_http_browser),
     "chrome": BrowserChoice(
-        library="playwright", ticket_files=False, make=make_chrome_browser
+        library="playwright", ticket_files=False, make=make_chrome_browser, clicks=True
     ),
 }
 
@@ -261,9 +263,18 @@ PageLoaderMaker = Callable[[Browser, Settings, random.Random, Clock], PageLoader
 def make_url_loader(
     browser: Browser, settings: Settings, rnd: random.Random, clock: Clock
 ) -> PageLoader:
-    """Загрузчик «по ссылке» над браузером; Settings, rnd и часы ему пока не
-    нужны — сигнатура общая для всех создателей PAGE_LOADERS."""
-    return page_loader.UrlPageLoader(browser)
+    """Загрузчик «по ссылке» над браузером; пауза — сон часов обхода (21.97:
+    эталоны ночей не меняются). Settings и rnd не нужны — сигнатура общая
+    для всех создателей PAGE_LOADERS."""
+    return page_loader.UrlPageLoader(browser, clock.sleep)
+
+
+def make_click_loader(
+    browser: Browser, settings: Settings, rnd: random.Random, clock: Clock
+) -> PageLoader:
+    """Загрузчик «кликом» над браузером, который умеет кликать (проверка —
+    check_args); пауза — прокрутка страницы браузером."""
+    return page_loader.ClickPageLoader(browser)
 
 
 # Одно место для списка загрузчиков страницы, по образцу TRANSPORTS: из него
@@ -271,6 +282,7 @@ def make_url_loader(
 # вызова: так 21.84 добавляет в него свой создатель.
 PAGE_LOADERS: dict[str, PageLoaderMaker] = {
     "url": make_url_loader,
+    "click": make_click_loader,
 }
 
 
@@ -333,12 +345,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
-    паузы старта (21.45, 21.81, 21.82, 21.87)."""
+    паузы старта (21.45, 21.81, 21.82, 21.84, 21.87)."""
     # прогона без запросов нет: smoke в законченном прогоне — всегда словарь
     # (21.45; DECISIONS, block/simplify-2, ревью PR #4)
     if args.budget < 1:
         ap.error(f"--budget {args.budget}: нужен хотя бы 1 запрос")
     browser = BROWSERS[args.browser]
+    if args.page_loader == "click" and not browser.clicks:
+        clickers = ", ".join(name for name, choice in BROWSERS.items() if choice.clicks)
+        ap.error(
+            f"--page-loader click: браузер --browser {args.browser} кликать не "
+            f"умеет (умеют: {clickers})"
+        )
     libraries = (
         ("--transport", args.transport, TRANSPORTS[args.transport].library),
         ("--browser", args.browser, browser.library),

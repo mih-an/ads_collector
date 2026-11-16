@@ -53,7 +53,10 @@ class Browser(Protocol):
   (раздел 3). Загрузчик страницы «по ссылке» всегда зовёт `fetch(url, referer)`:
   у страницы 1 `referer` — `None`, у страницы N — ссылка страницы N−1.
 - `click_and_catch(target, wanted)` и `scroll_page(seconds)` — клик и
-  прокрутка на открытой странице (раздел 4а). Реализация, которая этого не
+  прокрутка на открытой странице (раздел 4а). Их зовёт загрузчик «кликом»
+  `ClickPageLoader` (`--page-loader click`): страница 1 и повтор после сбоя
+  — `fetch` по ссылке, следующая страница — `click_and_catch`, пауза между
+  запросами — `scroll_page` (21.95, 21.97). Реализация, которая этого не
   умеет (`HttpBrowser`: у транспорта нет страницы), бросает
   `BrowserCannotError`; в тексте — имя реализации и действие
   (`HttpBrowser не умеет click_and_catch`). Текст — в одном помощнике
@@ -441,7 +444,10 @@ Playwright `FakePage`. Устройство стенда:
 4. Словарь `cian_collect.BROWSERS` — «имя → `BrowserChoice(library,
    ticket_files, make)`»: `"http"` (`None`, `True`, `make_http_browser`) и
    `"chrome"` (`"playwright"`, `False`, `make_chrome_browser`); флаг
-   `--browser chrome` берёт choices из словаря.
+   `--browser chrome` берёт choices из словаря. С block/click-pages у выбора
+   есть поле `clicks` (умеет кликать: `http` — ложь, `chrome` — истина);
+   `--page-loader click` с браузером без кликов — код 2 в `check_args` до
+   паузы старта (21.84).
 5. Ранняя проверка в `check_args` — код 2 до паузы старта: один цикл по
    библиотекам `--transport` и `--browser` (нет библиотеки — ошибка с
    флагом, именем библиотеки и `pip install -r requirements.txt`, как

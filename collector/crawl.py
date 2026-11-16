@@ -113,8 +113,8 @@ class TileState:
 
 @dataclass
 class PageTask:
-    """Задача обхода: поля в порядке ключей задачи в done (plan.json); ключ
-    kind в done не поле задачи, а run_folder.PAGE_KIND (task_entry)."""
+    """Задача обхода; порядок ключей задачи в done (plan.json) задаёт
+    task_entry; kind — как пришла страница последней попытки (ssr или click)."""
 
     sector: str
     page: int
@@ -122,11 +122,14 @@ class PageTask:
     attempts: int = 0
     state: str = "pending"
     detail: str = ""
+    kind: str = run_folder.PAGE_KIND
 
 
 @dataclass
 class CrawlState:
-    """Изменяемое состояние ночи; pending — очередь ключей клеток."""
+    """Изменяемое состояние ночи; pending — очередь ключей клеток; end_notes —
+    клетки, листание которых кликом кончилось без кнопки или на тех же id, и
+    причина (пометка итога в stdout, в summary.json не идёт)."""
 
     spent: int = 0
     stopped: str | None = None
@@ -136,6 +139,7 @@ class CrawlState:
     split_events: list[dict] = field(default_factory=list)
     done: list[PageTask] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
+    end_notes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -349,7 +353,7 @@ def task_entry(task: PageTask) -> dict:
     return {
         "sector": task.sector,
         "page": task.page,
-        "kind": run_folder.PAGE_KIND,
+        "kind": task.kind,
         "origin": task.origin,
         "attempts": task.attempts,
         "state": task.state,
@@ -462,8 +466,12 @@ def ticket_text(has_ticket: bool, age_h: float | None) -> str:
     return f"есть, {age_h} ч"
 
 
-def summary_text(report: dict, path: str) -> str:
-    """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
+def summary_text(
+    report: dict, path: str, end_notes: dict[str, str] | None = None
+) -> str:
+    """Текст итога прогона: шапка, деления, пометки конца листания кликом
+    end_notes (клетка → причина, решение Андрея 6) и клетки по убыванию
+    totalOffers."""
     ticket = ticket_text(report["ticket"], report["cookie_age_h"])
     # первая строка пустая: она отделяет итог от строк stdout выше
     lines = [
@@ -481,6 +489,8 @@ def summary_text(report: dict, path: str) -> str:
             f"РАЗРЕЗАНА {ev['parent']} (total={ev['total_offers']}) → "
             f"{', '.join(ev['children'])}"
         )
+    for key, why in (end_notes or {}).items():
+        lines.append(f"КОНЕЦ КЛИКОМ {key}: {why}")
     lines.append(
         f"секторов затронуто {report['sectors_touched']}, "
         f"полностью выкачано {report['sectors_complete']}, "
@@ -511,8 +521,9 @@ class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
     (say); страницы и билет — только у загрузчика страницы loader (готовый
-    загрузчик из cian_collect.build_crawl), часы и сон — через clock,
-    случайность — rnd."""
+    загрузчик из cian_collect.build_crawl), паузы между запросами — у него же
+    (stay_on_page), часы и сон перед повтором — через clock, случайность —
+    rnd."""
 
     def __init__(
         self,
@@ -656,6 +667,7 @@ class Crawl:
         self.state.spent += 1
         task.attempts += 1
         task.detail = answer.detail
+        task.kind = answer.kind
         self._log_request(answer)
         retries = len(self.settings.net_retry_pauses)
         task.state = task_state(answer.verdict, task.attempts, retries)
@@ -710,6 +722,9 @@ class Crawl:
             return
         tile.served_end = True
         self.log(event="sector_end", sector=key, why=why)
+        # конец листания кликом — пометка в итоге stdout (решение Андрея 6)
+        if why in (search_page.NO_NEXT_PAGE, search_page.SAME_IDS):
+            self.state.end_notes[key] = why
 
     # ── один запрос ───────────────────────────────────────────────
 
@@ -734,6 +749,7 @@ class Crawl:
                 answer.page,
                 {"totalOffers": answer.total, "offers": answer.offers},
                 answer.body,
+                answer.body_ext,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
             name = self.folder.write_broken(answer, ua, self._stamp_hms())
@@ -818,13 +834,14 @@ class Crawl:
     def sleep_between(self, factor: float = 1.0) -> None:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
         случайности (точка подмены теста 21.36); общий помощник
-        pause_between_pages и pause_between_tiles."""
+        pause_between_pages и pause_between_tiles. Длительность считает
+        обход, проводит её загрузчик на открытой странице (21.97)."""
         if not self.budget_left():
             return
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
-        self.clock.sleep(self.rnd.uniform(low, high))
+        self.loader.stay_on_page(self.rnd.uniform(low, high))
 
     def pause_between_pages(self) -> None:
         """Обычная пауза между запросами: средний интервал ± разброс."""
@@ -884,7 +901,7 @@ class Crawl:
             n=self.state.spent,
             sector=answer.key,
             page=answer.page,
-            kind=run_folder.PAGE_KIND,
+            kind=answer.kind,
             http=answer.code,
             ms=int(answer.ms),
             offers=len(answer.ids),
@@ -922,4 +939,6 @@ class Crawl:
 
     def print_summary(self) -> None:
         """Итог прогона в stdout."""
-        run_folder.say(summary_text(self.report, self.folder.path))
+        run_folder.say(
+            summary_text(self.report, self.folder.path, self.state.end_notes)
+        )
