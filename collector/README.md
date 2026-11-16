@@ -19,12 +19,13 @@ land-monitor): тот же
 
 | Файл | Что делает |
 |---|---|
-| `cian_collect.py` | запуск и края: разбирает аргументы в `Settings` (`read_settings`; в том числе `--transport`, `--browser`, `--cookies`, `--ua`); `build_crawl` выбирает seed, собирает часы `Clock`, случайность и файл клеток `TilesFile`, печатает сетку, делает паузу старта (`pause_before_start`), затем зовёт край `enter_cian` и отдаёт обходу готовый источник страниц; `enter_cian` — две строки: браузер из словаря `BROWSERS` по флагу `--browser` и над ним источник страниц из словаря `PAGE_SOURCES` (умолчание `PAGE_SOURCE` — `url`, флага запуска нет, пока реализация одна); сборка `HttpBrowser` — `make_http_browser`: входной билет (`read_ticket` → `Ticket`), транспорт (`make_transport`), браузер; `main` — четыре строки: настройки, сборка, `collect`, итог |
+| `cian_collect.py` | запуск и края: разбирает аргументы в `Settings` (`read_settings`; в том числе `--transport`, `--browser`, `--cookies`, `--ua`, `--chrome-port`, `--chrome-path`, `--chrome-profile`); ранние проверки `check_args` — код 2 до паузы старта (бюджет, библиотеки `--transport` и `--browser`, файлы билета у браузера `http`); `build_crawl` выбирает seed, собирает часы `Clock`, случайность и файл клеток `TilesFile`, печатает сетку, делает паузу старта (`pause_before_start`), затем зовёт край `enter_cian` и отдаёт обходу готовый источник страниц; `enter_cian` — две строки: браузер из словаря `BROWSERS` (`BrowserChoice`: библиотека, файлы билета, сборка) по флагу `--browser` и над ним источник страниц из словаря `PAGE_SOURCES` (умолчание `PAGE_SOURCE` — `url`, флага запуска нет, пока реализация одна); сборка `HttpBrowser` — `make_http_browser`: входной билет (`read_ticket` → `Ticket`), транспорт (`make_transport`), браузер; сборка `ChromeBrowser` — `make_chrome_browser`: вкладка Chrome (`chrome_browser.connect_chrome_tab`), билет из неё (`read_chrome_ticket`), браузер; `main` — четыре строки: настройки, сборка, `collect`, итог |
 | `transport.py` | интерфейс сети и общие помощники реализаций: `Transport` (один метод `get`), ответ как с провода `HttpReply`, сбой `NetworkFailure`, тайм-аут `HTTP_TIMEOUT_S`, разбор строки кук, заголовки в нижнем регистре; без сети |
 | `urllib_transport.py` | транспорт на urllib (по умолчанию): банк кук с ротацией из `Set-Cookie`, без редиректов, тайм-аут; приносит байты, не распаковывая |
 | `httpx_transport.py` | транспорт на внешней библиотеке httpx (`--transport httpx`): то же поведение, что у urllib; httpx импортируется только здесь |
 | `browser.py` | интерфейс браузера: `Browser` (билет `ticket` и `fetch(url, referer)` → `FetchedPage`), входной билет `Ticket`, ответ `FetchedPage`; лист пакета, без сети, диска и сжатия; контракт для реализаций — `docs/reference/browser_contract.md` |
 | `http_browser.py` | браузер над транспортом `HttpBrowser` — запрос страницы поиска над любым транспортом: заголовки браузера, распаковка тела, длительность запроса; сбой сети и битое сжатие ответа 2xx — ответ с кодом 0 и деталью |
+| `chrome_browser.py` | браузер над вкладкой Chrome `ChromeBrowser` (`--browser chrome`): один `fetch` — один переход вкладки, тело — ответ сервера, у редиректа — первый ответ цепочки, тайм-аут и `net::ERR_*` — ответ с кодом 0; функция-край `connect_chrome_tab` подключается к Chrome по отладочному порту на 127.0.0.1, а если порт молчит — запускает Chrome со своей папкой профиля и ждёт порт; playwright импортируется только внутри неё, поэтому модуль импортируется и без playwright |
 | `page_source.py` | источник страниц: интерфейс `PageSource` (билет `ticket` и `get_page(ключ клетки, кольцо, страница)` → `run_folder.PageAnswer`) и реализация «по ссылке» `UrlPageSource`: ссылка страницы и Referer, запрос через интерфейс `Browser`, разбор ответа (`search_page.classify_page`); один `get_page` — один запрос, повторы — в обходе; вторая реализация — новый файл; в `cian_collect.py` — строка словаря `PAGE_SOURCES`, флаг, проверка библиотеки и сборка источника; `crawl.py` не трогается |
 | `crawl.py` | обход: данные (`Settings` с умолчаниями чисел правил ночи, `Clock`, состояние клеток и ночи), правила обхода функциями без внешнего мира (деление, паузы, «билет сгорел», итог пробы `smoke_entry`, учёт страницы, дочитанность, ступень, словари `plan.json` и `summary.json`, текст итога `summary_text`) и класс `Crawl`: `collect` — открыть прогон, очередь клеток (проба — страница 1 первой клетки), `download_tile` и `download_page` (листание, повторы; страница — одним вызовом источника страниц `get_page`), деление на четверти, бюджет, стоп, Ctrl+C; итог — `report` и `print_summary` |
 | `search_page.py` | контракт ЦИАН: ссылка на страницу поиска, разбор `initialState`, обязательные поля, классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`), id объявлений, число страниц; без сети и диска |
@@ -38,7 +39,9 @@ land-monitor): тот же
 сети (`HTTP_TIMEOUT_S`) и домен кук билета (`COOKIE_DOMAIN`) — в
 `transport.py`; умолчания аргументов запуска
 (`RUNS_DIR`, `BUDGET`, `WINDOW_HOURS`, `TRANSPORT`, `BROWSER`,
-`COOKIES_FILE`, `UA_FILE`) — в `cian_collect.py`; потолок страниц (`MAX_PAGES`) и размер
+`COOKIES_FILE`, `UA_FILE`, `CHROME_PORT`, `CHROME_PATH`, `CHROME_PROFILE`)
+и настройки перехода и ожидания Chrome (`GOTO_TIMEOUT_MS`, `WAIT_UNTIL`,
+`PORT_WAIT_S`, `POLL_S`) — в `cian_collect.py`; потолок страниц (`MAX_PAGES`) и размер
 страницы выдачи (`OFFERS_PER_PAGE`) — в `search_page.py`.
 
 Слово `calib` в путях и слово «ступень» (`ladder`) в итоге — наследие
@@ -49,7 +52,7 @@ land-monitor): тот же
 Только как модуль, из папки, где лежит `collector/`:
 
 ```
-python3 -m collector.cian_collect --geojson <файл клеток> [--budget N] [--window-hours H] [--runs-dir runs] [--smoke-only] [--no-start-delay] [--seed N] [--transport urllib|httpx] [--browser http] [--cookies <файл кук>] [--ua <файл UA>]
+python3 -m collector.cian_collect --geojson <файл клеток> [--budget N] [--window-hours H] [--runs-dir runs] [--smoke-only] [--no-start-delay] [--seed N] [--transport urllib|httpx] [--browser http|chrome] [--cookies <файл кук>] [--ua <файл UA>] [--chrome-port N] [--chrome-path <программа Chrome>] [--chrome-profile <папка профиля>]
 ```
 
 `--geojson` обязательный. `--budget` — не меньше 1 (иначе выход с кодом 2 до
@@ -63,13 +66,76 @@ python3 -m collector.cian_collect --geojson <файл клеток> [--budget N]
   сборщик с транспортом по умолчанию работает голым `python3`, а
   `--transport httpx` без неё сразу выходит с кодом 2 и подсказкой установки.
 - `--browser` — реализация браузера из словаря `cian_collect.BROWSERS`:
-  сейчас одна, `http` (по умолчанию, `HttpBrowser` над транспортом
-  `--transport`); незнакомое имя — выход argparse с кодом 2.
-- `--cookies`, `--ua` — пути к файлам входного билета. Без флагов — как
-  раньше: `cookies.txt` и `ua.txt` из папки запуска (пустой или
-  отсутствующий `cookies.txt` — без билета). Названный флагом, но
-  отсутствующий или пустой файл (0 байт или одни пробелы), а также папка
-  вместо файла — выход с кодом 2, в сообщении флаг и путь.
+  `http` (по умолчанию, `HttpBrowser` над транспортом `--transport`) или
+  `chrome` (`ChromeBrowser` над вкладкой Chrome — раздел «Запуск с Chrome
+  на Маке»); незнакомое имя — выход argparse с кодом 2. `chrome` требует
+  внешнюю библиотеку playwright (`requirements.txt`): без неё — сразу
+  выход с кодом 2 и подсказкой установки.
+- `--cookies`, `--ua` — пути к файлам входного билета (только у
+  `--browser http`). Без флагов — как раньше: `cookies.txt` и `ua.txt` из
+  папки запуска (пустой или отсутствующий `cookies.txt` — без билета).
+  Названный флагом, но отсутствующий или пустой файл (0 байт или одни
+  пробелы), а также папка вместо файла — выход с кодом 2, в сообщении флаг
+  и путь.
+- `--chrome-port`, `--chrome-path`, `--chrome-profile` — только у
+  `--browser chrome`: отладочный порт Chrome (умолчание 9222), программа
+  Chrome (умолчание `/Applications/Google Chrome.app/Contents/MacOS/Google
+  Chrome`) и папка профиля, с которой сборщик запускает Chrome (умолчание
+  `chrome-profile` в папке запуска; хранится абсолютным путём).
+
+## Запуск с Chrome на Маке
+
+Сборщик ходит на ЦИАН через вкладку настоящего Chrome (`--browser chrome`):
+куки, UA и заголовки — самого Chrome. Запускает только Андрей, вручную
+(правило 6 ниже). Нужна библиотека playwright из `requirements.txt` (в
+`.venv` репозитория она есть); команда `playwright install` не нужна —
+сборщик подключается к установленному Chrome.
+
+Из корня репозитория (`python3` — тот, где стоит playwright; в репозитории
+это `.venv/bin/python`):
+
+```
+python3 -m collector.cian_collect --browser chrome --chrome-profile ~/cian_chrome/profile --geojson ~/cian_chrome/cian_collect_tiles.geojson --runs-dir ~/cian_chrome/runs --smoke-only
+```
+
+Без `--smoke-only` — обычный прогон (с паузой старта до 40 минут; убрать —
+`--no-start-delay`). Папка профиля — отдельная папка **вне репозитория**,
+не основной профиль Chrome: в ней живут куки ЦИАН (секрет).
+
+Что сборщик делает сам:
+
+1. Подключается к Chrome по отладочному порту `--chrome-port` (9222) на
+   127.0.0.1. Если Chrome с этим портом уже открыт — берёт его первую
+   вкладку (нет вкладок — открывает новую).
+2. Если порт молчит — запускает Chrome командой `<--chrome-path>
+   --remote-debugging-port=<порт> --user-data-dir=<--chrome-profile>` и
+   ждёт порт до 30 секунд. Chrome запускается отдельно от сборщика и после
+   прогона остаётся открытым: в нём можно работать руками (например,
+   пройти проверку ЦИАН, если она появилась).
+3. Билет берёт из вкладки: UA — `navigator.userAgent`, куки — те, что
+   Chrome послал бы на `https://www.cian.ru`; возраста у таких кук нет — в
+   итоге «билет: есть» без часов, в `plan.json` и `summary.json`
+   `cookie_age_h` — `null`. В первый раз профиль пуст — билета нет;
+   откройте в этом Chrome `https://www.cian.ru`, и со следующего запуска
+   куки будут.
+
+`--cookies`, `--ua` и `--transport` с `--browser chrome` не используются:
+файлы билета не проверяются и не читаются, сеть — у самого Chrome.
+
+Если сборщик вышел с `--browser chrome: Chrome не открыл порт …` или
+`--browser chrome: не удалось запустить Chrome …`:
+
+- проверьте `--chrome-path`: по этому пути должна лежать программа Chrome
+  (на Маке — `…/Google Chrome.app/Contents/MacOS/Google Chrome`, а не сама
+  папка `.app`);
+- Chrome с этой папкой профиля уже открыт без отладочного порта — закройте
+  это окно Chrome (Cmd+Q) и запустите сборщик снова: второй Chrome с тем же
+  профилем порт не откроет;
+- порт занят другой программой — укажите другой `--chrome-port`
+  (например, 9333);
+- `--chrome-profile` — отдельная папка, не основной профиль Chrome
+  (`~/Library/Application Support/Google/Chrome`): с основным профилем
+  Chrome отладочный порт не открывает.
 
 ## Проба с Mac своим билетом
 
@@ -225,7 +291,7 @@ python3 -m collector.cian_collect --geojson <файл клеток> [--budget N]
 - Локально (сессии разработки) — только тесты pytest с подменённой сетью
   (решение Андрея 10.11): `tests/test_collector.py`,
   `tests/test_collector_transport.py`, `tests/test_collector_browser.py`,
-  `tests/test_collector_nights.py`,
+  `tests/test_collector_chrome_browser.py`, `tests/test_collector_nights.py`,
   `tests/test_collector_status.py`.
 
 ## 45 секторов — заморожено

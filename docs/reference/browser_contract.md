@@ -2,23 +2,27 @@
 
 Что должна уметь любая реализация «браузера» сборщика и как её проверить.
 Документ совпадает с кодом (`collector/browser.py`, `collector/http_browser.py`,
-`collector/cian_collect.py`) и набором тестов 21.86
-(`tests/test_collector_browser.py`); расхождение — дефект, решает тест-план
-(`docs/TEST_PLAN.md`, кейсы 21.86 и 21.87). Решения — `docs/DECISIONS.md`,
-строки block/browser-interface.
+`collector/chrome_browser.py`, `collector/cian_collect.py`) и тестами 21.86
+(`tests/test_collector_browser.py`), 21.88 и 21.89
+(`tests/test_collector_chrome_browser.py`), 21.87 и 21.90
+(`tests/test_collector.py`); расхождение — дефект, решает тест-план
+(`docs/TEST_PLAN.md`). Решения — `docs/DECISIONS.md`, строки
+block/browser-interface и block/chrome-insert.
 
 ## 1. Для кого
 
-- **Исполнитель `ChromeBrowser`** — пишет вторую реализацию (Playwright,
-  подключение к открытому Chrome) по этому документу, не читая остальной
-  код сборщика. Ему нужны разделы 2–7.
-- **Тимлид, который вставит готовый класс** — раздел 8: куда положить файл,
-  что дописать в `cian_collect.py` (сборка, строка `BROWSERS`, ранняя
-  проверка playwright), что поправить в страже, тест-плане и документах.
+- **Автор новой реализации** — пишет её по этому документу, не читая
+  остальной код сборщика. Ему нужны разделы 2–7. Так написан
+  `ChromeBrowser` (Playwright, подключение к открытому Chrome).
+- **Тимлид, который вставляет готовый класс** — раздел 8: как вставлен
+  `ChromeBrowser` (сборка, строка `BROWSERS`, ранняя проверка playwright,
+  страж, тест-план, документы).
 
 Обход (`crawl.py`) и источник страниц (`page_source.py`) знают только
-интерфейс `Browser`; ни одна их строка при вставке второй реализации не
-меняется. `HttpBrowser` тоже не меняется.
+интерфейс `Browser`; `page_source.py` и `HttpBrowser` при вставке второй
+реализации не менялись. В `crawl.py` при вставке `ChromeBrowser` добавлены
+только три поля `Settings` (флаги `--chrome-*`) и текст итога «билет: есть»
+для билета без возраста (раздел 5); правила обхода не менялись.
 
 ## 2. Интерфейс
 
@@ -47,8 +51,8 @@ class Browser(Protocol):
 `cian_collect`, `http_browser`, реализации транспорта. Время — только через
 переданную функцию `monotonic` (раздел 3), без `time`, `datetime.now` и
 `random`; печати в stdout и записи на диск нет. Единственное исключение —
-функция-край подключения к Chrome (раздел 6): процесс Chrome и ожидание
-порта живут только в ней; что ей можно и нельзя — там же.
+функция-край подключения к Chrome `connect_chrome_tab` (раздел 6): процесс
+Chrome и ожидание порта живут только в ней; что ей можно и нельзя — там же.
 
 ## 3. FetchedPage по полям
 
@@ -58,9 +62,9 @@ class Browser(Protocol):
 |---|---|---|
 | `code` | `int` | HTTP-код ответа; **0 — сбой сети** (ответа нет) |
 | `body` | `str` | тело ответа текстом (уже распакованное); при сбое — `""` |
-| `size` | `int` | байт тела, каким его видит реализация: у `HttpBrowser` — байт с провода (сжатых); при сбое — 0. Идёт в `bytes=` строки `night.log` |
+| `size` | `int` | байт тела, каким его видит реализация: у `HttpBrowser` — байт с провода (сжатых), у `ChromeBrowser` — байт `response.body()` (распакованных); при сбое — 0. Идёт в `bytes=` строки `night.log` |
 | `ms` | `float` | длительность в миллисекундах по переданной функции `monotonic` (см. ниже); идёт в `ms=` строки `night.log` |
-| `neterr` | `str` или `None` | `None`, если ответ пришёл (любой код, в том числе 403 и 500); при сбое сети — непустая строка в одну строку, слова свои (у `HttpBrowser` — `timeout`, `urlerror:<текст>`, `oserror:<текст>`, `decode:<текст>`). Становится деталью `NET_ERROR` в `night.log` и `plan.json` |
+| `neterr` | `str` или `None` | `None`, если ответ пришёл (любой код, в том числе 403 и 500); при сбое сети — непустая строка в одну строку, слова свои (у `HttpBrowser` — `timeout`, `urlerror:<текст>`, `oserror:<текст>`, `decode:<текст>`; у `ChromeBrowser` — первая непустая строка текста ошибки Playwright, текста нет — имя класса ошибки). Становится деталью `NET_ERROR` в `night.log` и `plan.json` |
 | `headers` | `dict[str, str]` | заголовки ответа, **имена в нижнем регистре** (`location`, `waf-verdict`, `server`); повторный заголовок — одно значение; при сбое — `{}` |
 
 **Длительность.** Реализация получает функцию `monotonic` (секунды,
@@ -89,9 +93,10 @@ class Browser(Protocol):
    Андрея 16.11: не ходить по редиректу в Chrome — перехват запросов, а
    поведение по отношению к ЦИАН решает он.
 4. **Тело ответа 3xx.** `HttpBrowser` отдаёт его как прислал сервер
-   (поведение прежнее); `ChromeBrowser` — пустое. Общий набор 21.86 тело 3xx
-   не проверяет. Решение Андрея 16.11: начало тела BLOCK-редиректа идёт в
-   `raw/_block_*.txt` (21.47), у `ChromeBrowser` там будет `<пустое тело>`.
+   (поведение прежнее); `ChromeBrowser` — пустое, `size` 0. Общий набор
+   21.86 тело 3xx не проверяет. Решение Андрея 16.11: начало тела
+   BLOCK-редиректа идёт в `raw/_block_*.txt` (21.47), у `ChromeBrowser` там
+   будет `<пустое тело>`.
 5. **`waf-verdict` доходит без изменений**: заголовок `WAF-Verdict` ответа —
    ключ `waf-verdict` с тем же значением. По нему обход узнаёт отвод на
    капчу (`BLOCK captcha_redirect`).
@@ -127,49 +132,65 @@ class Browser(Protocol):
 - **`plan.json`**: `user_agent` ← `ua`, `ticket` ← `has_ticket`,
   `cookie_age_h` ← `age_h`.
 - **`summary.json`**: `ticket` ← `has_ticket`, `cookie_age_h` ← `age_h`;
-  текст итога в stdout — «билет: есть, N ч» или «билет: нет».
+  текст итога в stdout (`crawl.ticket_text`) — «билет: есть, N ч», «билет:
+  есть» (возраста нет) или «билет: нет».
 - **`night.log`**, строка `event=start`: `ticket=1|0`, `cookie_age_h=`.
 - **`raw/_block_*.txt` и `raw/_broken_*.note.txt`**: `ua=` ← `ua`.
 
 У `HttpBrowser` билет собирает `cian_collect.make_http_browser` из файлов
 `cookies.txt` / `ua.txt` (`read_ticket`): UA пустого файла — случайный из
 списка, возраст кук — по времени изменения файла. У `ChromeBrowser` билет
-приходит в конструктор готовым (раздел 6); содержимое — решение Андрея
-16.11:
+приходит в конструктор готовым (раздел 6); собирает его край
+`cian_collect.read_chrome_ticket` по вкладке `tab.page` (решение Андрея
+16.11):
 
-- `ua` — User-Agent открытого Chrome;
-- `has_ticket` — в профиле Chrome есть cookies домена `cian.ru`
-  (`cookie_header` — строка этих cookies);
+- `ua` — `navigator.userAgent` вкладки (`tab.page.evaluate`);
+- `cookie_header` — куки, которые Chrome послал бы на
+  `https://www.cian.ru` (`tab.page.context.cookies(search_page.CIAN_BASE_URL)`),
+  строкой `имя=значение` через «; » в порядке списка; кук нет — `None`
+  (`has_ticket` ложь); своего правила домена нет, куки других поддоменов
+  (например, `api.cian.ru`) в билет не входят;
 - `age_h = None`: возраст cookies не считаем — Chrome обновляет их сам,
   даты создания у cookie нет.
 
 Для обхода это значит: `cookie_age_h` в `plan.json`, `summary.json` и
-строке `start` — `null` / `None`; текст итога при билете — «билет: есть,
-None ч» (`crawl.summary_text` берёт `cookie_age_h` как есть, правка текста —
-дело вставки); пометка «билет сгорел» ставится по `has_ticket`, возраст в
-ней не участвует (`crawl.burned_mark`). Собирает билет по этим правилам
-`make_chrome_browser` (раздел 8) — по вкладке, которую отдала функция-край;
-`ChromeBrowser` его только хранит и отдаёт.
+строке `start` — `null` / `None`; текст итога при билете — «билет: есть»
+без часов; пометка «билет сгорел» ставится по `has_ticket`, возраст в
+ней не участвует (`crawl.burned_mark`). `ChromeBrowser` билет только
+хранит и отдаёт.
 
 ## 6. Только для ChromeBrowser
 
-**Что пишет исполнитель** — файл `collector/chrome_browser.py` из двух частей:
+Файл `collector/chrome_browser.py` из двух частей:
 
-- **Класс `ChromeBrowser(вкладка, ticket, monotonic, тайм-аут перехода,
-  событие загрузки)`.** Нижний мир — вкладка Playwright — приходит
-  аргументом конструктора, как транспорт у `HttpBrowser`; класс сам ничего
-  не запускает и ни к чему не подключается. Тайм-аут перехода и событие
+- **`ChromeTab(page, timeout_error, error)`** — frozen dataclass: вкладка
+  Playwright и два класса её ошибок (`playwright.sync_api.TimeoutError` и
+  `Error`). Классы едут вместе с вкладкой, потому что модуль не
+  импортирует playwright на верхнем уровне, а `fetch` ловит именно ошибки
+  Playwright узким `except`.
+- **Класс `ChromeBrowser(tab, ticket, monotonic, goto_timeout_ms,
+  wait_until)`.** Нижний мир — `ChromeTab` — приходит аргументом
+  конструктора, как транспорт у `HttpBrowser`; класс сам ничего не
+  запускает и ни к чему не подключается. Тайм-аут перехода и событие
   загрузки страницы — настройки перехода: `fetch` передаёт их в
-  `goto(url, wait_until=<событие загрузки>, timeout=<тайм-аут перехода>)`.
-  Без `time`, `random`, диска и печати (раздел 2).
-- **Функция-край подключения к Chrome** — отдельная функция, которая
-  подключается к открытому Chrome по отладочному порту, а если порт не
-  отвечает — запускает Chrome обычной командой со своей папкой профиля и
-  тем же портом, ждёт порт и подключается (решение Андрея 16.11); отдаёт
-  вкладку для конструктора. «Порт не отвечает» — неудача подключения
-  Playwright (`connect_over_cdp`), отдельной проверки порта нет. Настройки
-  — простыми аргументами: порт, путь к Chrome, папка профиля, тайм-аут
-  ожидания порта. Чисел в коде нет.
+  `tab.page.goto(url, wait_until=<событие загрузки>, timeout=<тайм-аут
+  перехода>)`. Без `time`, `random`, диска и печати (раздел 2).
+- **Функция-край `connect_chrome_tab(port, chrome_path, profile_dir,
+  port_wait_s, poll_s)` → `ChromeTab`** — подключается к открытому Chrome
+  по отладочному порту на `http://127.0.0.1:<порт>` (не `localhost`:
+  Chrome слушает порт на 127.0.0.1, а `localhost` может уйти в IPv6 —
+  решение Андрея 16.11), а если порт не отвечает — запускает Chrome
+  командой `[chrome_path, --remote-debugging-port=<порт>,
+  --user-data-dir=<profile_dir>]` в отдельной сессии (stdout и stderr — в
+  `DEVNULL`), ждёт порт не дольше `port_wait_s`, проверяя раз в `poll_s`
+  секунд, и подключается (решение Андрея 16.11). Вкладка — первая
+  открытая в контексте профиля, нет ни одной — новая. «Порт не отвечает» —
+  неудача Playwright `connect_over_cdp` (его `Error`), отдельной проверки
+  порта нет; не-Playwright ошибка подключения летит наружу. Настройки —
+  простыми аргументами, чисел в коде нет.
+  - **Ошибки:** не дождались порта — `ChromeConnectError` с портом, путём
+    и папкой профиля; `Popen` бросил `OSError` (нет файла Chrome) —
+    `ChromeConnectError` с путём. В обоих случаях Playwright остановлен.
   - **Можно:** `subprocess` — запуск Chrome; `time` — ожидание порта;
     `playwright` — **только внутри этой функции**, не на верхнем уровне
     модуля: модуль `chrome_browser` импортируется без установленного
@@ -177,36 +198,50 @@ None ч» (`crawl.summary_text` берёт `cookie_age_h` как есть, пр�
   - **Нельзя:** `socket`, `urllib.request`, `urllib.error`, `http*` — они
     только в `urllib_transport` (страж 21.78); печать; диск — кроме того,
     что Chrome сам делает со своей папкой профиля.
-  - Процесс Chrome и ожидание порта — только в этой функции: это новое
-    исключение из «внешний мир — по краям», страж 21.78 оформит его при
-    вставке (раздел 8).
+  - Процесс Chrome и ожидание порта — только в этой функции: исключение из
+    «внешний мир — по краям», страж 21.78 разрешает `playwright`,
+    `subprocess` и `time` только внутри `connect_chrome_tab`.
 - Реализация не импортирует `crawl` и `cian_collect` (раздел 2): как
   собрать браузер из настроек запуска, она не знает.
 
-Ещё исполнитель пишет `ChromeStand` с фальшивой вкладкой (раздел 7) и тесты
-функции-края на подделках (без Chrome и playwright). Требование —
-100 % покрытия `collector/` с ветвлениями, у каждой ветки обработки ошибок
-есть тест.
+Всего у Chrome семь настроек: порт, путь к Chrome, папка профиля (флаги),
+ожидание порта, шаг опроса, тайм-аут перехода, событие загрузки
+(константы) — раздел 8.
 
 **Как ведёт себя `fetch`:**
 
 - **Без подстановки заголовков запроса.** Заголовки — как у самого Chrome;
   `referer` принимается (сигнатура интерфейса), но не подставляется.
-- **Тело Playwright уже распаковано**: распаковки gzip/deflate нет; `size`
-  — длина тела, каким его отдал Playwright (раздел 3).
-- **Решение Андрея 16.11:** `body` — тело ответа на переход, то есть что
-  прислал сервер (как у `HttpBrowser`), а не DOM после скриптов (не
-  `page.content()`); от этого зависят `raw/*.html.gz` и разбор
-  `initialState`. Сбой сети (код 0, раздел 4, правило 7) — тайм-аут
-  перехода и ошибки `net::ERR_*`. Потеря подключения к Chrome и закрытая
-  вкладка — «прочие исключения» (правило 8): летят из `fetch` наружу.
+- **Тело — `response.body()`**, а не `page.content()`: ответ сервера на
+  переход (как у `HttpBrowser`), а не DOM после скриптов (решение Андрея
+  16.11); от этого зависят `raw/*.html.gz` и разбор `initialState`. Тело
+  Playwright уже распаковано; байты декодируются как UTF-8, битый UTF-8 —
+  знаком замены, как у `HttpBrowser`; `size` — байт тела (раздел 3).
+- **Имена заголовков** опускает сам `ChromeBrowser`, не полагаясь на
+  Playwright.
+- **Редирект:** первый ответ цепочки — по `response.request.redirected_from`
+  до начала; тело пустое, `size` 0 (раздел 4, правила 3–4).
+- **Сбой сети** (код 0, раздел 4, правило 7) — ошибка Playwright, которая
+  тайм-аут перехода (`timeout_error`) или содержит `net::ERR_*`. Прочие
+  ошибки Playwright (потеря подключения к Chrome, закрытая вкладка) и
+  любые не-Playwright исключения — «прочие исключения» (правило 8): летят
+  из `fetch` наружу.
+- **Нет ответа — исключение наружу**, а не сбой сети: `goto` вернул `None`
+  — `ChromeNoResponseError` со ссылкой; у первого шага цепочки редиректов
+  нет ответа — `ChromeNoResponseError` («нет ответа первого шага
+  редиректа»).
+
+Ветки сверх общего контракта — кейс 21.88, функция-край — кейс 21.89
+(`tests/test_collector_chrome_browser.py`, на подделках, без Chrome и
+playwright).
 
 ## 7. Как проверить
 
 Набор 21.86 — `tests/test_collector_browser.py`. Каждый тест идёт на каждом
 **стенде** из словаря `STANDS` (фикстура `stand`). Стенд — реализация над
-фальшивым «нижним миром» (у `HttpBrowser` — `FakeTransport`, у `ChromeBrowser`
-— фальшивая вкладка Playwright):
+фальшивым «нижним миром». Стендов два: `HttpStand` — `HttpBrowser` над
+`FakeTransport`; `ChromeStand` — `ChromeBrowser` над фальшивой вкладкой
+Playwright `FakePage`. Устройство стенда:
 
 - конструктор `Stand(folder)` — от папки теста `tmp_path`;
 - `url` — ссылка, которую узнаёт нижний мир;
@@ -219,52 +254,59 @@ None ч» (`crawl.summary_text` берёт `cookie_age_h` как есть, пр�
 `crash=<исключение>` — исключение нижнего мира, которое сбоем сети не
 является. Стенд переводит `SiteAnswer` на язык своего нижнего мира.
 
-Подключение второй реализации: класс `ChromeStand` с тем же устройством и
-строка `"chrome": ChromeStand` в `STANDS`. Сигнатура `browser(answers,
-ticket, monotonic)` у стендов общая: тайм-аут перехода и событие загрузки
-`ChromeStand` передаёт конструктору `ChromeBrowser` сам — свои константы
-стенда. Набор зелёный на обоих стендах —
-контракт выполнен. Сети в тестах нет (автофикстура `no_network`).
+Сигнатура `browser(answers, ticket, monotonic)` у стендов общая: тайм-аут
+перехода и событие загрузки `ChromeStand` передаёт конструктору
+`ChromeBrowser` сам — свои константы стенда. Подделки вкладки Playwright
+живут в тестовых файлах (`test_collector_browser.py`,
+`test_collector_chrome_browser.py`, маленькая `FakeChromePage` в
+`test_collector.py`), а не в `tests/collector_support.py`. Набор зелёный на
+обоих стендах — контракт выполнен. Сети в тестах нет (автофикстура
+`no_network`), настоящего Chrome тоже (автофикстура `no_chrome`: playwright
+«не установлен», `subprocess.Popen` — падение теста).
 
-## 8. Куда вставить
+## 8. Как вставлено
 
-Этот раздел — для тимлида; исполнитель его не делает.
+Как `ChromeBrowser` вставлен в block/chrome-insert:
 
-1. Файл исполнителя `collector/chrome_browser.py` (раздел 6) — как есть.
-2. `make_chrome_browser(settings, rnd, transport_factory)` → `Browser`, тип
-   `cian_collect.BrowserMaker`, пишет тимлид в `cian_collect.py`. Модуль
-   `chrome_browser` импортируется на верхнем уровне `cian_collect.py`, как
-   `http_browser`: сам модуль playwright не требует (playwright — внутри
-   функции-края), второй ленивости не нужно. `make_chrome_browser` зовёт
-   функцию-край с настройками подключения (порт, путь к Chrome, папка
-   профиля, тайм-аут ожидания порта) и собирает `ChromeBrowser(вкладка,
-   билет, time.monotonic, тайм-аут перехода, событие загрузки)`; билет
-   она собирает сама по вкладке по правилам раздела 5.
-   `transport_factory` ей не нужен, но сигнатура общая. Где живут все шесть
-   настроек Chrome (константы `cian_collect.py` или поля `Settings`) —
-   решает тимлид при вставке.
-3. Строка `"chrome": make_chrome_browser` в словаре
-   `cian_collect.BROWSERS`; флаг `--browser chrome` появится сам (choices
-   берутся из словаря).
-4. Ранняя проверка «playwright установлен» — код 2 до паузы старта, как у
-   `--transport httpx` (21.81); словарь `BROWSERS` тогда получит поле
-   библиотеки, как `TRANSPORTS`, тесты 21.87 поправятся. `check_args` сейчас
-   проверяет `--transport`, `--cookies`, `--ua` при любом браузере — решить
-   при вставке, нужно ли это для `chrome`.
-5. Страж 21.78 (`tests/test_collector.py`): `chrome_browser.py` — в списки
-   модулей пакета; импортировать модуль `chrome_browser` может только
-   `cian_collect`. Функции-краю разрешено (и только ей): `playwright` —
-   внутри функции, `subprocess` — запуск Chrome, `time` — ожидание порта.
-   Запрещено в `chrome_browser.py` целиком: `socket`, `urllib.request`,
-   `urllib.error`, `http*` (только `urllib_transport`), печать, запись на
-   диск. Разрешения добавляются в том же блоке, что и файл.
-6. `CLAUDE.md` §6 (таблица файлов) и раздел 2
-   `docs/reference/collector_architecture.md` — строка о будущем
-   `chrome_browser.py` в `CLAUDE.md` уже есть, в раздел 2 её добавляет
-   `architect` в block/browser-interface; при вставке её снять с пометки
-   «будущий» и поправить там же «Импорты» и «Внешний мир» (функция-край —
-   новое место сна и процесса Chrome).
-7. `docs/TEST_PLAN.md`: новый кейс для функции-края подключения к Chrome;
-   правка текста 21.87 (в `BROWSERS` уже не единственный ключ `http`) и
-   21.78 (разрешения пункта 5); тесты исполнителя переименовать под номер
-   кейса (имя теста = номер кейса, `CLAUDE.md` §7).
+1. Файл `collector/chrome_browser.py` (раздел 6) — внешняя реализация как
+   есть, с одной правкой: адрес подключения `http://127.0.0.1:<порт>`.
+2. `cian_collect.make_chrome_browser(settings, rnd, transport_factory)` →
+   `Browser`, тип `BrowserMaker`. Модуль `chrome_browser` импортируется на
+   верхнем уровне `cian_collect.py`, как `http_browser`: сам модуль
+   playwright не требует. `make_chrome_browser` зовёт
+   `chrome_browser.connect_chrome_tab(settings.chrome_port,
+   settings.chrome_path, settings.chrome_profile, PORT_WAIT_S, POLL_S)` по
+   имени модуля в момент вызова (точка подмены 21.90), билет —
+   `read_chrome_ticket(tab)` (раздел 5), затем
+   `ChromeBrowser(tab, билет, time.monotonic, GOTO_TIMEOUT_MS, WAIT_UNTIL)`.
+   `rnd` и `transport_factory` ей не нужны, но сигнатура общая.
+   `ChromeConnectError` — выход `sys.exit("--browser chrome: <текст>")` без
+   трассировки.
+3. Настройки Chrome: флаги `--chrome-port` (умолчание `CHROME_PORT = 9222`),
+   `--chrome-path` (`CHROME_PATH` — стандартный путь Chrome на macOS),
+   `--chrome-profile` (`CHROME_PROFILE = "chrome-profile"` в папке запуска,
+   хранится абсолютным путём) — поля `crawl.Settings` `chrome_port`,
+   `chrome_path`, `chrome_profile`; константы `cian_collect.py`
+   `GOTO_TIMEOUT_MS = 45_000`, `WAIT_UNTIL = "load"`, `PORT_WAIT_S = 30.0`,
+   `POLL_S = 0.5`.
+4. Словарь `cian_collect.BROWSERS` — «имя → `BrowserChoice(library,
+   ticket_files, make)`»: `"http"` (`None`, `True`, `make_http_browser`) и
+   `"chrome"` (`"playwright"`, `False`, `make_chrome_browser`); флаг
+   `--browser chrome` берёт choices из словаря.
+5. Ранняя проверка в `check_args` — код 2 до паузы старта: один цикл по
+   библиотекам `--transport` и `--browser` (нет библиотеки — ошибка с
+   флагом, именем библиотеки и `pip install -r requirements.txt`, как
+   21.81); файлы `--cookies` и `--ua` проверяются (`check_ticket_files`)
+   только у браузера с `ticket_files` — при `--browser chrome` не
+   проверяются и не читаются; проверка `--transport` остаётся.
+6. Страж 21.78: `chrome_browser.py` — в списках модулей пакета, без диска
+   и stdout, из пакета берёт только `browser` и `search_page`;
+   импортирует модуль `chrome_browser` только `cian_collect`; `playwright`,
+   `subprocess` и `time` — только внутри `connect_chrome_tab`; `playwright`
+   больше нигде в пакете.
+7. `requirements.txt` — `playwright==1.65.2` (только для `--browser
+   chrome`; `playwright install` не нужен — сборщик подключается к
+   установленному Chrome). `CLAUDE.md` §6, `collector/README.md` («Запуск
+   с Chrome на Маке»), `docs/TEST_PLAN.md` (кейсы 21.88–21.90, правки
+   21.54, 21.78, 21.86, 21.87) — в том же блоке; раздел 2
+   `docs/reference/collector_architecture.md` обновляет `architect`.

@@ -3,10 +3,10 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 
 Получает argv (read_settings → Settings). build_crawl собирает обход crawl.Crawl:
 случайность по seed, файл клеток [E-42] и сетка (в stdout), часы crawl.Clock,
-пауза старта, вход на ЦИАН. enter_cian — браузер из BROWSERS (HttpBrowser:
-билет read_ticket и транспорт make_transport) → источник страниц из
-PAGE_SOURCES. main запускает обход и печатает итог. Сети здесь нет (она в
-транспорте); сервер и запуск — collector/README.md.
+пауза старта, вход на ЦИАН. enter_cian — браузер из BROWSERS (http: билет из
+файлов и транспорт make_transport; chrome: вкладка connect_chrome_tab и билет
+из неё) → источник страниц из PAGE_SOURCES. main запускает обход и печатает
+итог. Сети здесь нет; сервер и запуск — collector/README.md.
 """
 
 from __future__ import annotations
@@ -21,7 +21,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from collector import http_browser, page_source, urllib_transport
+from collector import (
+    chrome_browser,
+    http_browser,
+    page_source,
+    search_page,
+    urllib_transport,
+)
 from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
@@ -43,6 +49,18 @@ BROWSER = "http"
 # делает cd ~/calib2)
 COOKIES_FILE = "cookies.txt"
 UA_FILE = "ua.txt"
+# браузер chrome (флаги --chrome-*): отладочный порт, Chrome на Маке, папка
+# профиля рядом с runs/ (решение Андрея 16.11, п. 5)
+CHROME_PORT = 9222
+CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CHROME_PROFILE = "chrome-profile"
+# переход вкладки: тайм-аут как у HTTP_TIMEOUT_S и событие загрузки; ожидание
+# порта после запуска Chrome — холодный старт с запасом (DECISIONS,
+# block/chrome-insert)
+GOTO_TIMEOUT_MS = 45_000
+WAIT_UNTIL = "load"
+PORT_WAIT_S = 30.0
+POLL_S = 0.5
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -156,12 +174,60 @@ def make_http_browser(
     return http_browser.HttpBrowser(transport, ticket, time.monotonic)
 
 
+def read_chrome_ticket(tab: chrome_browser.ChromeTab) -> Ticket:
+    """Билет из вкладки Chrome: UA самой вкладки и куки, которые Chrome послал
+    бы на CIAN_BASE_URL, строкой «a=1; b=2» (нет кук — без билета). Возраста
+    у кук Chrome нет — age_h None (решение Андрея 16.11, п. 4)."""
+    ua = tab.page.evaluate("navigator.userAgent")
+    cookies = tab.page.context.cookies(search_page.CIAN_BASE_URL)
+    pairs = [f"{cookie['name']}={cookie['value']}" for cookie in cookies]
+    cookie_header = "; ".join(pairs) or None
+    return Ticket(cookie_header=cookie_header, ua=ua, age_h=None)
+
+
+def make_chrome_browser(
+    settings: Settings, rnd: random.Random, transport_factory: TransportFactory
+) -> Browser:
+    """ChromeBrowser: вкладка Chrome (подключение по порту, при молчании —
+    запуск со своим профилем) → билет из неё → браузер с часами monotonic.
+    rnd и transport_factory не нужны: UA и сеть — у самого Chrome."""
+    # connect_chrome_tab — по имени модуля в момент вызова: точка подмены 21.90
+    try:
+        tab = chrome_browser.connect_chrome_tab(
+            settings.chrome_port,
+            settings.chrome_path,
+            settings.chrome_profile,
+            PORT_WAIT_S,
+            POLL_S,
+        )
+    except chrome_browser.ChromeConnectError as error:
+        # ожидаемая ошибка запуска — без трассировки, как файл клеток (З160)
+        sys.exit(f"--browser chrome: {error}")
+    ticket = read_chrome_ticket(tab)
+    return chrome_browser.ChromeBrowser(
+        tab, ticket, time.monotonic, GOTO_TIMEOUT_MS, WAIT_UNTIL
+    )
+
+
+@dataclass(frozen=True)
+class BrowserChoice:
+    """Браузер флага --browser: library — модуль, который должен быть
+    установлен (None — хватает стандартной библиотеки); ticket_files — билет
+    из файлов --cookies и --ua (их проверяет check_args); make — сборка."""
+
+    library: str | None
+    ticket_files: bool
+    make: BrowserMaker
+
+
 # Одно место для списка браузеров, по образцу TRANSPORTS: из него choices
-# флага --browser и сборка браузера. Читается в момент вызова: так тесты
-# добавляют в него свою сборку (21.87). Вторая реализация —
-# docs/reference/browser_contract.md, раздел 8.
-BROWSERS: dict[str, BrowserMaker] = {
-    "http": make_http_browser,
+# флага --browser, ранние проверки и сборка браузера. Читается в момент
+# вызова: так тесты добавляют в него свою сборку (21.87).
+BROWSERS: dict[str, BrowserChoice] = {
+    "http": BrowserChoice(library=None, ticket_files=True, make=make_http_browser),
+    "chrome": BrowserChoice(
+        library="playwright", ticket_files=False, make=make_chrome_browser
+    ),
 }
 
 
@@ -211,22 +277,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
     ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
+    ap.add_argument(
+        "--chrome-port",
+        type=int,
+        default=CHROME_PORT,
+        help="отладочный порт Chrome (--browser chrome)",
+    )
+    ap.add_argument(
+        "--chrome-path", default=CHROME_PATH, help="программа Chrome для запуска"
+    )
+    ap.add_argument(
+        "--chrome-profile",
+        default=CHROME_PROFILE,
+        help="папка профиля Chrome (не основной профиль)",
+    )
     return ap
 
 
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
-    паузы старта (21.45, 21.81, 21.82)."""
+    паузы старта (21.45, 21.81, 21.82, 21.87)."""
     # прогона без запросов нет: smoke в законченном прогоне — всегда словарь
     # (21.45; DECISIONS, block/simplify-2, ревью PR #4)
     if args.budget < 1:
         ap.error(f"--budget {args.budget}: нужен хотя бы 1 запрос")
-    library = TRANSPORTS[args.transport].library
-    if library is not None and importlib.util.find_spec(library) is None:
-        ap.error(
-            f"--transport {args.transport}: не установлена библиотека {library}; "
-            "установка: pip install -r requirements.txt"
-        )
+    browser = BROWSERS[args.browser]
+    libraries = (
+        ("--transport", args.transport, TRANSPORTS[args.transport].library),
+        ("--browser", args.browser, browser.library),
+    )
+    for flag, name, library in libraries:
+        if library is not None and importlib.util.find_spec(library) is None:
+            ap.error(
+                f"{flag} {name}: не установлена библиотека {library}; "
+                "установка: pip install -r requirements.txt"
+            )
+    # билет Chrome — из вкладки: файлы --cookies и --ua не нужны (21.90)
+    if not browser.ticket_files:
+        return
+    check_ticket_files(ap, args)
+
+
+def check_ticket_files(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Явно названные файлы билета --cookies и --ua есть и не пусты (21.82)."""
     for flag, path in (("--cookies", args.cookies), ("--ua", args.ua)):
         if path is None:
             continue
@@ -257,6 +350,11 @@ def read_settings(argv: list[str]) -> Settings:
         browser=args.browser,
         cookies_file=args.cookies or COOKIES_FILE,
         ua_file=args.ua or UA_FILE,
+        chrome_port=args.chrome_port,
+        chrome_path=args.chrome_path,
+        # абсолютный путь: не зависит от того, как Chrome понимает
+        # относительный --user-data-dir, и виден в ошибке (DECISIONS)
+        chrome_profile=os.path.abspath(args.chrome_profile),
     )
 
 
@@ -286,7 +384,7 @@ def enter_cian(
 ) -> PageSource:
     """Вход на ЦИАН: браузер флага --browser из BROWSERS (со своим билетом)
     → источник страниц PAGE_SOURCES[PAGE_SOURCE] над ним."""
-    browser = BROWSERS[settings.browser](settings, rnd, transport_factory)
+    browser = BROWSERS[settings.browser].make(settings, rnd, transport_factory)
     return PAGE_SOURCES[PAGE_SOURCE](browser)
 
 
