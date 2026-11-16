@@ -59,7 +59,9 @@ def reply_of(answer: SiteAnswer) -> Reply:
 
 class HttpStand:
     """HttpBrowser над FakeTransport: файл клеток с одной клеткой KEY в
-    папке folder, ответы сайта — на страницу 1 этой клетки по порядку."""
+    папке folder, ответы сайта — на страницу 1 этой клетки по порядку.
+    Имена заголовков в нижний регистр опускает нижний мир (FakeTransport),
+    как настоящие транспорты (21.31)."""
 
     def __init__(self, folder: Path) -> None:
         tiles = folder / "tiles.geojson"
@@ -138,10 +140,10 @@ def test_21_86_url_as_is_one_visit(stand):
 
 
 @pytest.mark.parametrize("status", [301, 302])
-def test_21_86_redirect_not_followed(stand, status):
-    """21.86 Редирект (301, 302) не выполняется: один переход, код и
-    заголовки первого ответа цепочки (location), тело пусто; второй ответ
-    сайта не тронут — его получает следующий fetch. Модуль 21."""
+def test_21_86_redirect_first_answer(stand, status):
+    """21.86 Редирект — один переход: код и заголовки первого ответа цепочки
+    (location); следующий fetch получает следующий ответ сайта. Тело 3xx в
+    общий контракт не входит (допущение о данных). Модуль 21."""
     answers = [SiteAnswer(status, "", {"Location": OTHER_URL}), SiteAnswer(200, "2")]
     site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
     first = site.fetch(stand.url)
@@ -151,9 +153,23 @@ def test_21_86_redirect_not_followed(stand, status):
         visits_after_first,
         first.code,
         first.headers.get("location"),
-        first.body,
         second.body,
-    ) == (1, status, OTHER_URL, "", "2")
+    ) == (1, status, OTHER_URL, "2")
+
+
+def test_21_86_referer_not_followed(stand):
+    """21.86 fetch(url, referer) — ответ как обычно, переход по ссылке url,
+    а не по Referer: UrlPageSource всегда зовёт fetch(url, referer).
+    Модуль 21."""
+    site = stand.browser(
+        [SiteAnswer(200, "страница")], ticket_of(), FakeTime(EPOCH).monotonic
+    )
+    fetched = site.fetch(stand.url, OTHER_URL)
+    assert (fetched.code, fetched.body, stand.visits) == (
+        200,
+        "страница",
+        [stand.url],
+    )
 
 
 def test_21_86_waf_verdict_unchanged(stand):
@@ -166,17 +182,20 @@ def test_21_86_waf_verdict_unchanged(stand):
 
 def test_21_86_failure_is_code_0(stand):
     """21.86 Сбой сети — FetchedPage, а не исключение: код 0, тело пусто,
-    size 0, headers {}, neterr — непустая строка в одну строку. Модуль 21."""
+    size 0, headers {}, neterr — непустая строка в одну строку; ms — по
+    monotonic, как у ответа (часы идут на 0,25 с за вызов → 250.0).
+    Модуль 21."""
     fetched = fetch_one(stand, [SiteAnswer(failure=True)])
     neterr = fetched.neterr
     one_line = isinstance(neterr, str) and neterr.strip() != "" and "\n" not in neterr
-    assert (fetched.code, fetched.body, fetched.size, fetched.headers, one_line) == (
-        0,
-        "",
-        0,
-        {},
-        True,
-    )
+    assert (
+        fetched.code,
+        fetched.body,
+        fetched.size,
+        fetched.headers,
+        one_line,
+        fetched.ms,
+    ) == (0, "", 0, {}, True, 250.0)
 
 
 def test_21_86_failure_one_visit(stand):
@@ -223,9 +242,9 @@ def test_21_86_ms_by_monotonic(stand):
     ids=["ответ", "сбой сети"],
 )
 def test_21_86_monotonic_twice_per_fetch(stand, answer):
-    """21.86 Один fetch — ровно два обращения к monotonic (до перехода и
-    после ответа) при ответе и при сбое сети: на них стоит ms=250 в
-    night.log эталонных ночей 21.68–21.70. Модуль 21."""
+    """21.86 Один fetch — ровно два обращения к monotonic при ответе и при
+    сбое сети: замер до перехода и после тела — ms детерминирован в тестах
+    (ms=250 в night.log эталонных ночей 21.68–21.70). Модуль 21."""
     clock = FakeTime(EPOCH)
     stand.browser([answer], ticket_of(), clock.monotonic).fetch(stand.url)
     assert clock.monotonic_calls == 2

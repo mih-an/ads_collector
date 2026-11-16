@@ -4396,11 +4396,11 @@ def test_21_87_settings_browser(flag):
 
 
 def test_21_87_unknown_browser_exit_2(capsys):
-    """21.87 --browser не из словаря BROWSERS (chrome — его пока нет) —
-    выход argparse с кодом 2, в строке ошибки назван флаг --browser.
-    Модуль 21."""
+    """21.87 --browser не из словаря BROWSERS (lynx — такого не будет, как
+    curl в 21.81) — выход argparse с кодом 2, в строке ошибки назван флаг
+    --browser. Модуль 21."""
     with pytest.raises(SystemExit) as stop:
-        cc.read_settings(["--geojson", "x.geojson", "--browser", "chrome"])
+        cc.read_settings(["--geojson", "x.geojson", "--browser", "lynx"])
     error = error_line(capsys.readouterr().err)
     # флаг знаком argparse: ошибка — о значении, а не о незнакомом флаге
     assert (stop.value.code, "--browser" in error, "unrecognized" in error) == (
@@ -4431,13 +4431,15 @@ class FakeBrowser:
 def test_21_87_flag_takes_maker_from_dict(env, monkeypatch):
     """21.87 --browser fake берёт сборку из словаря BROWSERS в момент вызова:
     сборка, добавленная под именем fake, зовётся один раз с (Settings с
-    browser == "fake", random.Random, фабрика транспорта из main); общий
-    вход фабрику транспорта не зовёт и файлы билета не читает — в plan.json
-    user_agent — UA билета этой сборки, ticket — false. Модуль 21."""
+    browser == "fake", rnd обхода, фабрика транспорта из main): при --seed 1
+    без паузы старта rnd в момент вызова — в состоянии random.Random(1);
+    общий вход фабрику транспорта не зовёт и файлы билета не читает — в
+    plan.json user_agent — UA билета этой сборки, ticket — false. Модуль 21."""
     calls: list = []
 
     def make_fake_browser(settings, rnd, transport_factory):
-        calls.append((settings, rnd, transport_factory))
+        # состояние rnd — сейчас: обход потом сдвинет его своими выборами
+        calls.append((settings, rnd.getstate(), transport_factory))
         return FakeBrowser()
 
     monkeypatch.setitem(cc.BROWSERS, "fake", make_fake_browser)
@@ -4448,10 +4450,10 @@ def test_21_87_flag_takes_maker_from_dict(env, monkeypatch):
     seen = [
         (
             settings.browser,
-            isinstance(rnd, random.Random),
+            state == random.Random(1).getstate(),
             factory == env.transport.factory,
         )
-        for settings, rnd, factory in calls
+        for settings, state, factory in calls
     ]
     assert (seen, env.transport.made, plan["user_agent"], plan["ticket"]) == (
         [("fake", True, True)],
@@ -4465,21 +4467,28 @@ def test_21_87_make_http_browser(env):
     """21.87 make_http_browser(settings, rnd, фабрика транспорта) —
     HttpBrowser: билет из файлов Settings (cookie_header, ua, age_h),
     транспорт — от фабрики по имени Settings.transport и строке Cookie
-    билета, часы — cc.time.monotonic. Модуль 21."""
+    билета, часы — monotonic модуля time сборщика: один fetch даёт ms по
+    часам env (0,25 с за вызов → 250.0) и ровно два обращения к ним.
+    Модуль 21."""
+    write_features(env.tiles, [tile(A)])
+    give(env, {(A, 1): [Reply(200, b"page")]})
     settings = settings_of(env.folder)
     made = cc.make_http_browser(settings, random.Random(1), env.transport.factory)
+    fetched = made.fetch(search_page.page_url(rect_ring(A)))
     assert (
         type(made),
         made.ticket,
         made.transport is env.transport,
         env.transport.made,
-        made.monotonic == cc.time.monotonic,
+        fetched.ms,
+        env.clock.monotonic_calls,
     ) == (
         http_browser.HttpBrowser,
         fake_ticket(),
         True,
         [("urllib", FAKE_COOKIE)],
-        True,
+        250.0,
+        2,
     )
 
 
