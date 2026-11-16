@@ -2,3 +2,6 @@
 # по умолчанию транспорт urllib, и без httpx он запускается голым python3.
 # httpx нужна только для флага запуска `--transport httpx`.
 httpx==0.28.1
+# playwright нужна только для флага запуска `--browser chrome`; команда
+# `playwright install` не нужна: сборщик подключается к установленному Chrome.
+playwright==1.65.2

@@ -55,7 +55,8 @@ docs/DECISIONS.md — решения уровня 1 и решения Андре
 
 Правила кода — CLAUDE.md §6, из них главные:
 - в collector/ — только стандартная библиотека, кроме httpx в
-  collector/httpx_transport.py;
+  collector/httpx_transport.py и playwright в collector/chrome_browser.py
+  (только внутри connect_chrome_tab);
 - правило импортов: никто в пакете не импортирует `cian_collect`;
   `search_page`, `geometry`, `run_folder`, `transport` не импортируют никого
   из пакета; реализации транспорта импортирует только `cian_collect`

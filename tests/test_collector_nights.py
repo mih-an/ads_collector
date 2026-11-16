@@ -32,12 +32,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from collector_support import (  # noqa: F401 — no_network: автофикстура
+from collector_support import (  # noqa: F401 — no_network, no_chrome: автофикстуры
     CianPlayer,
     FakeTime,
     Reply,
     forbid_network,
     frozen_datetime,
+    no_chrome,
     no_network,
     player_transport,
     write_ticket,

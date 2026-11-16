@@ -28,6 +28,8 @@ collector/cian_serp_sample.json
 # то же в корне: сборщик запускается из папки, где лежит collector/,
 # и берёт билет и runs/ из текущей папки
 /runs/
+# папка профиля Chrome по умолчанию (--chrome-profile): в ней куки ЦИАН
+/chrome-profile/
 /cookies.txt
 /ua.txt
 

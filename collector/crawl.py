@@ -46,6 +46,11 @@ class Settings:
     # --cookies и --ua; умолчания — в cian_collect)
     cookies_file: str
     ua_file: str
+    # браузер chrome: отладочный порт, путь к программе и папка профиля
+    # (флаги --chrome-*; умолчания — в cian_collect, профиль — абсолютный путь)
+    chrome_port: int
+    chrome_path: str
+    chrome_profile: str
     # [E-42] totalOffers стр. 1 больше порога — клетка делится (0 — деления нет)
     split_threshold: int = 400
     # дно деления (10 км → 1,25 км): на дне клетка листается — защита от
@@ -414,9 +419,19 @@ LADDER_VERDICTS = {
 }
 
 
+def ticket_text(has_ticket: bool, age_h: float | None) -> str:
+    """Слова о билете в итоге: «нет», «есть» или «есть, N ч». У билета из
+    Chrome возраста нет — без часов (решение Андрея 16.11, кейс 21.54)."""
+    if not has_ticket:
+        return "нет"
+    if age_h is None:
+        return "есть"
+    return f"есть, {age_h} ч"
+
+
 def summary_text(report: dict, path: str) -> str:
     """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
-    ticket = f"есть, {report['cookie_age_h']} ч" if report["ticket"] else "нет"
+    ticket = ticket_text(report["ticket"], report["cookie_age_h"])
     # первая строка пустая: она отделяет итог от строк stdout выше
     lines = [
         "",

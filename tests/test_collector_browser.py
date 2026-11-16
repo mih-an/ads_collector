@@ -4,8 +4,8 @@
 — реализация над фальшивым нижним миром: url — ссылка, которую тот узнаёт;
 browser(answers, ticket, monotonic) — браузер, которому сайт отвечает answers
 (SiteAnswer) по порядку; visits — переходы, дошедшие до нижнего мира.
-HttpStand — HttpBrowser над FakeTransport. ChromeBrowser подключится классом
-ChromeStand (фальшивая вкладка Playwright) и строкой "chrome" в STANDS.
+Стендов два: HttpStand — HttpBrowser над FakeTransport; ChromeStand —
+ChromeBrowser над фальшивой вкладкой Playwright (FakePage).
 """
 
 import json
@@ -19,10 +19,11 @@ from collector_support import (
     FakeTime,
     FakeTransport,
     Reply,
+    no_chrome,  # noqa: F401 — автофикстура
     no_network,  # noqa: F401 — автофикстура
 )
 
-from collector import http_browser, search_page, transport
+from collector import chrome_browser, http_browser, search_page, transport
 
 # Имена, а не модуль browser: у стенда есть метод browser, он затенял бы модуль.
 from collector.browser import Browser, FetchedPage, Ticket
@@ -92,7 +93,114 @@ class HttpStand:
         return [sent.url for sent in self.transport.sent]
 
 
-STANDS = {"http": HttpStand}
+class FakePlaywrightError(Exception):
+    """Ошибка Playwright фальшивой вкладки (у настоящего — playwright Error)."""
+
+
+class FakeTimeoutError(FakePlaywrightError):
+    """Тайм-аут перехода фальшивой вкладки: как у Playwright, подкласс Error."""
+
+
+# Куда фальшивый Chrome приходит, когда сам прошёл по редиректу: страница цели.
+REDIRECT_TARGET_TEXT = "страница цели редиректа"
+
+
+class FakeRequest:
+    """Запрос Playwright: ссылка, откуда его перенаправили (redirected_from)
+    и ответ на него (response())."""
+
+    def __init__(self, url: str, redirected_from: "FakeRequest | None" = None):
+        self.url = url
+        self.redirected_from = redirected_from
+        self.answer: FakeResponse | None = None
+
+    def response(self) -> "FakeResponse | None":
+        return self.answer
+
+
+class FakeResponse:
+    """Ответ Playwright: код, заголовки (имена в нижнем регистре, как отдаёт
+    Playwright), тело байтами и запрос. Тело ответа-редиректа недоступно —
+    как у Playwright, body() у него бросает ошибку."""
+
+    def __init__(
+        self, status: int, headers: dict[str, str], raw: bytes, request: FakeRequest
+    ):
+        self.status = status
+        self.headers = {name.lower(): value for name, value in headers.items()}
+        self.raw = raw
+        self.request = request
+        request.answer = self
+
+    def body(self) -> bytes:
+        if 300 <= self.status < 400:
+            raise FakePlaywrightError("Response body is unavailable for redirect")
+        return self.raw
+
+
+class FakePage:
+    """Фальшивая вкладка Playwright: goto(url, wait_until, timeout) записывает
+    переход в visits и отдаёт следующий ответ сайта. Сбой сети — тайм-аут
+    перехода, crash — исключение как есть. На 3xx с Location вкладка, как
+    Chrome, сама проходит по редиректу: goto отдаёт ответ цели, а первый ответ
+    цепочки виден через request.redirected_from."""
+
+    def __init__(self, answers: list[SiteAnswer]) -> None:
+        self.answers = list(answers)
+        self.visits: list[str] = []
+        self.goto_kwargs: list[dict[str, object]] = []
+
+    def goto(self, url: str, **kwargs: object) -> FakeResponse | None:
+        self.visits.append(url)
+        self.goto_kwargs.append(kwargs)
+        answer = self.answers.pop(0)
+        if answer.failure:
+            raise FakeTimeoutError("Page.goto: Timeout exceeded.\nCall log:\n  - goto")
+        if answer.crash is not None:
+            raise answer.crash
+        first = FakeResponse(
+            answer.status, answer.headers, answer.text.encode(), FakeRequest(url)
+        )
+        location = first.headers.get("location")
+        if not (300 <= answer.status < 400 and location):
+            return first
+        target = FakeRequest(location, redirected_from=first.request)
+        return FakeResponse(200, {}, REDIRECT_TARGET_TEXT.encode(), target)
+
+
+# Настройки перехода стенда: ChromeStand передаёт их ChromeBrowser сам (раздел 7).
+GOTO_TIMEOUT_MS = 45_000
+WAIT_UNTIL = "load"
+
+
+class ChromeStand:
+    """ChromeBrowser над фальшивой вкладкой Playwright: ответы сайта — на
+    переходы по порядку, ошибки — классы фальшивой вкладки."""
+
+    def __init__(self, folder: Path) -> None:
+        self.page = FakePage([])
+        self.url = search_page.page_url(RING)
+
+    def browser(
+        self,
+        answers: list[SiteAnswer],
+        ticket: Ticket,
+        monotonic: Callable[[], float],
+    ) -> Browser:
+        self.page = FakePage(answers)
+        tab = chrome_browser.ChromeTab(
+            page=self.page, timeout_error=FakeTimeoutError, error=FakePlaywrightError
+        )
+        return chrome_browser.ChromeBrowser(
+            tab, ticket, monotonic, GOTO_TIMEOUT_MS, WAIT_UNTIL
+        )
+
+    @property
+    def visits(self) -> list[str]:
+        return self.page.visits
+
+
+STANDS = {"http": HttpStand, "chrome": ChromeStand}
 
 
 @pytest.fixture(params=list(STANDS))
