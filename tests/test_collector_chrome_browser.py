@@ -489,26 +489,20 @@ def test_21_93_redirect_answer_empty_body():
     )
 
 
-def test_21_93_unavailable_body_is_empty():
-    """21.93 Ответ на клик пришёл, а body() бросил ошибку Playwright без
-    net::ERR_* — ответ с кодом и заголовками, тело пустое, size 0, neterr
-    None (решение тимлида block/click-pages). Модуль 21."""
+def test_21_93_unavailable_body_propagates():
+    """21.93 Ответ 200 на клик пришёл, а body() бросил ошибку Playwright без
+    net::ERR_* — как у fetch, ошибка летит из click_and_catch (решение
+    тимлида block/click-pages: тело клика — по правилам fetch). Модуль 21."""
     answer = SiteAnswer(
         200,
         CLICK_JSON,
-        {"Content-Type": "application/json"},
         resource_type="xhr",
         url=SEARCH_OFFERS_URL,
         body_error=FakePlaywrightError("Response body is unavailable"),
     )
     page = click_page([LINK_P3], [answer])
-    fetched = click(page, "3").fetched
-    assert (fetched.code, fetched.body, fetched.size, fetched.neterr) == (
-        200,
-        "",
-        0,
-        None,
-    )
+    with pytest.raises(FakePlaywrightError, match="body is unavailable"):
+        click(page, "3")
 
 
 def test_21_93_no_monotonic_when_nothing():
