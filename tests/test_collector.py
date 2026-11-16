@@ -4502,12 +4502,16 @@ def test_21_87_make_http_browser(env):
 
 def test_21_87_make_http_browser_ua_from_rnd(env):
     """21.87 make_http_browser без ua.txt: UA билета — выбор из списка
-    сборщика (USER_AGENTS) переданным rnd; при rnd = random.Random(1) он
-    равен random.Random(1).choice(cc.USER_AGENTS). Модуль 21."""
+    сборщика (USER_AGENTS) переданным rnd; при rnd = random.Random(5) он
+    равен random.Random(5).choice(cc.USER_AGENTS). Модуль 21."""
+    # Random(5) выбирает не первый UA, и 5 не равно settings.seed (1):
+    # тест отличает «из переданного rnd» от «всегда первый» и Random(seed)
     (env.folder / "ua.txt").unlink()
     settings = settings_of(env.folder)
-    made = cc.make_http_browser(settings, random.Random(1), env.transport.factory)
-    assert made.ticket.ua == random.Random(1).choice(cc.USER_AGENTS)
+    expected = random.Random(5).choice(cc.USER_AGENTS)
+    assert expected != cc.USER_AGENTS[0]
+    made = cc.make_http_browser(settings, random.Random(5), env.transport.factory)
+    assert made.ticket.ua == expected
 
 
 def test_21_82_ticket_flags_paths(env, monkeypatch):
