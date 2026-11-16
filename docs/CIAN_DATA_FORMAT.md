@@ -285,8 +285,10 @@ block/click-pages),
 `event=sector_end` (why=short_page|redirect_to_p1_301|empty_page|smoke_empty|no_next_page|same_ids;
 `smoke_empty` — до block/simplify-2; `no_next_page` — при листании кликом нажимать
 нечего, `same_ids` — клик принёс те же id, что прошлая страница, эта страница не
-сохраняется; оба — block/click-pages, решение Андрея 6, пометка — ещё и строкой в
-итоге stdout, новых ключей `summary.json` нет),
+сохраняется; оба — block/click-pages, решение Андрея 6; строка `sector_end` пишется
+всегда, а пометка строкой в итоге stdout — у `same_ids` всегда, у `no_next_page`
+только если прошлая страница клетки полная и по `totalOffers` страниц больше, чем
+прочитано; новых ключей `summary.json` нет),
 `event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent).
 Вердикты: OK, PAGE_END (не отказ), BLOCK, API_CHANGED, NET_ERROR.
 

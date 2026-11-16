@@ -231,6 +231,18 @@ def absorb_page(tile: TileState, page: int, total: int | None, ids: list[int]) -
     return 0 < len(ids) < search_page.OFFERS_PER_PAGE
 
 
+def end_noted(tile: TileState, why: str) -> bool:
+    """Помечать ли конец клетки в итоге stdout (решение Андрея 6): те же id
+    — всегда; нажимать нечего — только если по totalOffers страниц больше,
+    чем прочитано. Прошлая страница при этом полная: после короткой клетка
+    уже кончилась (short_page), и второй sector_end не пишется (mark_end)."""
+    if why == search_page.SAME_IDS:
+        return True
+    if why != search_page.NO_NEXT_PAGE or tile.pages_planned is None:
+        return False
+    return len(tile.pages_done) < tile.pages_planned
+
+
 def is_complete(tile: TileState) -> bool:
     """Клетка выкачана: все страницы по оценке или упёрлись в конец набора.
     [E-21, E-42] разрезанный родитель не выкачан — его покрытие в детях."""
@@ -722,8 +734,7 @@ class Crawl:
             return
         tile.served_end = True
         self.log(event="sector_end", sector=key, why=why)
-        # конец листания кликом — пометка в итоге stdout (решение Андрея 6)
-        if why in (search_page.NO_NEXT_PAGE, search_page.SAME_IDS):
+        if end_noted(tile, why):
             self.state.end_notes[key] = why
 
     # ── один запрос ───────────────────────────────────────────────
