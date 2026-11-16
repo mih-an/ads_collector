@@ -91,11 +91,14 @@ python3 -m collector.cian_collect --geojson <файл клеток> [--budget N]
 `.venv` репозитория она есть); команда `playwright install` не нужна —
 сборщик подключается к установленному Chrome.
 
-Из корня репозитория (`python3` — тот, где стоит playwright; в репозитории
-это `.venv/bin/python`):
+Файл клеток — копия `geo/cian_collect_tiles.geojson` из репозитория
+land-monitor, положенная в `~/cian_chrome/`: обычный прогон (не
+`--smoke-only`) переписывает его при делении клеток.
+
+Из корня репозитория:
 
 ```
-python3 -m collector.cian_collect --browser chrome --chrome-profile ~/cian_chrome/profile --geojson ~/cian_chrome/cian_collect_tiles.geojson --runs-dir ~/cian_chrome/runs --smoke-only
+.venv/bin/python -m collector.cian_collect --browser chrome --chrome-profile ~/cian_chrome/profile --geojson ~/cian_chrome/cian_collect_tiles.geojson --runs-dir ~/cian_chrome/runs --smoke-only
 ```
 
 Без `--smoke-only` — обычный прогон (с паузой старта до 40 минут; убрать —
@@ -105,8 +108,9 @@ python3 -m collector.cian_collect --browser chrome --chrome-profile ~/cian_chrom
 Что сборщик делает сам:
 
 1. Подключается к Chrome по отладочному порту `--chrome-port` (9222) на
-   127.0.0.1. Если Chrome с этим портом уже открыт — берёт его первую
-   вкладку (нет вкладок — открывает новую).
+   127.0.0.1. Если Chrome с этим портом уже открыт (в том числе человеком,
+   который в нём работает) — сборщик возьмёт его первую вкладку и будет
+   ходить в ней (нет вкладок — откроет новую).
 2. Если порт молчит — запускает Chrome командой `<--chrome-path>
    --remote-debugging-port=<порт> --user-data-dir=<--chrome-profile>` и
    ждёт порт до 30 секунд. Chrome запускается отдельно от сборщика и после
@@ -119,8 +123,13 @@ python3 -m collector.cian_collect --browser chrome --chrome-profile ~/cian_chrom
    откройте в этом Chrome `https://www.cian.ru`, и со следующего запуска
    куки будут.
 
-`--cookies`, `--ua` и `--transport` с `--browser chrome` не используются:
-файлы билета не проверяются и не читаются, сеть — у самого Chrome.
+`--cookies` и `--ua` с `--browser chrome` не используются: файлы билета не
+проверяются и не читаются. `--transport` тоже не используется (сеть — у
+самого Chrome), но библиотека выбранного `--transport` всё равно
+проверяется при запуске (`--transport httpx` без httpx — выход с кодом 2).
+
+Текст ошибки «Chrome не открыл порт …» кончается причиной — первой строкой
+последней ошибки подключения Playwright.
 
 Если сборщик вышел с `--browser chrome: Chrome не открыл порт …` или
 `--browser chrome: не удалось запустить Chrome …`:

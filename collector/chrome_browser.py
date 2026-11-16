@@ -149,13 +149,17 @@ class ChromeBrowser:
         return response.status, body, len(raw), lower_headers(response.headers)
 
 
-def connect_or_none(playwright: Any, endpoint: str, error: type[Exception]) -> Any:
-    """Подключение Playwright к Chrome по CDP; не вышло — None. «Порт не
-    отвечает» и есть неудача connect_over_cdp, отдельной проверки порта нет."""
+def try_connect(
+    playwright: Any, endpoint: str, error: type[Exception]
+) -> tuple[Any, Exception | None]:
+    """Подключение Playwright к Chrome по CDP → (Chrome, None); не вышло —
+    (None, ошибка Playwright). «Порт не отвечает» и есть неудача
+    connect_over_cdp, отдельной проверки порта нет; ошибку отдаём, чтобы её
+    причина попала в ChromeConnectError (ревью PR #8, кейс 21.89)."""
     try:
-        return playwright.chromium.connect_over_cdp(endpoint)
-    except error:
-        return None
+        return playwright.chromium.connect_over_cdp(endpoint), None
+    except error as failure:
+        return None, failure
 
 
 def first_tab(browser: Any) -> Any:
@@ -177,7 +181,8 @@ def connect_chrome_tab(
     """Вкладка открытого Chrome с отладочным портом port. Порт не отвечает —
     запускаем Chrome со своей папкой профиля и тем же портом и ждём порт не
     дольше port_wait_s, проверяя раз в poll_s секунд. Не дождались —
-    ChromeConnectError с портом, путём и папкой профиля."""
+    ChromeConnectError с портом, путём, папкой профиля и первой строкой
+    последней ошибки подключения."""
     # playwright, subprocess и time — только здесь: модуль импортируется без
     # playwright, а запуск процесса и ожидание порта — край (раздел 6 контракта).
     import subprocess
@@ -189,7 +194,7 @@ def connect_chrome_tab(
     # localhost может уйти в IPv6 (решение Андрея 16.11, кейс 21.89)
     endpoint = f"http://127.0.0.1:{port}"
     playwright = sync_playwright().start()
-    browser = connect_or_none(playwright, endpoint, Error)
+    browser, failure = try_connect(playwright, endpoint, Error)
     if browser is None:
         command = [chrome_path, f"--remote-debugging-port={port}"]
         command.append(f"--user-data-dir={profile_dir}")
@@ -202,19 +207,22 @@ def connect_chrome_tab(
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        except OSError as failure:
+        except OSError as launch_error:
             playwright.stop()
             raise ChromeConnectError(
-                f"не удалось запустить Chrome {chrome_path}: {failure}"
-            ) from failure
+                f"не удалось запустить Chrome {chrome_path}: {launch_error}"
+            ) from launch_error
         deadline = time.monotonic() + port_wait_s
         while browser is None and time.monotonic() < deadline:
             time.sleep(poll_s)
-            browser = connect_or_none(playwright, endpoint, Error)
+            browser, failure = try_connect(playwright, endpoint, Error)
     if browser is None:
         playwright.stop()
+        # без Chrome try_connect всегда отдаёт ошибку — подсказка для mypy
+        assert failure is not None
         raise ChromeConnectError(
             f"Chrome не открыл порт {port} за {port_wait_s} с: "
-            f"{chrome_path} --user-data-dir={profile_dir}"
+            f"{chrome_path} --user-data-dir={profile_dir}; "
+            f"последняя ошибка подключения: {one_line(failure)}"
         )
     return ChromeTab(page=first_tab(browser), timeout_error=TimeoutError, error=Error)

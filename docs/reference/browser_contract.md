@@ -188,8 +188,10 @@ Chrome и ожидание порта живут только в ней; что 
   неудача Playwright `connect_over_cdp` (его `Error`), отдельной проверки
   порта нет; не-Playwright ошибка подключения летит наружу. Настройки —
   простыми аргументами, чисел в коде нет.
-  - **Ошибки:** не дождались порта — `ChromeConnectError` с портом, путём
-    и папкой профиля; `Popen` бросил `OSError` (нет файла Chrome) —
+  - **Ошибки:** не дождались порта — `ChromeConnectError` с портом, путём,
+    папкой профиля и причиной — первой строкой последней ошибки
+    подключения Playwright (`try_connect` отдаёт её вместе с пустым
+    результатом); `Popen` бросил `OSError` (нет файла Chrome) —
     `ChromeConnectError` с путём. В обоих случаях Playwright остановлен.
   - **Можно:** `subprocess` — запуск Chrome; `time` — ожидание порта;
     `playwright` — **только внутри этой функции**, не на верхнем уровне
@@ -226,6 +228,13 @@ Chrome и ожидание порта живут только в ней; что 
   ошибки Playwright (потеря подключения к Chrome, закрытая вкладка) и
   любые не-Playwright исключения — «прочие исключения» (правило 8): летят
   из `fetch` наружу.
+- **Известный необрабатываемый случай:** на ответ 4xx/5xx с пустым телом
+  Chrome может отдать не ответ, а ошибку `net::ERR_HTTP_RESPONSE_CODE_FAILURE`;
+  тогда `fetch` вернёт сбой сети (код 0, обход — `NET_ERROR` с повторами),
+  а не ответ с кодом (обход — `BLOCK`). В прошлых прогонах таких ответов
+  0 (101 прогон, 44 085 запросов: кодов 4xx нет, ответов ≥400 восемь —
+  500, 504, 553, все с телом; DECISIONS, block/chrome-insert); отдельный
+  кейс — когда случай появится.
 - **Нет ответа — исключение наружу**, а не сбой сети: `goto` вернул `None`
   — `ChromeNoResponseError` со ссылкой; у первого шага цепочки редиректов
   нет ответа — `ChromeNoResponseError` («нет ответа первого шага
@@ -257,12 +266,14 @@ Playwright `FakePage`. Устройство стенда:
 Сигнатура `browser(answers, ticket, monotonic)` у стендов общая: тайм-аут
 перехода и событие загрузки `ChromeStand` передаёт конструктору
 `ChromeBrowser` сам — свои константы стенда. Подделки вкладки Playwright
-живут в тестовых файлах (`test_collector_browser.py`,
-`test_collector_chrome_browser.py`, маленькая `FakeChromePage` в
-`test_collector.py`), а не в `tests/collector_support.py`. Набор зелёный на
+живут в тестовых файлах: `FakePage` и ошибки — в
+`test_collector_browser.py` (их берут и `test_collector_chrome_browser.py`,
+и `FakeChromePage` в `test_collector.py` — та же вкладка плюс билет), а не
+в `tests/collector_support.py`. Набор зелёный на
 обоих стендах — контракт выполнен. Сети в тестах нет (автофикстура
-`no_network`), настоящего Chrome тоже (автофикстура `no_chrome`: playwright
-«не установлен», `subprocess.Popen` — падение теста).
+`no_network`), настоящего Chrome тоже (автофикстура `no_chrome` во всех
+файлах тестов, кроме `test_collector_status.py`: playwright «не
+установлен», `subprocess.Popen` — падение теста).
 
 ## 8. Как вставлено
 
@@ -303,7 +314,7 @@ Playwright `FakePage`. Устройство стенда:
    и stdout, из пакета берёт только `browser` и `search_page`;
    импортирует модуль `chrome_browser` только `cian_collect`; `playwright`,
    `subprocess` и `time` — только внутри `connect_chrome_tab`; `playwright`
-   больше нигде в пакете.
+   больше нигде в пакете, `subprocess` — ещё только в `status.py`.
 7. `requirements.txt` — `playwright==1.65.2` (только для `--browser
    chrome`; `playwright install` не нужен — сборщик подключается к
    установленному Chrome). `CLAUDE.md` §6, `collector/README.md` («Запуск
