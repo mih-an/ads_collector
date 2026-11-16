@@ -24,6 +24,7 @@ from datetime import datetime
 
 from collector import (
     chrome_browser,
+    chrome_human,
     http_browser,
     page_loader,
     search_page,
@@ -62,6 +63,11 @@ GOTO_TIMEOUT_MS = 45_000
 WAIT_UNTIL = "load"
 PORT_WAIT_S = 30.0
 POLL_S = 0.5
+# клик вкладки: ожидание ответа, затем события load и адреса с номером
+# страницы — числа пробы click_test.py (DECISIONS, block/click-pages)
+CLICK_TIMEOUT_MS = 60_000
+LOAD_TIMEOUT_MS = 60_000
+URL_TIMEOUT_MS = 30_000
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -190,8 +196,9 @@ def make_chrome_browser(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
 ) -> Browser:
     """ChromeBrowser: вкладка Chrome (подключение по порту, при молчании —
-    запуск со своим профилем) → билет из неё → браузер с часами monotonic.
-    rnd и transport_factory не нужны: UA и сеть — у самого Chrome."""
+    запуск со своим профилем) → билет из неё → браузер с часами monotonic,
+    ожиданиями вкладки TabSettings и рукой человека Human (сон, часы и rnd
+    обхода). transport_factory не нужен: UA и сеть — у самого Chrome."""
     # connect_chrome_tab — по имени модуля в момент вызова: точка подмены 21.90
     try:
         tab = chrome_browser.connect_chrome_tab(
@@ -205,8 +212,17 @@ def make_chrome_browser(
         # ожидаемая ошибка запуска — без трассировки, как файл клеток (З160)
         sys.exit(f"--browser chrome: {error}")
     ticket = read_chrome_ticket(tab)
+    settings_of_tab = chrome_browser.TabSettings(
+        goto_timeout_ms=GOTO_TIMEOUT_MS,
+        wait_until=WAIT_UNTIL,
+        click_timeout_ms=CLICK_TIMEOUT_MS,
+        load_timeout_ms=LOAD_TIMEOUT_MS,
+        url_timeout_ms=URL_TIMEOUT_MS,
+    )
+    # time — по имени модуля в момент вызова: так часы подменяют тесты (21.90)
+    human = chrome_human.Human(time.sleep, time.monotonic, rnd)
     return chrome_browser.ChromeBrowser(
-        tab, ticket, time.monotonic, GOTO_TIMEOUT_MS, WAIT_UNTIL
+        tab, ticket, time.monotonic, settings_of_tab, human
     )
 
 

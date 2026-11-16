@@ -1,15 +1,17 @@
 """
 browser.py — интерфейс браузера: что обход и загрузчик страницы знают о браузере.
 
-Browser — атрибут ticket и fetch(url, referer) → FetchedPage; реализации —
-HttpBrowser (http_browser.py), будущий ChromeBrowser (chrome_browser.py).
-Здесь же входной билет Ticket и ответ FetchedPage. Лист пакета: ничего из
-collector, без сети, часов, диска, сжатия и печати. Контракт для реализаций —
+Browser — атрибут ticket, fetch(url, referer) → FetchedPage, клик
+click_and_catch и прокрутка scroll_page; реализации — HttpBrowser
+(http_browser.py, кликать не умеет) и ChromeBrowser (chrome_browser.py). Здесь
+же билет Ticket, ответ FetchedPage и нейтральные типы клика. Лист пакета:
+ничего из collector, без сети, часов, диска, сжатия и печати. Контракт —
 docs/reference/browser_contract.md, проверки — кейс 21.86.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NamedTuple, Protocol
 
@@ -39,6 +41,35 @@ class FetchedPage(NamedTuple):
     headers: dict[str, str]
 
 
+class BrowserCannotError(RuntimeError):
+    """Реализация не умеет этого действия (HttpBrowser не кликает и не
+    листает): в тексте — имя реализации и действие (21.86)."""
+
+
+@dataclass(frozen=True)
+class ClickTarget:
+    """Что нажать: последнюю ссылку, у которой параметр адреса link_param
+    равен link_value; нет такой — последний элемент с текстом else_text.
+    Знание сайта (какой параметр, какой текст) приходит отсюда, браузер его
+    не хранит (DECISIONS, block/click-pages)."""
+
+    link_param: str
+    link_value: str
+    else_text: str
+
+
+# ловить ли ответ на клик: (адрес ответа, вид запроса — document, xhr, fetch…)
+ResponseWanted = Callable[[str, str], bool]
+
+
+class ClickedPage(NamedTuple):
+    """Ответ на клик: как у fetch, плюс признак «клик загрузил документ»
+    (иначе пойман ответ API, например JSON)."""
+
+    fetched: FetchedPage
+    is_document: bool
+
+
 class Browser(Protocol):
     """Браузер для загрузчика страницы: вторая реализация — новый файл и
     сборка в cian_collect.py (строка BROWSERS); обход и загрузчик страницы
@@ -49,3 +80,14 @@ class Browser(Protocol):
     def fetch(self, url: str, referer: str | None = None) -> FetchedPage:
         """Один переход по url без повторов (21.86); referer — подсказка;
         сбой сети — FetchedPage с кодом 0, прочие исключения летят наружу."""
+
+    def click_and_catch(
+        self, target: ClickTarget, wanted: ResponseWanted
+    ) -> ClickedPage | None:
+        """Нажать target на открытой странице и поймать первый ответ, который
+        принимает wanted; нажимать нечего — None; ответа за тайм-аут нет —
+        код 0 (21.86). Не умеет — BrowserCannotError."""
+
+    def scroll_page(self, seconds: float) -> None:
+        """Пролистать открытую страницу до низа примерно за seconds секунд
+        (21.86). Не умеет — BrowserCannotError."""

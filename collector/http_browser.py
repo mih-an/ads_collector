@@ -2,11 +2,11 @@
 http_browser.py — HttpBrowser: реализация браузера browser.Browser над транспортом.
 
 Получает транспорт, билет browser.Ticket и часы monotonic; ссылку и Referer —
-от загрузчика страницы (page_loader). Из билета берёт UA и признак билета, Cookie
-кладёт транспорт, собранный из того же билета (21.23). Отдаёт FetchedPage:
-заголовки как у браузера, распаковка тела (битое сжатие 2xx — сбой сети,
-З167), длительность; сбой сети — код 0 с деталью. Повторов нет — они в
-crawl.Crawl. Без сети, диска и часов; собирает cian_collect.make_http_browser.
+от загрузчика страницы. UA — из билета, Cookie — у транспорта (21.23). Отдаёт
+FetchedPage: заголовки как у браузера, распаковка тела (битое сжатие 2xx —
+сбой сети, З167), длительность; сбой сети — код 0 с деталью; клик и
+прокрутка — BrowserCannotError. Повторов нет — они в crawl.Crawl. Без сети,
+диска и часов; собирает cian_collect.make_http_browser.
 """
 
 from __future__ import annotations
@@ -14,8 +14,16 @@ from __future__ import annotations
 import gzip
 import zlib
 from collections.abc import Callable
+from typing import NoReturn
 
-from collector.browser import FetchedPage, Ticket
+from collector.browser import (
+    BrowserCannotError,
+    ClickedPage,
+    ClickTarget,
+    FetchedPage,
+    ResponseWanted,
+    Ticket,
+)
 from collector.search_page import CIAN_BASE_URL
 from collector.transport import HttpReply, NetworkFailure, Transport
 
@@ -119,3 +127,17 @@ class HttpBrowser:
             neterr=None,
             headers=reply.headers,
         )
+
+    def click_and_catch(
+        self, target: ClickTarget, wanted: ResponseWanted
+    ) -> ClickedPage | None:
+        """Кликать нечем: у транспорта нет страницы (21.86)."""
+        self.cannot("click_and_catch")
+
+    def scroll_page(self, seconds: float) -> None:
+        """Листать нечего: у транспорта нет страницы (21.86)."""
+        self.cannot("scroll_page")
+
+    def cannot(self, action: str) -> NoReturn:
+        """Одно место текста «не умею» (DECISIONS, block/click-pages)."""
+        raise BrowserCannotError(f"{type(self).__name__} не умеет {action}")

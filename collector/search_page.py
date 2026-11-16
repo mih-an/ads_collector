@@ -4,8 +4,8 @@ search_page.py — контракт выдачи ЦИАН: ссылка на с�
 Получает кольцо полигона и номер страницы (page_url) или код, тело и
 заголовки ответа (classify_page → Classified). Отдаёт ссылку, класс ответа
 (OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью, totalOffers и
-объявления, id объявлений и оценку числа страниц. Чистые функции: без
-сети, диска и часов.
+объявления, id объявлений и оценку числа страниц; при листании кликом — что
+нажать и какой ответ ловить. Чистые функции: без сети, диска и часов.
 """
 
 from __future__ import annotations
@@ -31,6 +31,16 @@ MAX_PAGES = 54
 
 CIAN_BASE_URL = "https://www.cian.ru"
 POLYGON_NAME = "default_name_1"  # канонический вид (301-канонизация ЦИАН, 12.09)
+# Номер страницы выдачи в ссылке (p=N) и текст кнопки «следующая страница»:
+# что нажать при листании кликом (21.92; проба click_test.py)
+PAGE_PARAM = "p"
+NEXT_BUTTON_TEXT = "Дальше"
+# Ответ на клик «следующая страница»: JSON API выдачи (search-offers, xhr
+# или fetch) или загрузка документа. Блок рекомендаций грузится тем же API
+# (get-infinite-search-result) — это не следующая страница (21.92; проба)
+NEXT_PAGE_API = "search-offers"
+RECOMMENDATIONS_API = "get-infinite-search-result"
+API_REQUEST_KINDS = ("xhr", "fetch")
 
 CAPTCHA_MARKERS = (
     "geetest",
@@ -93,10 +103,21 @@ def page_url(ring, page: int = 1) -> str:
         ("offer_type", "suburban"),
     ]
     if page > 1:
-        params.append(("p", str(page)))
+        params.append((PAGE_PARAM, str(page)))
     params.append(("polygon_name[1]", POLYGON_NAME))
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"{CIAN_BASE_URL}/cat.php?" + query
+
+
+def is_next_page_response(url: str, resource_type: str) -> bool:
+    """Ответ ли это на клик «следующая страница»: документ — да (клик
+    загрузил страницу); xhr или fetch API выдачи — да, кроме блока
+    рекомендаций; прочее — нет (21.92). Фрейм документа проверяет браузер."""
+    if resource_type == "document":
+        return True
+    if RECOMMENDATIONS_API in url:
+        return False
+    return NEXT_PAGE_API in url and resource_type in API_REQUEST_KINDS
 
 
 # ──────────────────── РАЗБОР И КЛАССИФИКАЦИЯ ────────────────────────
