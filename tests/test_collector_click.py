@@ -59,6 +59,7 @@ from test_collector import (
     LowRandom,
     chrome_tab_of,
     click_json,
+    events,
     fixture_offers,
     full_page,
     loader_answer,
@@ -77,9 +78,13 @@ from test_collector import (
     write_features,
 )
 from test_collector_browser import (
+    INFINITE_URL,
+    MAIN_FRAME,
     SEARCH_OFFERS_URL,
     FakeElement,
     FakePage,
+    FakeRequest,
+    FakeResponse,
     SiteAnswer,
     box,
 )
@@ -326,21 +331,27 @@ def test_21_95_page_1_answer():
 
 def test_21_95_page_2_by_click():
     """21.95 Страница 2 после удачной страницы 1 той же клетки — клик:
-    click_and_catch(ссылка с p=2, иначе «Дальше»; ловить —
-    search_page.is_next_page_response); перехода по ссылке нет. Модуль 21."""
+    click_and_catch(ссылка с p=2, иначе «Дальше»; ловить ответ API выдачи
+    search-offers, но не блок рекомендаций get-infinite-search-result);
+    перехода по ссылке нет. Модуль 21."""
     loader, site = after_page_1([clicked_fixture("T0611_p2.html.xz")])
     loader.load_page(KEY, RING, 2)
-    assert site.calls[1:] == [
-        ("click", expected_target(2), search_page.is_next_page_response)
-    ]
+    ((kind, target, wanted),) = site.calls[1:]
+    # предикат — поведением: ответ API выдачи ловится, блок рекомендаций нет
+    assert (
+        kind,
+        target,
+        wanted(SEARCH_OFFERS_URL, "xhr"),
+        wanted(INFINITE_URL, "xhr"),
+    ) == ("click", expected_target(2), True, False)
 
 
 def test_21_95_click_json_answer():
     """21.95 JSON клика → PageAnswer: клетка и страница как переданы, OK,
     «-», код 200, totalOffers — offerCount, объявления —
-    offersSerialized, тело — JSON целиком (для .click.gz), size и ms — от
-    браузера; вид click (run_folder.CLICK_KIND), тело — run_folder.CLICK_BODY.
-    Модуль 21."""
+    offersSerialized, тело — JSON целиком (для .click.gz), size, ms и
+    заголовки — от браузера; вид click (run_folder.CLICK_KIND), тело —
+    run_folder.CLICK_BODY. Модуль 21."""
     total, offers = fixture_offers("T0611_p2.html.xz")
     clicked = clicked_json(offers, total)
     loader, _ = after_page_1([clicked])
@@ -356,6 +367,7 @@ def test_21_95_click_json_answer():
         answer.body,
         answer.size,
         answer.ms,
+        answer.headers,
         answer.kind,
         answer.body_ext,
     ) == (
@@ -369,6 +381,7 @@ def test_21_95_click_json_answer():
         clicked.fetched.body,
         clicked.fetched.size,
         250.0,
+        {"content-type": "application/json"},
         run_folder.CLICK_KIND,
         run_folder.CLICK_BODY,
     )
@@ -444,6 +457,69 @@ def test_21_95_same_ids_only_after_click():
     assert (answer.verdict, answer.kind) == (search_page.OK, run_folder.PAGE_KIND)
 
 
+def test_21_95_same_ids_compared_with_previous_page():
+    """21.95 «Те же id» — с ПРОШЛОЙ страницей: стр. 3 кликом принесла id
+    стр. 2 (пришедшей кликом) → PAGE_END same_ids. Модуль 21."""
+    page_2 = clicked_fixture("T0611_p2.html.xz")
+    loader, _ = after_page_1([page_2, page_2])
+    loader.load_page(KEY, RING, 2)
+    answer = loader.load_page(KEY, RING, 3)
+    assert (answer.verdict, answer.detail) == (
+        search_page.PAGE_END,
+        search_page.SAME_IDS,
+    )
+
+
+def test_21_95_mostly_same_ids_is_ok():
+    """21.95 «Те же id» — равенство множеств: 27 из 28 id прежние, один
+    новый → OK, а не конец. Модуль 21."""
+    total, offers_1 = fixture_offers("T0611_p1.html.xz")
+    _, offers_2 = fixture_offers("T0611_p2.html.xz")
+    loader, _ = after_page_1([clicked_json(offers_1[:27] + offers_2[:1], total)])
+    assert loader.load_page(KEY, RING, 2).verdict == search_page.OK
+
+
+def test_21_95_same_ids_by_click_document():
+    """21.95 Клик привёл к документу с теми же id, что на прошлой странице,
+    — тоже PAGE_END same_ids: страница пришла кликом. Модуль 21."""
+    document = ClickedPage(fetched=html_fetched("T0611_p1.html.xz"), is_document=True)
+    loader, _ = after_page_1([document])
+    answer = loader.load_page(KEY, RING, 2)
+    assert (answer.verdict, answer.detail) == (
+        search_page.PAGE_END,
+        search_page.SAME_IDS,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "expected"),
+    [
+        (
+            301,
+            {"location": search_page.page_url(RING, 1)},
+            ("PAGE_END", "redirect_to_p1_301"),
+        ),
+        (
+            302,
+            {"location": "https://www.cian.ru/other/", "waf-verdict": "challenge"},
+            ("BLOCK", "captcha_redirect"),
+        ),
+    ],
+    ids=["301 на p=1", "302 с waf-verdict challenge"],
+)
+def test_21_95_click_document_redirect(status, headers, expected):
+    """21.95 Документ по клику с редиректом разбирается как страница по
+    ссылке, заголовки клика доходят до разбора: 301 на ту же ссылку с p=1
+    → PAGE_END redirect_to_p1_301; 302 с waf-verdict challenge → BLOCK
+    captcha_redirect. Модуль 21."""
+    fetched = FetchedPage(
+        code=status, body="", size=0, ms=250.0, neterr=None, headers=headers
+    )
+    loader, _ = after_page_1([ClickedPage(fetched=fetched, is_document=True)])
+    answer = loader.load_page(KEY, RING, 2)
+    assert (answer.verdict, answer.detail) == expected
+
+
 def retry_sequence():
     """Страница 1 по ссылке, страница 2 — тайм-аут клика, повтор страницы 2
     (по ссылке), страница 3 (кликом). → (браузер, ответы, вызовов браузера
@@ -479,15 +555,15 @@ def test_21_95_retry_after_timeout_by_url():
 
 def test_21_95_retry_kinds():
     """21.95 Вид ответа — как пришла страница: стр. 1 ssr OK, тайм-аут клика
-    — click NET_ERROR click_timeout, повтор по ссылке — ssr OK, следующая
-    кликом — click OK. Модуль 21."""
+    — код 0, click NET_ERROR click_timeout, повтор по ссылке — ssr OK,
+    следующая кликом — click OK. Модуль 21."""
     _, answers, _ = retry_sequence()
-    seen = [(answer.verdict, answer.detail, answer.kind) for answer in answers]
+    seen = [(a.code, a.verdict, a.detail, a.kind) for a in answers]
     assert seen == [
-        (search_page.OK, "-", run_folder.PAGE_KIND),
-        (search_page.NET_ERROR, "click_timeout", run_folder.CLICK_KIND),
-        (search_page.OK, "-", run_folder.PAGE_KIND),
-        (search_page.OK, "-", run_folder.CLICK_KIND),
+        (200, search_page.OK, "-", run_folder.PAGE_KIND),
+        (0, search_page.NET_ERROR, "click_timeout", run_folder.CLICK_KIND),
+        (200, search_page.OK, "-", run_folder.PAGE_KIND),
+        (200, search_page.OK, "-", run_folder.CLICK_KIND),
     ]
 
 
@@ -546,6 +622,76 @@ def test_21_95_remembers_only_ok(clicked, expected):
     loader, _ = after_page_1([clicked()])
     loader.load_page(KEY, RING, 2)
     assert loader.tab == expected
+
+
+def next_way(loader, site: ClickBrowser, page_no: int) -> str:
+    """Как загрузчик пойдёт за страницей page_no: "fetch", "click" или
+    "error" (PageOrderError) — по поведению, а не по полю tab."""
+    try:
+        loader.load_page(KEY, RING, page_no)
+    except page_loader.PageOrderError:
+        return "error"
+    return site.calls[-1][0]
+
+
+# Запасные ответы браузера для пробы next_way: переход и клик.
+SPARE_FETCHED = "T0611_p2.html.xz"
+SPARE_CLICKED = "T0611_p3.html.xz"
+
+
+@pytest.mark.parametrize(
+    ("fetched", "probe", "expected"),
+    [
+        (html_fetched, 2, "click"),
+        (lambda: NET_FETCHED, 1, "fetch"),
+        (lambda: status_fetched(403, "запрет"), 2, "error"),
+        (lambda: status_fetched(200, "<html>другое</html>"), 2, "error"),
+    ],
+    ids=["OK → стр. 2 кликом", "сбой → стр. 1 снова", "BLOCK", "API_CHANGED"],
+)
+def test_21_95_memory_after_page_1(fetched, probe, expected):
+    """21.95 Память вкладки поведением после страницы 1: OK — страница 2
+    кликом; сбой сети — тот же запрос снова переходом; BLOCK и API_CHANGED
+    — вкладка забыта: страница 2 — PageOrderError. Модуль 21."""
+    site = ClickBrowser(
+        [fetched(), html_fetched(SPARE_FETCHED)], [clicked_fixture(SPARE_CLICKED)]
+    )
+    loader = page_loader.ClickPageLoader(site)
+    loader.load_page(KEY, RING, 1)
+    assert next_way(loader, site, probe) == expected
+
+
+@pytest.mark.parametrize(
+    ("clicked", "probe", "expected"),
+    [
+        (lambda: clicked_fixture("T0611_p2.html.xz"), 3, "click"),
+        (lambda: TIMEOUT_CLICKED, 2, "fetch"),
+        (lambda: clicked_json([], 87), 3, "error"),
+        (lambda: clicked_status(403, "запрет"), 3, "error"),
+        (lambda: clicked_status(200, "<html>другое</html>"), 3, "error"),
+        (lambda: None, 3, "error"),
+        (lambda: clicked_fixture("T0611_p1.html.xz"), 3, "error"),
+    ],
+    ids=[
+        "OK → стр. 3 кликом",
+        "тайм-аут → стр. 2 переходом",
+        "PAGE_END empty_page",
+        "BLOCK",
+        "API_CHANGED",
+        "нажимать нечего",
+        "те же id",
+    ],
+)
+def test_21_95_memory_after_click(clicked, probe, expected):
+    """21.95 Память вкладки поведением после страницы 2 кликом: OK —
+    страница 3 кликом; тайм-аут — тот же запрос переходом по ссылке;
+    PAGE_END, BLOCK, API_CHANGED — вкладка забыта: страница 3 —
+    PageOrderError. Модуль 21."""
+    loader, site = after_page_1(
+        [clicked(), clicked_fixture(SPARE_CLICKED)], [html_fetched(SPARE_FETCHED)]
+    )
+    loader.load_page(KEY, RING, 2)
+    assert next_way(loader, site, probe) == expected
 
 
 # ═══════════════════ 21.97 пауза на странице: загрузчики ═══════════════════
@@ -692,8 +838,10 @@ class FakeListingPage(FakePage):
     ответ страницы N + 1 той же клетки (у JSON клика — вид xhr, адрес
     search-offers); удачный ответ открывает страницу N + 1 (адрес с p=N+1).
     На открытой странице — ссылка на следующую и «Дальше»; у страниц из ends
-    их нет (нажимать нечего). Билет — UA CHROME_UA и куки CHROME_COOKIES,
-    как у подделки 21.90. Ответа нет — AssertionError с клеткой и страницей."""
+    их нет (нажимать нечего). На каждый клик вкладка сначала шумит ответом
+    блока рекомендаций (get-infinite-search-result) — его ловить нельзя.
+    Билет — UA CHROME_UA и куки CHROME_COOKIES, как у подделки 21.90.
+    Ответа нет — AssertionError с клеткой и страницей."""
 
     def __init__(
         self,
@@ -707,6 +855,10 @@ class FakeListingPage(FakePage):
         self.ends = set(ends or ())
         self.opened: tuple[str, int] | None = None
         self.context = FakeChromeContext(CHROME_COOKIES)
+        # шум вкладки на каждый клик: блок рекомендаций тем же API — не
+        # следующая страница, ловить его нельзя
+        infinite = FakeRequest(INFINITE_URL, resource_type="xhr", frame=MAIN_FRAME)
+        self.noise = [FakeResponse(200, {}, b'{"items": []}', infinite)]
 
     def evaluate(self, script: str, arg: object = None) -> object:
         if script == "navigator.userAgent":
@@ -865,8 +1017,9 @@ def test_21_96_log_shows_click(env, monkeypatch, playwright_installed):
 
 
 def test_21_96_timeout_retry_by_url(env, monkeypatch, playwright_installed):
-    """21.96 Клик без ответа за тайм-аут — NET_ERROR click_timeout
-    (kind=click) → пауза повтора → повтор той же страницы по ссылке
+    """21.96 Клик без ответа за тайм-аут — http=0, NET_ERROR click_timeout
+    (kind=click) → одна строка retry (стр. 2, попытка 1) → повтор той же
+    страницы по ссылке
     (kind=ssr) → следующая страница снова кликом (решение Андрея 7).
     Модуль 21."""
     listing = {
@@ -876,14 +1029,19 @@ def test_21_96_timeout_retry_by_url(env, monkeypatch, playwright_installed):
     } | a_short()
     run_dir, _ = chrome_run(env, monkeypatch, listing, *CLICK)
     rows = [
-        (r["page"], r["kind"], r["verdict"], r["err"]) for r in requests_of(run_dir, B)
+        (r["page"], r["kind"], r["http"], r["verdict"], r["err"])
+        for r in requests_of(run_dir, B)
     ]
-    assert rows == [
-        ("1", "ssr", "OK", "-"),
-        ("2", "click", "NET_ERROR", "click_timeout"),
-        ("2", "ssr", "OK", "-"),
-        ("3", "click", "OK", "-"),
-    ]
+    retries = [(r["page"], r["attempt"]) for r in events(run_dir, "retry")]
+    assert (rows, retries) == (
+        [
+            ("1", "ssr", "200", "OK", "-"),
+            ("2", "click", "0", "NET_ERROR", "click_timeout"),
+            ("2", "ssr", "200", "OK", "-"),
+            ("3", "click", "200", "OK", "-"),
+        ],
+        [("2", "1")],
+    )
 
 
 def test_21_96_four_failures_stop(env, monkeypatch, playwright_installed):
@@ -1067,15 +1225,64 @@ def test_21_96_url_loader_unchanged(env, monkeypatch, playwright_installed):
     )
 
 
-def test_21_96_run_folder_click_names():
-    """21.96 Имена вида и тела в run_folder: вид запроса кликом CLICK_KIND
-    = "click"; тело страницы — HTML_BODY = "html" (.html.gz) или
-    CLICK_BODY = "click" (.click.gz). Внутреннее. Модуль 21."""
-    assert (run_folder.CLICK_KIND, run_folder.HTML_BODY, run_folder.CLICK_BODY) == (
-        "click",
-        "html",
-        "click",
+def test_21_96_run_folder_click_kind():
+    """21.96 Вид запроса кликом в run_folder — CLICK_KIND = "click" (поле
+    kind в night.log, done и _broken_*). Внутреннее. Модуль 21."""
+    assert run_folder.CLICK_KIND == "click"
+
+
+def click_document_run(env, monkeypatch):
+    """B: стр. 1 по ссылке (28 из 60), клик на стр. 2 загрузил документ —
+    страницу выдачи (28), стр. 3 кликом — JSON (4, короткая)."""
+    listing = {
+        (B, 1): [html_answer(100, 28, 60)],
+        (B, 2): [html_answer(128, 28, 60)],
+        (B, 3): [click_answer(156, 4, 60)],
+    } | a_short()
+    return chrome_run(env, monkeypatch, listing, *CLICK)
+
+
+def test_21_96_click_document_files(env, monkeypatch, playwright_installed):
+    """21.96 Клик привёл к загрузке документа — страница как при ссылке:
+    <клетка>_p2.html.gz и .json.gz, .click.gz нет (решение Андрея 5).
+    Модуль 21."""
+    run_dir, _ = click_document_run(env, monkeypatch)
+    names = [name for name in raw_names(run_dir, B) if name.startswith(f"{B}_p2.")]
+    assert names == [f"{B}_p2.html.gz", f"{B}_p2.json.gz"]
+
+
+def test_21_96_click_document_kind(env, monkeypatch, playwright_installed):
+    """21.96 Документ по клику — kind=click в строке запроса и в задаче
+    done: страница пришла кликом. Модуль 21."""
+    run_dir, _ = click_document_run(env, monkeypatch)
+    (row,) = [r for r in requests_of(run_dir, B) if r["page"] == "2"]
+    (task,) = [t for t in tasks_of(run_dir, B) if t["page"] == 2]
+    assert (row["kind"], task["kind"]) == ("click", "click")
+
+
+def test_21_96_click_page_saved_before_ids_parsed(
+    env, monkeypatch, playwright_installed
+):
+    """21.96 Правило [E-22] (21.36) у клика то же: клик принёс объявление с
+    id «abc» — <клетка>_p2.json.gz и .click.gz уже записаны, затем прогон
+    падает ValueError из main. «Те же id» загрузчик сверяет по сырым id,
+    без превращения в число (решение тимлида, ревью тестов П3). Модуль 21."""
+    broken = SiteAnswer(
+        200,
+        click_json([offer(128) | {"id": "abc"}], 60),
+        {"Content-Type": "application/json"},
+        resource_type="xhr",
+        url=SEARCH_OFFERS_URL,
     )
+    listing = {(B, 1): [html_answer(100, 28, 60)], (B, 2): [broken]} | a_short()
+    with pytest.raises(ValueError, match="abc"):
+        chrome_run(env, monkeypatch, listing, *CLICK)
+    (run_dir,) = (env.folder / "runs").iterdir()
+    raw = run_dir / "raw"
+    assert (
+        (raw / f"{B}_p2.json.gz").exists(),
+        (raw / f"{B}_p2.click.gz").exists(),
+    ) == (True, True)
 
 
 def test_21_96_page_answer_defaults():
@@ -1162,14 +1369,15 @@ def test_21_97_url_loader_sleeps_on_chrome(env, monkeypatch, playwright_installe
 
 def test_21_79_click_run_folder(env, monkeypatch, playwright_installed):
     """21.79 Папка прогона кликом соответствует контракту формата: страницы
-    кликом (.json.gz и .click.gz), тайм-аут клика и повтор по ссылке, конец
-    без кнопки (kind=click, PAGE_END no_next_page) — нарушений нет;
-    stopped queue_empty. Модуль 21."""
+    кликом (.json.gz и .click.gz), документ по клику (kind=click, .html.gz),
+    тайм-аут клика и повтор по ссылке, конец без кнопки (kind=click,
+    PAGE_END no_next_page) — нарушений нет; stopped queue_empty. Модуль 21."""
     listing = {
-        (B, 1): [html_answer(100, 28, 100)],
-        (B, 2): [TIMEOUT, html_answer(128, 28, 100)],
-        (B, 3): [click_answer(156, 28, 100)],
+        (B, 1): [html_answer(100, 28, 150)],
+        (B, 2): [TIMEOUT, html_answer(128, 28, 150)],
+        (B, 3): [click_answer(156, 28, 150)],
+        (B, 4): [html_answer(184, 28, 150)],
     } | a_short()
-    run_dir, _ = chrome_run(env, monkeypatch, listing, *CLICK, ends={(B, 3)})
+    run_dir, _ = chrome_run(env, monkeypatch, listing, *CLICK, ends={(B, 4)})
     summary = summary_of(run_dir)
     assert (run_folder_violations(run_dir), summary["stopped"]) == ([], "queue_empty")

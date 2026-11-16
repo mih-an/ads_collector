@@ -1062,15 +1062,20 @@ def test_21_92_classify_click_ok():
         (429, "запрет", None, ("BLOCK", "http_429")),
         (500, "ошибка", None, ("NET_ERROR", "http_500")),
         (503, "ошибка", None, ("NET_ERROR", "http_503")),
+        (404, "нет", None, ("API_CHANGED", "http_404")),
+        (204, "", None, ("API_CHANGED", "http_204")),
+        (302, "", None, ("API_CHANGED", "http_302")),
         (0, "", "click_timeout", ("NET_ERROR", "click_timeout")),
     ],
-    ids=["403", "429", "500", "503", "сбой: click_timeout"],
+    ids=["403", "429", "500", "503", "404", "204", "302", "сбой: click_timeout"],
 )
 def test_21_92_classify_click_by_code(code, body, neterr, expected):
     """21.92 classify_click по коду ответа клика, как у страницы по ссылке:
-    403 и 429 → BLOCK http_<код>; 500 и выше → NET_ERROR http_<код>; сбой
-    (код 0, neterr) → NET_ERROR с деталью neterr; totalOffers None,
-    объявлений нет. Модуль 21."""
+    403 и 429 → BLOCK http_<код>; 500 и выше → NET_ERROR http_<код>; 404 и
+    прочие не 200 (204) → API_CHANGED http_<код>; 3xx ответа API (location
+    classify_click не получает) — тоже API_CHANGED http_<код> (решение
+    тимлида, ревью тестов П3); сбой (код 0, neterr) → NET_ERROR с деталью
+    neterr; totalOffers None, объявлений нет. Модуль 21."""
     verdict, detail = expected
     assert search_page.classify_click(code, body, neterr) == (verdict, detail, None, [])
 
@@ -1099,29 +1104,61 @@ def test_21_92_classify_click_not_json(body, expected):
         '{"data": {"offerCount": 87}}',
         '{"data": {"offersSerialized": {}, "offerCount": 87}}',
         '{"data": null}',
+        '{"data": []}',
         '{"offers": []}',
+        "[]",
+        "null",
+        '"строка"',
     ],
-    ids=["нет offersSerialized", "offersSerialized не список", "data null", "нет data"],
+    ids=[
+        "нет offersSerialized",
+        "offersSerialized не список",
+        "data null",
+        "data список",
+        "нет data",
+        "JSON-список",
+        "JSON null",
+        "JSON-строка",
+    ],
 )
 def test_21_92_classify_click_no_offers_list(body):
     """21.92 JSON клика без списка объявлений data.offersSerialized (нет
-    ключа, не список, нет data) → API_CHANGED no_offers_serialized.
-    Модуль 21."""
+    ключа, не список, data не объект или нет, сам JSON не объект) →
+    API_CHANGED no_offers_serialized. Модуль 21."""
     verdict, detail, _, offers = search_page.classify_click(200, body)
     assert (verdict, detail, offers) == ("API_CHANGED", "no_offers_serialized", [])
 
 
-@pytest.mark.parametrize("page_no", [None, 3], ids=["страница по умолчанию", "p3"])
-def test_21_92_classify_click_empty_page(page_no):
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"page": 3}], ids=["страница по умолчанию", "p3"]
+)
+def test_21_92_classify_click_empty_page(kwargs):
     """21.92 Пустой список объявлений на странице 2 и дальше при offerCount
     больше 0 → PAGE_END empty_page (конец набора, как у страницы по ссылке);
     страница по умолчанию — 2. Модуль 21."""
-    body = click_json([], 87)
-    if page_no is None:
-        result = search_page.classify_click(200, body)
-    else:
-        result = search_page.classify_click(200, body, page=page_no)
+    result = search_page.classify_click(200, click_json([], 87), **kwargs)
     assert result == ("PAGE_END", "empty_page", 87, [])
+
+
+@pytest.mark.parametrize(
+    ("total", "expected"),
+    [(0, ("OK", "-", 0, [])), (None, ("OK", "-", None, []))],
+    ids=["offerCount 0", "offerCount null"],
+)
+def test_21_92_classify_click_empty_without_total(total, expected):
+    """21.92 Пустой список при offerCount 0 или null — как у страницы по
+    ссылке (classify_page при totalOffers 0 или без него): OK, «-»,
+    totalOffers как пришёл, объявлений нет. Модуль 21."""
+    assert search_page.classify_click(200, click_json([], total)) == expected
+
+
+def test_21_92_classify_click_no_offer_count():
+    """21.92 Непустой список без data.offerCount — как у страницы по ссылке
+    без totalOffers: OK, «-», totalOffers None, объявления как в ответе
+    (решение ревью тестов П3). Модуль 21."""
+    _, offers = fixture_offers()
+    body = json.dumps({"data": {"offersSerialized": offers}}, ensure_ascii=False)
+    assert search_page.classify_click(200, body) == ("OK", "-", None, offers)
 
 
 def test_21_92_classify_click_fields_missing():

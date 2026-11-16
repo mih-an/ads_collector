@@ -741,6 +741,19 @@ def pages_violations(run_dir: Path, log: list[dict]) -> list[str]:
         f"raw/{key}_p{page}: и .html.gz, и .click.gz — тело страницы одно"
         for key, page in sorted(html & click)
     ]
+    # .click.gz — только у страницы, пришедшей кликом (kind=click); у
+    # страницы по ссылке тело — .html.gz
+    not_click = {
+        (r["sector"], r["page"], r.get("kind", ""))
+        for r in log
+        if r.get("verdict") == "OK" and r.get("kind") != "click"
+    }
+    found += [
+        f"raw/{key}_p{page}.click.gz: у строки verdict=OK kind={kind} тело — "
+        ".html.gz, а не .click.gz"
+        for key, page, kind in sorted(not_click)
+        if (key, page) in click
+    ]
     for kind, files in files_of.items():
         found += [
             f"raw/{key}_p{page}.{kind}.gz: файл есть, а строки verdict=OK в "
@@ -1136,6 +1149,12 @@ SPOILS = {
             d / "raw" / "T1307_p2.html.gz", d / "raw" / "T1307_p9.click.gz"
         ),
         ("raw/T1307_p9.click.gz:", "файл есть"),
+    ),
+    "тело .click.gz у страницы по ссылке": (
+        lambda d: (d / "raw" / "T1307_p2.html.gz").rename(
+            d / "raw" / "T1307_p2.click.gz"
+        ),
+        ("raw/T1307_p2.click.gz:", "kind=ssr"),
     ),
     "kind=xhr в done": (
         lambda d: edit_json(d / "plan.json", lambda p: p["done"][0].update(kind="xhr")),
