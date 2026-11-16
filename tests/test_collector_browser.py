@@ -1,0 +1,255 @@
+"""Модуль 21: контракт браузера, общий для реализаций (кейс 21.86).
+
+Тесты идут на каждом стенде STANDS (фикстура stand). Стенд Stand(папка теста)
+— реализация над фальшивым нижним миром: url — ссылка, которую тот узнаёт;
+browser(answers, ticket, monotonic) — браузер, которому сайт отвечает answers
+(SiteAnswer) по порядку; visits — переходы, дошедшие до нижнего мира.
+HttpStand — HttpBrowser над FakeTransport. ChromeBrowser подключится классом
+ChromeStand (фальшивая вкладка Playwright) и строкой "chrome" в STANDS.
+"""
+
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+from collector_support import (
+    USER_AGENT,
+    FakeTime,
+    FakeTransport,
+    Reply,
+    no_network,  # noqa: F401 — автофикстура
+)
+
+from collector import browser, http_browser, search_page, transport
+
+# Клетка, которую узнаёт нижний мир HttpStand, и её кольцо.
+KEY = "T0101"
+RING = [[37.1, 55.1], [37.2, 55.1], [37.2, 55.2], [37.1, 55.2], [37.1, 55.1]]
+# Отвод не на страницу 1 выдачи: просто другая ссылка сайта.
+OTHER_URL = "https://www.cian.ru/other/"
+# Подставные часы стоят на этом моменте; monotonic идёт на 0,25 с за вызов.
+EPOCH = 1_800_000_000.0
+
+
+@dataclass
+class SiteAnswer:
+    """Что сайт отвечает на один переход — без слов транспорта: код, текст
+    страницы, заголовки (имена как у сайта, в любом регистре); или сбой сети
+    (ответа нет), или исключение нижнего мира, которое сбоем сети не
+    является."""
+
+    status: int = 200
+    text: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    failure: bool = False
+    crash: BaseException | None = None
+
+
+def reply_of(answer: SiteAnswer) -> Reply:
+    """Ответ сайта словами FakeTransport: сбой — NetworkFailure, исключение
+    — как есть, иначе код, текст в UTF-8 и заголовки."""
+    if answer.failure:
+        return Reply(error=transport.NetworkFailure("timeout"))
+    if answer.crash is not None:
+        return Reply(error=answer.crash)
+    return Reply(answer.status, answer.text.encode("utf-8"), answer.headers)
+
+
+class HttpStand:
+    """HttpBrowser над FakeTransport: файл клеток с одной клеткой KEY в
+    папке folder, ответы сайта — на страницу 1 этой клетки по порядку."""
+
+    def __init__(self, folder: Path) -> None:
+        tiles = folder / "tiles.geojson"
+        feature = {
+            "type": "Feature",
+            "properties": {"sector": KEY},
+            "geometry": {"type": "Polygon", "coordinates": [RING]},
+        }
+        collection = {"type": "FeatureCollection", "features": [feature]}
+        tiles.write_text(json.dumps(collection), encoding="utf-8")
+        self.transport = FakeTransport(tiles, {})
+        self.url = search_page.page_url(RING)
+
+    def browser(
+        self,
+        answers: list[SiteAnswer],
+        ticket: browser.Ticket,
+        monotonic: Callable[[], float],
+    ) -> browser.Browser:
+        self.transport.replies[KEY, 1] = [reply_of(answer) for answer in answers]
+        return http_browser.HttpBrowser(self.transport, ticket, monotonic)
+
+    @property
+    def visits(self) -> list[str]:
+        return [sent.url for sent in self.transport.sent]
+
+
+STANDS = {"http": HttpStand}
+
+
+@pytest.fixture(params=list(STANDS))
+def stand(request, tmp_path):
+    return STANDS[request.param](tmp_path)
+
+
+def ticket_of(cookie_header: str | None = "a=b") -> browser.Ticket:
+    """Билет теста: кука cookie_header, UA ночей, возраст 5,7 ч."""
+    return browser.Ticket(cookie_header=cookie_header, ua=USER_AGENT, age_h=5.7)
+
+
+def fetch_one(stand, answers: list[SiteAnswer]) -> browser.FetchedPage:
+    """Один fetch по ссылке стенда; сайт отвечает answers по порядку."""
+    site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
+    return site.fetch(stand.url)
+
+
+def test_21_86_answer_fields(stand):
+    """21.86 Ответ 200 «страница» с заголовком Server: nginx — FetchedPage:
+    код 200, тело — текст (str), size — длина текста в UTF-8 (несжатый
+    ответ), neterr None, имена заголовков в нижнем регистре. Модуль 21."""
+    answer = SiteAnswer(200, "страница", {"Server": "nginx"})
+    fetched = fetch_one(stand, [answer])
+    assert (
+        fetched.code,
+        fetched.body,
+        type(fetched.body),
+        fetched.size,
+        fetched.neterr,
+        fetched.headers,
+    ) == (200, "страница", str, len("страница".encode()), None, {"server": "nginx"})
+
+
+@pytest.mark.parametrize("status", [403, 500])
+def test_21_86_error_status_is_answer(stand, status):
+    """21.86 Ответ-ошибка (403, 500) — FetchedPage с кодом и телом, neterr
+    None, а не исключение. Модуль 21."""
+    fetched = fetch_one(stand, [SiteAnswer(status, "запрет")])
+    assert (fetched.code, fetched.body, fetched.neterr) == (status, "запрет", None)
+
+
+def test_21_86_url_as_is_one_visit(stand):
+    """21.86 Ссылка уходит нижнему миру как есть; один fetch — один переход.
+    Модуль 21."""
+    fetch_one(stand, [SiteAnswer(200, "страница")])
+    assert stand.visits == [stand.url]
+
+
+@pytest.mark.parametrize("status", [301, 302])
+def test_21_86_redirect_not_followed(stand, status):
+    """21.86 Редирект (301, 302) не выполняется: один переход, код и
+    заголовки первого ответа цепочки (location), тело пусто; второй ответ
+    сайта не тронут — его получает следующий fetch. Модуль 21."""
+    answers = [SiteAnswer(status, "", {"Location": OTHER_URL}), SiteAnswer(200, "2")]
+    site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
+    first = site.fetch(stand.url)
+    visits_after_first = len(stand.visits)
+    second = site.fetch(stand.url)
+    assert (
+        visits_after_first,
+        first.code,
+        first.headers.get("location"),
+        first.body,
+        second.body,
+    ) == (1, status, OTHER_URL, "", "2")
+
+
+def test_21_86_waf_verdict_unchanged(stand):
+    """21.86 Заголовок WAF-Verdict ответа 302 доходит как waf-verdict с тем
+    же значением. Модуль 21."""
+    headers = {"WAF-Verdict": "challenge", "Location": OTHER_URL}
+    fetched = fetch_one(stand, [SiteAnswer(302, "", headers)])
+    assert fetched.headers.get("waf-verdict") == "challenge"
+
+
+def test_21_86_failure_is_code_0(stand):
+    """21.86 Сбой сети — FetchedPage, а не исключение: код 0, тело пусто,
+    size 0, headers {}, neterr — непустая строка в одну строку. Модуль 21."""
+    fetched = fetch_one(stand, [SiteAnswer(failure=True)])
+    neterr = fetched.neterr
+    one_line = isinstance(neterr, str) and neterr.strip() != "" and "\n" not in neterr
+    assert (fetched.code, fetched.body, fetched.size, fetched.headers, one_line) == (
+        0,
+        "",
+        0,
+        {},
+        True,
+    )
+
+
+def test_21_86_failure_one_visit(stand):
+    """21.86 После сбоя сети fetch нижний мир второй раз не зовёт: повторы
+    — дело обхода. Модуль 21."""
+    fetch_one(stand, [SiteAnswer(failure=True)])
+    assert len(stand.visits) == 1
+
+
+def test_21_86_fetch_after_failure(stand):
+    """21.86 Следующий fetch после сбоя сети работает: ответ сайта, второй
+    переход по той же ссылке. Модуль 21."""
+    answers = [SiteAnswer(failure=True), SiteAnswer(200, "страница")]
+    site = stand.browser(answers, ticket_of(), FakeTime(EPOCH).monotonic)
+    site.fetch(stand.url)
+    second = site.fetch(stand.url)
+    assert (second.code, second.body, stand.visits) == (
+        200,
+        "страница",
+        [stand.url, stand.url],
+    )
+
+
+@pytest.mark.parametrize("error", [ValueError, KeyboardInterrupt])
+def test_21_86_other_exception_propagates(stand, error):
+    """21.86 Исключение нижнего мира, которое не сбой сети (ValueError,
+    KeyboardInterrupt), летит из fetch, а не глотается. Модуль 21."""
+    site = stand.browser(
+        [SiteAnswer(crash=error("21.86"))], ticket_of(), FakeTime(EPOCH).monotonic
+    )
+    with pytest.raises(error):
+        site.fetch(stand.url)
+
+
+def test_21_86_ms_by_monotonic(stand):
+    """21.86 ms — по переданной функции monotonic, в мс: часы идут на 0,25 с
+    за вызов → ms 250.0. Модуль 21."""
+    assert fetch_one(stand, [SiteAnswer(200, "страница")]).ms == 250.0
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [SiteAnswer(200, "страница"), SiteAnswer(failure=True)],
+    ids=["ответ", "сбой сети"],
+)
+def test_21_86_monotonic_twice_per_fetch(stand, answer):
+    """21.86 Один fetch — ровно два обращения к monotonic (до перехода и
+    после ответа) при ответе и при сбое сети: на них стоит ms=250 в
+    night.log эталонных ночей 21.68–21.70. Модуль 21."""
+    clock = FakeTime(EPOCH)
+    stand.browser([answer], ticket_of(), clock.monotonic).fetch(stand.url)
+    assert clock.monotonic_calls == 2
+
+
+def test_21_86_ticket_is_given(stand):
+    """21.86 ticket браузера — переданный билет: cookie_header, ua, age_h
+    без изменений. Модуль 21."""
+    given = browser.Ticket(cookie_header="sid=21.86", ua="Agent/21.86", age_h=3.5)
+    site = stand.browser([], given, FakeTime(EPOCH).monotonic)
+    ticket = site.ticket
+    assert (ticket.cookie_header, ticket.ua, ticket.age_h) == (
+        "sid=21.86",
+        "Agent/21.86",
+        3.5,
+    )
+
+
+@pytest.mark.parametrize(
+    ("cookie_header", "expected"),
+    [("a=b", True), (None, False), ("", False)],
+    ids=["кука", "None", "пусто"],
+)
+def test_21_86_has_ticket(cookie_header, expected):
+    """21.86 Ticket.has_ticket — есть ли непустая строка Cookie: "a=b" —
+    да, None и "" — нет. Модуль 21."""
+    assert ticket_of(cookie_header).has_ticket is expected

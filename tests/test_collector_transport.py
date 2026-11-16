@@ -34,7 +34,7 @@ from collector_support import (
     no_network,  # noqa: F401 — автофикстура
 )
 
-from collector import browser, httpx_transport, transport, urllib_transport
+from collector import http_browser, httpx_transport, transport, urllib_transport
 
 URL = "https://www.cian.ru/cat.php?deal_type=sale&p=2"
 # Адрес страницы поиска вида page_url (21.16): скобки и запятые в запросе —
@@ -460,9 +460,9 @@ def test_21_80_error_status_is_reply(kit):
     )
 
 
-# Полный набор заголовков браузера, как его передаёт Browser с билетом
+# Полный набор заголовков браузера, как его передаёт HttpBrowser с билетом
 # на страницу 1 (21.24).
-GIVEN_HEADERS = browser.browser_headers(USER_AGENT, None, True)
+GIVEN_HEADERS = http_browser.browser_headers(USER_AGENT, None, True)
 
 
 def test_21_80_request_headers_delivered(kit):
