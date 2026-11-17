@@ -462,14 +462,25 @@ def test_21_94_scroll_waits_at_bottom(monkeypatch):
     есть: колесо не крутится, рука «смотрит» и двигает мышь в нижнюю часть
     окна (BOTTOM_SPOT_X, BOTTOM_SPOT_Y — здесь 90 % и 95 %: точка 1080, 760),
     пока не пройдут 10 с, — и не дольше: всего не больше 10 с + пауза в
-    конце (AFTER_SCROLL_S до 1,5 с) + одно движение мыши (до MOVE_MAX_S ×
-    MOVE_SPEED[1] × STEP_PAUSE[1] = 1,4 × 1,25 × 1,3 с). Модуль 21."""
+    конце (верх AFTER_SCROLL_S) + одно движение мыши (MOVE_MAX_S ×
+    MOVE_SPEED[1] × STEP_PAUSE[1]) с поправкой перелёта (верх FIX_PAUSE_S +
+    FIX_STEPS × верх FIX_STEP_PAUSE_S); предел считается из констант
+    chrome_human. Модуль 21."""
     monkeypatch.setattr(chrome_human, "BOTTOM_SPOT_X", (0.9, 0.9))
     monkeypatch.setattr(chrome_human, "BOTTOM_SPOT_Y", (0.95, 0.95))
     page = FakePage([], scroll_height=900.0)
     human, clock = hand(page)
     human.scroll_page(page, 10.0)
-    longest = 10.0 + 1.5 + 1.4 * 1.25 * 1.3
+    one_move = (
+        chrome_human.MOVE_MAX_S
+        * chrome_human.MOVE_SPEED[1]
+        * chrome_human.STEP_PAUSE[1]
+    )
+    overshoot_fix = (
+        chrome_human.FIX_PAUSE_S[1]
+        + chrome_human.FIX_STEPS * chrome_human.FIX_STEP_PAUSE_S[1]
+    )
+    longest = 10.0 + chrome_human.AFTER_SCROLL_S[1] + one_move + overshoot_fix
     assert (
         wheels(page),
         near(moves(page)[-1], (1080.0, 760.0)),
@@ -533,6 +544,16 @@ def test_21_94_scroll_bottom_threshold(left, wheeled):
     assert bool(wheels(page)) is wheeled
 
 
+def last_wheel_and_pause(page: FakePage) -> tuple[float, float]:
+    """(сколько рука проспала до последнего шага колеса, сон сразу после
+    него) — по событиям вкладки."""
+    events = page.events
+    last_wheel = max(i for i, event in enumerate(events) if event[0] == "wheel")
+    slept_before = sum(event[1] for event in events[:last_wheel] if event[0] == "sleep")
+    _, its_pause = events[last_wheel + 1]
+    return slept_before, its_pause
+
+
 def test_21_94_scroll_stops_on_endless_page(monkeypatch):
     """21.94 Бесконечная страница (низ отъезжает после каждого шага):
     прокрутка 10 с кончается по страховке — через 60 с сверх заданного
@@ -545,10 +566,7 @@ def test_21_94_scroll_stops_on_endless_page(monkeypatch):
     page = FakePage([], endless=True)
     human, _ = hand(page)
     human.scroll_page(page, 10.0)
-    kinds = [event[0] for event in page.events]
-    last_wheel = len(kinds) - 1 - kinds[::-1].index("wheel")
-    before = sum(e[1] for e in page.events[:last_wheel] if e[0] == "sleep")
-    _, its_pause = page.events[last_wheel + 1]
+    before, its_pause = last_wheel_and_pause(page)
     assert (before < 70.0, before + its_pause >= 70.0) == (True, True)
 
 

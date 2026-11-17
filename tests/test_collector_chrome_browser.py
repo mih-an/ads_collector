@@ -948,22 +948,63 @@ def test_21_98_card_link_clicked_among_visible():
     assert page.clicked == [shown]
 
 
-@pytest.mark.parametrize(
-    "card_url", [CARD_URL, CAPTCHA_CARD_URL], ids=["листание", "блок"]
-)
-def test_21_98_search_front_error_is_error(card_url):
-    """21.98 С front ошибка Playwright при выводе вкладки выдачи вперёд
-    после закрытия карточки — CardVisit ERROR, деталь — первая строка текста
-    ошибки, исключение не летит; вкладка выдачи выводится вперёд один раз —
+def test_21_98_search_front_error_is_error():
+    """21.98 С front удачный заход (карточку пролистали), затем ошибка
+    Playwright при выводе вкладки выдачи вперёд после закрытия карточки —
+    CardVisit ERROR, деталь — первая строка текста ошибки; адрес карточки,
+    трафик и длительность листания — как у того же захода без ошибки, тело
+    пустое; исключение не летит; вкладка выдачи выводится вперёд один раз —
     после ошибки не повторяется; карточка закрыта (DECISIONS
-    block/click-pages, ревью PR #9). Модуль 21."""
-    page, card = card_page(FakeCardPage(url=card_url))
+    block/click-pages, ревью PR #9, круг 2). Модуль 21."""
+    twin = view(card_page()[0], front=True)
+    page, card = card_page()
+    page.front_error = FakePlaywrightError(TAB_CLOSED + "\nCall log:\n  - x")
+    visit = view(page, front=True)
+    fronts = page.context.log.count(("выдача", "front"))
+    assert (
+        visit.verdict,
+        visit.detail,
+        visit.url,
+        visit.traffic,
+        visit.seconds,
+        visit.body,
+        fronts,
+        card.closed,
+    ) == (
+        "ERROR",
+        TAB_CLOSED,
+        CARD_PLAIN_URL,
+        CARD_TRAFFIC_BYTES,
+        twin.seconds,
+        "",
+        1,
+        True,
+    )
+
+
+def test_21_98_block_kept_when_search_front_fails():
+    """21.98 С front признак блока карточки сработал, затем падает ошибкой
+    Playwright вывод вкладки выдачи вперёд — CardVisit остаётся BLOCK с
+    деталью признака, адресом без параметров и телом карточки, как у
+    обычного блока (блок — стоп, поздняя ошибка вкладки его не прячет);
+    исключение не летит; вкладка выдачи выводится вперёд один раз; карточка
+    закрыта (DECISIONS block/click-pages, ревью PR #9, круг 2). Модуль 21."""
+    page, card = card_page(FakeCardPage(url=CAPTCHA_CARD_URL))
     page.front_error = FakePlaywrightError(TAB_CLOSED + "\nCall log:\n  - x")
     visit = view(page, captcha_reason, front=True)
     fronts = page.context.log.count(("выдача", "front"))
-    assert (visit.verdict, visit.detail, fronts, card.closed) == (
-        "ERROR",
-        TAB_CLOSED,
+    assert (
+        visit.verdict,
+        visit.detail,
+        visit.url,
+        visit.body,
+        fronts,
+        card.closed,
+    ) == (
+        "BLOCK",
+        "captcha",
+        CAPTCHA_CARD_PLAIN_URL,
+        CARD_HTML,
         1,
         True,
     )
