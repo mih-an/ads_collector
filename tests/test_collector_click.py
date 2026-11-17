@@ -1754,6 +1754,42 @@ def test_21_98_plan_per_tile(monkeypatch):
     assert (len(plans), first.key, second.key) == (2, KEY, "T0612")
 
 
+@pytest.mark.parametrize(
+    "fetched",
+    [
+        lambda: NET_FETCHED,
+        lambda: status_fetched(403, "запрет"),
+        lambda: status_fetched(200, "<html>другое</html>"),
+    ],
+    ids=["сбой сети", "BLOCK", "API_CHANGED"],
+)
+def test_21_98_failed_page_one_plans_no_cards(monkeypatch, fetched):
+    """21.98 Страница 1 не удалась (сбой сети, BLOCK, API_CHANGED) — заходов
+    на карточку нет: plan_card_pages не зовётся, visit_card — None, браузер
+    на карточку не идёт. Модуль 21."""
+    plans = fake_plans(monkeypatch, {1})
+    site = ClickBrowser([fetched()], visits=[card_visit()])
+    loader = page_loader.ClickPageLoader(site, random.Random(1), PER_TILE)
+    loader.load_page(KEY, RING, 1)
+    assert (plans, loader.visit_card(), view_calls(site)) == ([], None, [])
+
+
+def test_21_98_plan_after_page_one_retry(monkeypatch):
+    """21.98 Страница 1 не удалась из-за сбоя сети, повтор по ссылке удался —
+    страницы захода выбираются после удачного повтора: plan_card_pages один
+    раз (по totalOffers и объявлениям повтора), на странице 1 — заход.
+    Модуль 21."""
+    plans = fake_plans(monkeypatch, {1})
+    site = ClickBrowser([NET_FETCHED, html_fetched()], visits=[card_visit()])
+    rnd = random.Random(1)
+    loader = page_loader.ClickPageLoader(site, rnd, PER_TILE)
+    loader.load_page(KEY, RING, 1)
+    loader.load_page(KEY, RING, 1)
+    card = loader.visit_card()
+    total, offers = fixture_offers("T0611_p1.html.xz")
+    assert (plans, card.page) == ([(total, len(offers), PER_TILE, rnd)], 1)
+
+
 class NoRandom(random.Random):
     """Случайность, к которой нельзя обращаться: любой выбор — падение."""
 
