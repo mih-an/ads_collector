@@ -1,12 +1,12 @@
 """
 search_page.py — контракт выдачи ЦИАН: ссылка на страницу поиска и разбор ответа.
 
-Получает кольцо полигона и номер страницы (page_url) или код, тело и
-заголовки ответа (classify_page, у ответа на клик — classify_click →
-Classified). Отдаёт ссылку, класс ответа (OK, PAGE_END, BLOCK, API_CHANGED,
-NET_ERROR) с деталью, totalOffers и объявления, id объявлений и оценку числа
-страниц; при листании кликом — что нажать, какой ответ ловить и признаки
-конца выдачи. Чистые функции: без сети, диска и часов.
+Получает кольцо полигона и номер страницы (page_url) или код, тело и заголовки
+ответа (classify_page, у ответа на клик — classify_click → Classified). Отдаёт
+ссылку, класс ответа (OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью,
+totalOffers и объявления, id объявлений и оценку числа страниц; при листании
+кликом — что нажать, какой ответ ловить, признаки конца выдачи, ссылку на
+объявление и признаки блока карточки. Чистые функции: без сети, диска и часов.
 """
 
 from __future__ import annotations
@@ -51,6 +51,15 @@ CLICK_TOTAL_PATH = "data.offerCount"
 # же id, что на прошлой странице
 NO_NEXT_PAGE = "no_next_page"
 SAME_IDS = "same_ids"
+# Ссылка на объявление на странице выдачи — вхождение пути карточки: ссылки
+# ведут на поддомен с параметрами, krasnogorsk.cian.ru/sale/suburban/<число>/
+# ?context=… (21.92; DECISIONS block/click-pages)
+OFFER_LINK_PATTERN = r"/sale/suburban/\d+/?"
+# Признаки блока открытой карточки (решение Андрея 9): капча в адресе (без
+# учёта регистра, как в пробе) или адрес не на cian.ru и не на его поддомене
+CIAN_HOST = "cian.ru"
+CARD_CAPTCHA = "captcha"
+CARD_FOREIGN_URL = "foreign_url"
 
 CAPTCHA_MARKERS = (
     "geetest",
@@ -128,6 +137,19 @@ def is_next_page_response(url: str, resource_type: str) -> bool:
     if RECOMMENDATIONS_API in url:
         return False
     return NEXT_PAGE_API in url and resource_type in API_REQUEST_KINDS
+
+
+def card_block_reason(url: str) -> str | None:
+    """Признак блока открытой карточки по её адресу (21.92): капча в адресе
+    — "captcha" (проверяется первой, и на чужом сайте); хост не cian.ru и не
+    *.cian.ru — "foreign_url" (cian.ru.evil.com и notcian.ru — чужие); иначе
+    None."""
+    if CARD_CAPTCHA in url.lower():
+        return CARD_CAPTCHA
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if host == CIAN_HOST or host.endswith("." + CIAN_HOST):
+        return None
+    return CARD_FOREIGN_URL
 
 
 # ──────────────────── РАЗБОР И КЛАССИФИКАЦИЯ ────────────────────────

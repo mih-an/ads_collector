@@ -68,6 +68,8 @@ POLL_S = 0.5
 CLICK_TIMEOUT_MS = 60_000
 LOAD_TIMEOUT_MS = 60_000
 URL_TIMEOUT_MS = 30_000
+# карточка объявления (--cards): ожидание новой вкладки — число пробы
+CARD_OPEN_TIMEOUT_MS = 30_000
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -192,6 +194,12 @@ def read_chrome_ticket(tab: chrome_browser.ChromeTab) -> Ticket:
     return Ticket(cookie_header=cookie_header, ua=ua, age_h=None)
 
 
+def new_tab_key(platform: str) -> str:
+    """Клавиша «открыть ссылку в новой вкладке»: Cmd на macOS, иначе Ctrl
+    (как в пробе click_test.py, 21.98)."""
+    return "Meta" if platform == "darwin" else "Control"
+
+
 def make_chrome_browser(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
 ) -> Browser:
@@ -218,6 +226,10 @@ def make_chrome_browser(
         click_timeout_ms=CLICK_TIMEOUT_MS,
         load_timeout_ms=LOAD_TIMEOUT_MS,
         url_timeout_ms=URL_TIMEOUT_MS,
+        card_open_timeout_ms=CARD_OPEN_TIMEOUT_MS,
+        front=settings.front,
+        # sys.platform — в момент сборки: так клавишу подменяют тесты (21.98)
+        new_tab_key=new_tab_key(sys.platform),
     )
     # time — по имени модуля в момент вызова: так часы подменяют тесты (21.90)
     human = chrome_human.Human(time.sleep, time.monotonic, rnd)
@@ -273,8 +285,11 @@ def make_click_loader(
     browser: Browser, settings: Settings, rnd: random.Random, clock: Clock
 ) -> PageLoader:
     """Загрузчик «кликом» над браузером, который умеет кликать (проверка —
-    check_args); пауза — прокрутка страницы браузером."""
-    return page_loader.ClickPageLoader(browser)
+    check_args); пауза — прокрутка страницы браузером. С --cards — заходы
+    на карточки: rnd обхода и Settings.cards_per_tile; без него — None,
+    заходов нет (21.98)."""
+    cards_per_tile = settings.cards_per_tile if settings.cards else None
+    return page_loader.ClickPageLoader(browser, rnd, cards_per_tile)
 
 
 # Одно место для списка загрузчиков страницы, по образцу TRANSPORTS: из него
@@ -324,6 +339,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=PAGE_LOADER,
         help="как загружать страницы выдачи",
     )
+    ap.add_argument(
+        "--cards",
+        action="store_true",
+        help="заходить на карточки объявлений (только с --page-loader click)",
+    )
+    ap.add_argument(
+        "--front",
+        action="store_true",
+        help="вкладку карточки на передний план (окно Chrome выскакивает поверх)",
+    )
     ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
     ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
     ap.add_argument(
@@ -345,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
-    паузы старта (21.45, 21.81, 21.82, 21.84, 21.87)."""
+    паузы старта (21.45, 21.81, 21.82, 21.84, 21.87, 21.98)."""
     # прогона без запросов нет: smoke в законченном прогоне — всегда словарь
     # (21.45; DECISIONS, block/simplify-2, ревью PR #4)
     if args.budget < 1:
@@ -356,6 +381,12 @@ def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         ap.error(
             f"--page-loader click: браузер --browser {args.browser} кликать не "
             f"умеет (умеют: {clickers})"
+        )
+    # карточку открывают кликом во вкладке выдачи (решение Андрея 9, 21.98)
+    if args.cards and args.page_loader != "click":
+        ap.error(
+            f"--cards: заходы на карточки только с --page-loader click "
+            f"(сейчас --page-loader {args.page_loader})"
         )
     libraries = (
         ("--transport", args.transport, TRANSPORTS[args.transport].library),
@@ -411,6 +442,8 @@ def read_settings(argv: list[str]) -> Settings:
         # абсолютный путь: не зависит от того, как Chrome понимает
         # относительный --user-data-dir, и виден в ошибке (DECISIONS)
         chrome_profile=os.path.abspath(args.chrome_profile),
+        cards=args.cards,
+        front=args.front,
     )
 
 

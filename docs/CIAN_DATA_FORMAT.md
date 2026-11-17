@@ -101,7 +101,8 @@ runs/<YYYY-MM-DD_HHMM>/        один прогон (метка = время с
         _broken_*.note.txt     пояснение к ответу: verdict, detail, http, kind, sector,
                                page, ua (текст, не сжат)
         _block_*.txt           тело+заголовки при BLOCK, в том числе для страницы
-                               Servicepipe (деталь servicepipe)
+                               Servicepipe (деталь servicepipe); блок на карточке
+                               объявления (--cards) — _block_<sector>_p<N>_0_<ЧЧММСС>.txt (§4)
 runs_mini/                     ручные мини-тесты — та же структура
 ```
 
@@ -289,7 +290,25 @@ block/click-pages),
 всегда, а пометка строкой в итоге stdout — у `same_ids` всегда, у `no_next_page`
 только если прошлая страница клетки полная и по `totalOffers` страниц больше, чем
 прочитано; новых ключей `summary.json` нет),
-`event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent).
+`event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent),
+`event=card` — заход на карточку объявления при `--cards` (block/click-pages,
+решение Андрея 9): поля по порядку `sector page url traffic view_s verdict err`;
+`sector` и `page` — открытая страница выдачи, `url` — адрес карточки без
+параметров (`?context=…` отрезан), `traffic` — байт по сети за заход, `view_s` —
+длительность листания, с, с одним знаком; `verdict` — `OK` (`err=-`), `ERROR`
+(не удалось открыть или ошибка вкладки, `err` — первая строка текста ошибки;
+на странице нет ссылок на объявления — `err=no_offer_links`; прогон идёт) или
+`BLOCK` (`err=card_captcha` — капча в адресе, `err=card_foreign_url` — адрес не
+на cian.ru и не на его поддомене). Строка `BLOCK` пишется перед строкой
+`event=STOP reason=block cls=BLOCK`; деталь стопа — та же, у капчи с билетом — с
+пометкой `|cookie_expired_or_burned`. Заход бюджет не тратит (`spent` и `n=` не
+растут) и в `done` не идёт. Блок на карточке пишет
+`raw/_block_<sector>_p<N>_0_<ЧЧММСС>.txt` (код 0 — ответа страницы нет): первая
+строка `verdict=BLOCK detail=card_<признак> http=0`, вторая `sector= page= ua=`,
+пустая строка, `url: <адрес карточки без параметров>`, пустая строка, начало
+тела вкладки карточки (как у страницы: первые 100 000 знаков, пустое —
+`<пустое тело>`). Все поля `event=card` и файл блока карточки — допущение
+(DECISIONS, block/click-pages).
 Вердикты: OK, PAGE_END (не отказ), BLOCK, API_CHANGED, NET_ERROR.
 
 ## 5. Правила бэкфила (обсуждены 18.09)

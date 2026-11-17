@@ -1,14 +1,13 @@
 """
 run_folder.py — папка прогона сборщика ЦИАН: имена, кодировки, порядок записи.
 
-Создаёт папку прогона (RunFolder.create), получает готовые словари и ответ на
-запрос (PageAnswer, его создаёт загрузчик страницы); пишет папку
-<runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log (say — печать обхода в stdout: эхо
-night.log, итог), plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и
-.html.gz (у ответа на клик — .click.gz), _broken_* с .note.txt, _block_*.txt,
-снимок охвата polygons.geojson.gz и
-summary.json (последним). Тексты служебных файлов — чистыми функциями;
-время модуль сам не берёт: метка и штамп приходят аргументом.
+Создаёт папку прогона (RunFolder.create), получает готовые словари, ответ на
+запрос PageAnswer и заход на карточку CardAnswer (их создаёт загрузчик страницы);
+пишет <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke]: night.log (say — печать обхода в stdout),
+plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz (у клика —
+.click.gz), _broken_* с .note.txt, _block_*.txt (и у карточки), снимок охвата
+polygons.geojson.gz и summary.json (последним). Тексты служебных файлов — чистыми
+функциями; время модуль сам не берёт: метка и штамп приходят аргументом.
 """
 
 from __future__ import annotations
@@ -30,6 +29,11 @@ CLICK_KIND = "click"
 # (решение Андрея 5)
 HTML_BODY = "html"
 CLICK_BODY = "click"
+# приставка детали блока на карточке объявления в night.log, файле блока и
+# stop_detail: card_captcha, card_foreign_url (DECISIONS block/click-pages, (г))
+CARD_DETAIL_PREFIX = "card_"
+# начало тела в файле блока: дальше для разбора не нужно
+BLOCK_BODY_CHARS = 100_000
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,24 @@ class PageAnswer:
     headers: dict
     kind: str = PAGE_KIND
     body_ext: str = HTML_BODY
+
+
+@dataclass(frozen=True)
+class CardAnswer:
+    """Заход на карточку объявления (--cards, 21.98): создаёт загрузчик
+    страницы — клетка и страница открытой вкладки и заход браузера
+    (browser.CardVisit: адрес без параметров, трафик, длительность листания,
+    вердикт OK / BLOCK / ERROR, деталь, тело вкладки у блока). Обход пишет
+    по нему строку event=card и у BLOCK — файл блока; бюджет заход не тратит."""
+
+    key: str
+    page: int
+    url: str
+    traffic: int
+    seconds: float
+    verdict: str
+    detail: str
+    body: str
 
 
 def folder_label(started_at: datetime, smoke_only: bool) -> str:
@@ -106,8 +128,24 @@ def block_text(answer: PageAnswer, ua: str) -> str:
     ):
         if k in answer.headers:
             text += f"{k}: {answer.headers[k]}\n"
-    body = answer.body
-    return text + "\n" + (body[:100_000] if body else "<пустое тело>") + "\n"
+    return text + body_excerpt(answer.body)
+
+
+def card_block_text(card: CardAnswer, ua: str) -> str:
+    """Текст _block_* карточки — по образцу файла блока страницы: вердикт,
+    деталь (с приставкой card_, без пометки «билет сгорел») и http=0 —
+    ответа страницы нет; вместо заголовков — адрес карточки; начало тела
+    вкладки (DECISIONS block/click-pages, допущение (а))."""
+    return (
+        f"verdict=BLOCK detail={card.detail} http=0\n"
+        f"sector={card.key} page={card.page} ua={ua}\n\n"
+        f"url: {card.url}\n" + body_excerpt(card.body)
+    )
+
+
+def body_excerpt(body: str) -> str:
+    """Хвост файла блока: пустая строка и начало тела (или «<пустое тело>»)."""
+    return "\n" + (body[:BLOCK_BODY_CHARS] if body else "<пустое тело>") + "\n"
 
 
 @dataclass(frozen=True)
@@ -188,6 +226,13 @@ class RunFolder:
         name = f"_block_{answer.key}_p{answer.page}_{answer.code}_{hms}"
         with open(os.path.join(self.raw, name + ".txt"), "w", encoding="utf-8") as fh:
             fh.write(block_text(answer, ua))
+
+    def write_card_block(self, card: CardAnswer, ua: str, hms: str) -> None:
+        """BLOCK на карточке: raw/_block_<клетка>_p<N>_0_<ЧЧММСС>.txt — код 0,
+        ответа страницы нет (DECISIONS block/click-pages); hms — ЧЧММСС."""
+        name = f"_block_{card.key}_p{card.page}_0_{hms}"
+        with open(os.path.join(self.raw, name + ".txt"), "w", encoding="utf-8") as fh:
+            fh.write(card_block_text(card, ua))
 
     def write_polygons(self, rings: dict[str, list]) -> None:
         """Снимок охвата: канонические кольца клеток (7 знаков), gzip без имени

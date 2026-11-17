@@ -83,6 +83,12 @@ READ_FACTOR = (2, 4)
 MIN_DELAY_S = 0.15
 AFTER_SCROLL_S = (0.5, 1.5)
 
+# карточка объявления (open_random_card пробы; её зовёт ChromeBrowser, 21.98):
+# смотрит после загрузки, листает, пауза после закрытия
+CARD_LOAD_LOOK_S = (1, 2.5)
+CARD_VIEW_S = (20, 60)
+CARD_CLOSE_S = (0.5, 1.5)
+
 # Скрипты вкладки: размер окна и сколько пикселей страницы ниже окна.
 WINDOW_SIZE_JS = "() => [window.innerWidth, window.innerHeight]"
 LEFT_PX_JS = (

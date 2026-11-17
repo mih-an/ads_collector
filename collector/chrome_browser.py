@@ -1,13 +1,13 @@
 """
 chrome_browser.py — ChromeBrowser: браузер browser.Browser над вкладкой Chrome.
 
-Получает ChromeTab (вкладка Playwright и два класса её ошибок), билет browser.Ticket,
-часы monotonic, настройки вкладки TabSettings и руку chrome_human.Human. fetch —
-тело ответа сервера на переход, у редиректа — первый ответ цепочки; click_and_catch
-— клик рукой и пойманный ответ (ClickedPage); scroll_page — прокрутка рукой; сбой
-сети — код 0. Функция-край connect_chrome_tab подключается к Chrome по порту и при
-нужде запускает его: playwright, subprocess и time — только в ней. Контракт —
-docs/reference/browser_contract.md, проверки — кейсы 21.86, 21.88, 21.93.
+Получает ChromeTab (вкладка Playwright и два класса её ошибок), билет, часы
+monotonic, настройки вкладки TabSettings и руку chrome_human.Human. fetch — ответ
+на переход (у редиректа — первый ответ цепочки); click_and_catch — клик рукой и
+пойманный ответ; scroll_page — прокрутка рукой; view_card — заход на карточку в
+новой вкладке; сбой сети — код 0. Край connect_chrome_tab подключается к Chrome
+(при нужде запускает его): playwright, subprocess и time — только в нём. Контракт —
+docs/reference/browser_contract.md, кейсы 21.86, 21.88, 21.89, 21.93, 21.98.
 """
 
 from __future__ import annotations
@@ -17,8 +17,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from collector import chrome_human
+from collector import chrome_human, search_page
 from collector.browser import (
+    CARD_ERROR,
+    BlockReason,
+    CardVisit,
     ClickedPage,
     ClickTarget,
     FetchedPage,
@@ -54,6 +57,25 @@ FIND_LINK_JS = """
   return found;
 }
 """
+# Ссылки на объявления: href видимых ссылок, в которых найден шаблон pattern,
+# без повторов (как OFFER_LINKS_JS пробы; шаблон приходит из search_page).
+OFFER_LINKS_JS = """
+(pattern) => {
+  const wanted = new RegExp(pattern);
+  const seen = new Set();
+  for (const a of document.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href');
+    if (wanted.test(href) && a.offsetParent !== null) seen.add(href);
+  }
+  return [...seen];
+}
+"""
+# Деталь захода, когда на странице нет ни одной ссылки на объявление (21.98)
+NO_OFFER_LINKS = "no_offer_links"
+# Событие CDP «ресурс загружен» и его размер по сети — трафик карточки (проба)
+CDP_NETWORK_ENABLE = "Network.enable"
+CDP_LOADING_FINISHED = "Network.loadingFinished"
+CDP_BYTES = "encodedDataLength"
 
 
 class ChromeConnectError(RuntimeError):
@@ -130,14 +152,49 @@ def first_response(response: Any, url: str) -> Any:
 @dataclass(frozen=True)
 class TabSettings:
     """Ожидания вкладки, мс: переход (тайм-аут и событие загрузки wait_until),
-    ответ на клик, событие load и адрес с номером страницы после клика.
-    Числа — константы cian_collect.py (DECISIONS, block/click-pages)."""
+    ответ на клик, событие load (и у карточки), адрес с номером страницы
+    после клика, новая вкладка карточки. Карточка: front — её вкладку и
+    затем выдачу на передний план (--front), new_tab_key — клавиша «открыть
+    в новой вкладке». Числа — константы cian_collect.py (DECISIONS,
+    block/click-pages)."""
 
     goto_timeout_ms: float
     wait_until: str
     click_timeout_ms: float
     load_timeout_ms: float
     url_timeout_ms: float
+    card_open_timeout_ms: float
+    front: bool
+    new_tab_key: str
+
+
+def links_with_href(page: Any, href: str) -> Any:
+    """Локатор ссылок, у которых атрибут href равен href как есть: с
+    экранированием «\\» и «"» селектор находит ту самую ссылку, отдельная
+    проверка числа не нужна (DECISIONS, block/click-pages)."""
+    quoted = href.replace("\\", "\\\\").replace('"', '\\"')
+    return page.locator(f'a[href="{quoted}"]')
+
+
+def plain_url(url: str) -> str:
+    """Адрес без параметров: у карточки ?context=… — шум (DECISIONS,
+    block/click-pages, допущение (а))."""
+    return url.split("?", 1)[0]
+
+
+def card_error(detail: str, url: str = "") -> CardVisit:
+    """Заход не удался: вердикт ERROR с деталью, без трафика и листания."""
+    return CardVisit(
+        url=url, traffic=0, seconds=0.0, verdict=CARD_ERROR, detail=detail, body=""
+    )
+
+
+def close_tabs_opened_since(context: Any, tabs_before: list) -> None:
+    """Закрыть вкладки, появившиеся за заход: вкладки человека в профиле
+    Chrome не трогаем (DECISIONS block/click-pages, допущение (б); 21.98)."""
+    for tab in context.pages:
+        if tab not in tabs_before:
+            tab.close()
 
 
 def find_target(page: Any, target: ClickTarget) -> Any | None:
@@ -146,10 +203,7 @@ def find_target(page: Any, target: ClickTarget) -> Any | None:
     активный элемент с текстом target.else_text; нет и его — None (21.93)."""
     href = page.evaluate(FIND_LINK_JS, [target.link_param, target.link_value])
     if href:
-        # href — значение атрибута найденной ссылки как есть: с экранированием
-        # «\» и «"» селектор находит её же, отдельная проверка числа не нужна
-        quoted = href.replace("\\", "\\\\").replace('"', '\\"')
-        return page.locator(f'a[href="{quoted}"]').last
+        return links_with_href(page, href).last
     buttons = page.get_by_text(target.else_text, exact=False)
     # неактивная «Дальше» — нажимать нечего (DECISIONS block/click-pages, (в))
     if buttons.count() and buttons.last.is_enabled():
@@ -327,6 +381,110 @@ class ChromeBrowser:
     def scroll_page(self, seconds: float) -> None:
         """Пролистать открытую страницу до низа рукой за seconds секунд (21.86)."""
         self.human.scroll_page(self.tab.page, seconds)
+
+    def view_card(self, link_pattern: str, block_reason: BlockReason) -> CardVisit:
+        """Заход на карточку, как open_random_card пробы (21.98): случайная
+        ссылка по шаблону link_pattern → клик рукой с клавишей «в новой
+        вкладке» → карточка (look_at_card). Ссылок нет — ERROR
+        no_offer_links. Ошибка Playwright — ERROR с первой строкой текста, а
+        не исключение: до открытия закрываются вкладки, появившиеся за заход
+        (вкладки человека не трогаем), после — сама карточка; с front
+        выдача снова впереди. Прочие исключения летят (DECISIONS,
+        block/click-pages)."""
+        page = self.tab.page
+        hrefs = page.evaluate(OFFER_LINKS_JS, link_pattern)
+        if not hrefs:
+            return card_error(NO_OFFER_LINKS)
+        link = links_with_href(page, self.human.rnd.choice(hrefs)).first
+        tabs_before = page.context.pages
+        try:
+            card = self.open_card(link)
+        except self.tab.error as error:
+            close_tabs_opened_since(page.context, tabs_before)
+            self.to_front(page)
+            return card_error(one_line(error))
+        try:
+            return self.look_at_card(card, block_reason)
+        except self.tab.error as error:
+            card.close()
+            self.to_front(page)
+            return card_error(one_line(error), plain_url(card.url))
+
+    def open_card(self, link: Any) -> Any:
+        """Прицел → ожидание новой вкладки → клик с клавишей new_tab_key:
+        ожидание начинается до клика, чтобы вкладка не проскочила →
+        вкладка карточки."""
+        page = self.tab.page
+        point = self.human.aim_at(page, link)
+        timeout = self.settings.card_open_timeout_ms
+        with page.context.expect_page(timeout=timeout) as opened:
+            self.human.click(page, link, point, self.settings.new_tab_key)
+        return opened.value
+
+    def look_at_card(self, card: Any, block_reason: BlockReason) -> CardVisit:
+        """Открытая карточка: трафик по CDP, ожидание load (тайм-аут — не
+        сбой), взгляд, на передний план; блок — тело и закрыть, иначе
+        листать CARD_VIEW_S и закрыть → CardVisit. Трафик читается после
+        закрытия: поздние события сети тоже в сумме."""
+        sizes = self.listen_traffic(card)
+        self.wait_quietly(
+            lambda: card.wait_for_load_state(
+                LOAD_STATE, timeout=self.settings.load_timeout_ms
+            )
+        )
+        self.human.pause(chrome_human.CARD_LOAD_LOOK_S)
+        self.to_front(card)
+        url = plain_url(card.url)
+        reason = block_reason(card.url)
+        if reason is not None:
+            body = card.content()
+            self.close_card(card)
+            return CardVisit(
+                url=url,
+                traffic=sum(sizes),
+                seconds=0.0,
+                verdict=search_page.BLOCK,
+                detail=reason,
+                body=body,
+            )
+        seconds = self.human.rnd.uniform(*chrome_human.CARD_VIEW_S)
+        self.human.scroll_page(card, seconds)
+        self.close_card(card)
+        return CardVisit(
+            url=url,
+            traffic=sum(sizes),
+            seconds=seconds,
+            verdict=search_page.OK,
+            detail="-",
+            body="",
+        )
+
+    def listen_traffic(self, card: Any) -> list[int]:
+        """Сессия CDP над вкладкой карточки: байты по сети каждого
+        Network.loadingFinished → список, он пополняется до закрытия вкладки
+        (трафик, как в пробе; 21.98)."""
+        sizes: list[int] = []
+
+        def count_bytes(event: dict) -> None:
+            # событие без encodedDataLength в сумму не идёт (21.98, трафик CDP)
+            sizes.append(event.get(CDP_BYTES, 0))
+
+        session = self.tab.page.context.new_cdp_session(card)
+        session.send(CDP_NETWORK_ENABLE)
+        session.on(CDP_LOADING_FINISHED, count_bytes)
+        return sizes
+
+    def close_card(self, card: Any) -> None:
+        """Закрыть карточку, короткая пауза руки, выдача — на передний план."""
+        card.close()
+        self.human.pause(chrome_human.CARD_CLOSE_S)
+        self.to_front(self.tab.page)
+
+    def to_front(self, page: Any) -> None:
+        """Вкладку — на передний план, только с front: на Маке это выдёргивает
+        окно Chrome поверх других (проба; --front, решение Андрея 9)."""
+        if self.settings.front:
+            page.bring_to_front()
 
 
 def try_connect(

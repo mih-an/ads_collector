@@ -4,9 +4,9 @@ http_browser.py — HttpBrowser: реализация браузера browser.B
 Получает транспорт, билет browser.Ticket и часы monotonic; ссылку и Referer —
 от загрузчика страницы. UA — из билета, Cookie — у транспорта (21.23). Отдаёт
 FetchedPage: заголовки как у браузера, распаковка тела (битое сжатие 2xx —
-сбой сети, З167), длительность; сбой сети — код 0 с деталью; клик и
-прокрутка — BrowserCannotError. Повторов нет — они в crawl.Crawl. Без сети,
-диска и часов; собирает cian_collect.make_http_browser.
+сбой сети, З167), длительность; сбой сети — код 0 с деталью; клик,
+прокрутка и заход на карточку — BrowserCannotError. Повторов нет — они в
+crawl.Crawl. Без сети, диска и часов; собирает cian_collect.make_http_browser.
 """
 
 from __future__ import annotations
@@ -17,7 +17,9 @@ from collections.abc import Callable
 from typing import NoReturn
 
 from collector.browser import (
+    BlockReason,
     BrowserCannotError,
+    CardVisit,
     ClickedPage,
     ClickTarget,
     FetchedPage,
@@ -137,6 +139,10 @@ class HttpBrowser:
     def scroll_page(self, seconds: float) -> None:
         """Листать нечего: у транспорта нет страницы (21.86)."""
         self.cannot("scroll_page")
+
+    def view_card(self, link_pattern: str, block_reason: BlockReason) -> CardVisit:
+        """Заходить не во что: у транспорта нет вкладок (21.86)."""
+        self.cannot("view_card")
 
     def cannot(self, action: str) -> NoReturn:
         """Одно место текста «не умею» (DECISIONS, block/click-pages)."""

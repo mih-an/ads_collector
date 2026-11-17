@@ -4,9 +4,9 @@
 Документ совпадает с кодом (`collector/browser.py`, `collector/http_browser.py`,
 `collector/chrome_browser.py`, `collector/chrome_human.py`,
 `collector/cian_collect.py`) и тестами 21.86
-(`tests/test_collector_browser.py`), 21.88, 21.89 и 21.93
+(`tests/test_collector_browser.py`), 21.88, 21.89, 21.93 и 21.98
 (`tests/test_collector_chrome_browser.py`), 21.94
-(`tests/test_collector_chrome_human.py`), 21.87, 21.90 и 21.92
+(`tests/test_collector_chrome_human.py`), 21.87, 21.90, 21.92 и 21.98
 (`tests/test_collector.py`); расхождение — дефект, решает тест-план
 (`docs/TEST_PLAN.md`). Решения — `docs/DECISIONS.md`, строки
 block/browser-interface, block/chrome-insert и block/click-pages.
@@ -30,7 +30,8 @@ block/browser-interface, block/chrome-insert и block/click-pages.
 
 Файл — `collector/browser.py`. Это лист пакета: он ничего не берёт из
 `collector`, без сети, часов, диска, сжатия и печати. В нём интерфейс
-`Browser`, билет `Ticket`, ответ `FetchedPage` и нейтральные типы клика:
+`Browser`, билет `Ticket`, ответ `FetchedPage` и нейтральные типы клика и
+карточки:
 
 ```python
 class Browser(Protocol):
@@ -46,6 +47,9 @@ class Browser(Protocol):
 
     def scroll_page(self, seconds: float) -> None:
         """Пролистать открытую страницу до низа за seconds секунд (раздел 4а)."""
+
+    def view_card(self, link_pattern: str, block_reason: BlockReason) -> CardVisit:
+        """Зайти на случайное объявление открытой страницы (раздел 4а, правило 8)."""
 ```
 
 - `ticket` — входной билет `Ticket` (раздел 5), атрибут, а не метод.
@@ -69,9 +73,21 @@ class Browser(Protocol):
   параметр номера страницы, текст кнопки, какой ответ ловить — в
   `search_page` (`PAGE_PARAM`, `NEXT_BUTTON_TEXT`, `is_next_page_response`) и
   приходит в браузер аргументами; браузер его не хранит.
+- `view_card(link_pattern, block_reason)` — заход на карточку объявления
+  (`--cards`, решение Андрея 9): его зовёт `ClickPageLoader.visit_card`
+  после паузы на выбранной странице (21.98). `HttpBrowser` его не умеет —
+  `BrowserCannotError` тем же помощником `cannot` (21.86). Типы карточки:
+  `BlockReason = Callable[[str], str | None]` — признак блока открытой
+  карточки по её адресу (деталь или `None`); `CardVisit(url, traffic,
+  seconds, verdict, detail, body)` — итог захода: адрес без параметров,
+  байт по сети, длительность листания, с, вердикт `OK` (деталь «-»),
+  `BLOCK` (деталь — признак, `body` — тело вкладки карточки) или
+  `browser.CARD_ERROR` = `ERROR` (деталь — причина). Знание ЦИАН — шаблон
+  ссылки `search_page.OFFER_LINK_PATTERN` и признак `card_block_reason` —
+  приходит аргументами (21.92).
 
 `Browser` — `typing.Protocol`: реализация не наследует его, достаточно
-атрибута `ticket` и трёх методов с той же сигнатурой.
+атрибута `ticket` и четырёх методов с той же сигнатурой.
 
 Что реализации можно импортировать из пакета: `collector.browser`
 (`Ticket`, `FetchedPage`, типы клика) и, если нужно, `collector.search_page`
@@ -175,6 +191,17 @@ Chrome и ожидание порта живут только в ней; что 
 7. **Прокрутка** `scroll_page(seconds)` — долистать открытую страницу до
    низа примерно за `seconds` секунд (у `ChromeBrowser` — рукой человека,
    раздел 6).
+8. **Заход на карточку** `view_card(link_pattern, block_reason)` — на
+   открытой странице выбрать случайно одну из видимых ссылок, где найден
+   `link_pattern` (`re.search`), открыть её в новой вкладке, пролистать и
+   закрыть; открытая страница выдачи остаётся открытой. Ссылок нет —
+   `CardVisit` `ERROR` `no_offer_links`, ни клика, ни вкладки.
+   `block_reason(адрес карточки целиком)` не `None` — `BLOCK`: карточка не
+   листается, тело — в `body`, вкладка закрыта. Ошибка нижнего мира за
+   заход (вкладка не открылась, ошибка листания, тела, закрытия) — не
+   исключение, а `ERROR` с первой строкой текста: прогон из-за карточки не
+   падает; прочие исключения летят наружу (правило 8 раздела 4). Бюджет и
+   строки `night.log` — дело обхода (`event=card`, `docs/CIAN_DATA_FORMAT.md`).
 
 ## 5. Билет и как его понимает обход
 
@@ -238,10 +265,14 @@ Chrome и ожидание порта живут только в ней; что 
   импортирует playwright на верхнем уровне, а `fetch` ловит именно ошибки
   Playwright узким `except`.
 - **`TabSettings(goto_timeout_ms, wait_until, click_timeout_ms,
-  load_timeout_ms, url_timeout_ms)`** — frozen dataclass ожиданий вкладки:
-  тайм-аут перехода и событие загрузки (`goto`), тайм-аут ответа на клик,
-  события `load` и адреса с номером страницы после клика. Числа —
-  константы `cian_collect.py` (раздел 8).
+  load_timeout_ms, url_timeout_ms, card_open_timeout_ms, front,
+  new_tab_key)`** — frozen dataclass ожиданий вкладки: тайм-аут перехода и
+  событие загрузки (`goto`), тайм-аут ответа на клик, события `load` (и у
+  карточки) и адреса с номером страницы после клика, новой вкладки
+  карточки; для карточки ещё `front` (флаг `--front`: вкладку карточки, а
+  после неё выдачу — на передний план) и `new_tab_key` (клавиша «в новой
+  вкладке»: `Meta` на macOS, иначе `Control` — `cian_collect.new_tab_key`).
+  Числа — константы `cian_collect.py` (раздел 8).
 - **Класс `ChromeBrowser(tab, ticket, monotonic, settings, human)`.**
   Нижний мир — `ChromeTab` — приходит аргументом конструктора, как
   транспорт у `HttpBrowser`; класс сам ничего не запускает и ни к чему не
@@ -298,10 +329,12 @@ Chrome и ожидание порта живут только в ней; что 
 - Реализация не импортирует `crawl` и `cian_collect` (раздел 2): как
   собрать браузер из настроек запуска, она не знает.
 
-Всего у Chrome десять настроек: порт, путь к Chrome, папка профиля (флаги),
-ожидание порта, шаг опроса, тайм-аут перехода, событие загрузки, тайм-ауты
-ответа на клик, события `load` и адреса после клика (константы) — раздел 8;
-задержки и вероятности руки — константы `chrome_human.py`.
+Всего у Chrome тринадцать настроек: порт, путь к Chrome, папка профиля и
+`--front` (флаги), ожидание порта, шаг опроса, тайм-аут перехода, событие
+загрузки, тайм-ауты ответа на клик, события `load`, адреса после клика и
+новой вкладки карточки (константы), клавиша «в новой вкладке» (по
+платформе) — раздел 8; задержки и вероятности руки (и у карточки) —
+константы `chrome_human.py`.
 
 **Как ведёт себя `fetch`:**
 
@@ -365,7 +398,28 @@ Chrome и ожидание порта живут только в ней; что 
   `human.pause(chrome_human.AFTER_CLICK_S)`.
 - **`scroll_page(seconds)`** — `human.scroll_page(tab.page, seconds)`.
 
-Ветки сверх общего контракта — кейсы 21.88 и 21.93, функция-край — кейс
+**Как ведёт себя `view_card`** (правило 8 раздела 4а; как `open_random_card`
+пробы `../open_site/click_test.py`, 21.98):
+
+- **Что нажать:** `page.evaluate(OFFER_LINKS_JS, link_pattern)` — `href`
+  видимых ссылок по шаблону без повторов; выбор — `human.rnd.choice`, затем
+  `page.locator('a[href="…"]').first`.
+- **Порядок:** прицел рукой (`human.aim_at`) →
+  `context.expect_page(timeout=card_open_timeout_ms)` → клик рукой с
+  клавишей `new_tab_key` → вкладка карточки → сессия CDP
+  `context.new_cdp_session(карточка)`, `Network.enable`, трафик — сумма
+  `encodedDataLength` событий `Network.loadingFinished` до закрытия →
+  `wait_for_load_state("load", timeout=load_timeout_ms)` (тайм-аут — не
+  сбой) → пауза руки `CARD_LOAD_LOOK_S` → с `front` карточка впереди →
+  `block_reason(card.url)` → листание рукой `CARD_VIEW_S` (20–60 с) →
+  закрыть, пауза `CARD_CLOSE_S`, с `front` выдача снова впереди.
+- **Ошибки:** ошибка Playwright до открытия вкладки — закрываются только
+  вкладки, появившиеся за заход (вкладки человека не трогаются; допущение,
+  DECISIONS block/click-pages); после — закрывается карточка; в обоих
+  случаях с `front` выдача снова впереди, итог — `ERROR` с первой строкой
+  текста. Не-Playwright исключения летят.
+
+Ветки сверх общего контракта — кейсы 21.88, 21.93 и 21.98, функция-край — кейс
 21.89 (`tests/test_collector_chrome_browser.py`), рука человека — кейс 21.94
 (`tests/test_collector_chrome_human.py`); всё на подделках, без Chrome и
 playwright.

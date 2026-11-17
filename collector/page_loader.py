@@ -1,17 +1,18 @@
 """
 page_loader.py — загрузчик страницы: «дай страницу N клетки» для обхода.
 
-PageLoader — что обход знает о загрузчике: билет ticket, load_page(ключ
-клетки, кольцо, номер) → run_folder.PageAnswer с пустыми ids (id считает
-обход после записи файла, 21.36) и пауза на открытой странице stay_on_page.
-UrlPageLoader — каждая страница по ссылке (load_by_url); ClickPageLoader —
-страница 1 по ссылке, дальше кликом «следующая страница» во вкладке.
+PageLoader — что обход знает о загрузчике: билет ticket, load_page(ключ клетки,
+кольцо, номер) → run_folder.PageAnswer с пустыми ids (id считает обход после
+записи файла, 21.36), пауза на открытой странице stay_on_page и заход на карточку
+visit_card. UrlPageLoader — каждая страница по ссылке (load_by_url);
+ClickPageLoader — страница 1 по ссылке, дальше кликом, с --cards — карточки.
 Повторов нет — один load_page = одно обращение к браузеру (повторы — в
-crawl.Crawl). Без часов, диска и печати: сон приходит аргументом.
+crawl.Crawl). Без часов, диска и печати: сон и rnd приходят аргументом.
 """
 
 from __future__ import annotations
 
+import random
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Protocol
@@ -34,6 +35,10 @@ class PageLoader(Protocol):
     def stay_on_page(self, seconds: float) -> None:
         """Пауза между запросами на открытой странице: длительность считает
         обход (21.97)."""
+
+    def visit_card(self) -> run_folder.CardAnswer | None:
+        """Заход на карточку объявления открытой страницы после паузы
+        (21.98); захода нет — None."""
 
 
 def document_answer(
@@ -94,6 +99,10 @@ class UrlPageLoader:
     def stay_on_page(self, seconds: float) -> None:
         """Пауза — сон той же длительности (21.97: эталоны ночей не меняются)."""
         self.sleep(seconds)
+
+    def visit_card(self) -> run_folder.CardAnswer | None:
+        """Заходов на карточки по ссылке нет: открытой вкладки нет (21.98)."""
+        return None
 
 
 class PageOrderError(RuntimeError):
@@ -167,25 +176,92 @@ def nothing_to_click(key: str, page: int) -> run_folder.PageAnswer:
     )
 
 
+def plan_card_pages(
+    total: int | None,
+    offers_on_page: int,
+    per_tile: tuple[int, int],
+    rnd: random.Random,
+) -> set[int]:
+    """На каких страницах клетки зайти на карточку — как card_pages пробы
+    (21.98): одна страница по totalOffers или короткая страница 1 — только
+    страница 1; иначе 1…N−1 (заход — до перехода на следующую страницу), N
+    — по totalOffers с потолком MAX_PAGES; число страниц — per_tile."""
+    pages = search_page.pages_for(total)
+    single = pages == 1 or offers_on_page < search_page.OFFERS_PER_PAGE
+    candidates = [1] if single else list(range(1, pages))
+    count = min(rnd.randint(*per_tile), len(candidates))
+    return set(rnd.sample(candidates, count))
+
+
 class ClickPageLoader:
     """Загрузчик «кликом»: страница 1 и повтор после сбоя — по ссылке,
     следующая страница — клик во вкладке, как у человека (решения Андрея 3,
-    5–7). Помнит вкладку tab и сырые id последней удачной страницы last_ids."""
+    5–7). Помнит вкладку tab и сырые id последней удачной страницы last_ids.
+    Карточки (решение Андрея 9): cards_per_tile — сколько заходов на клетку
+    (None — заходов нет и случайность на них не зовётся); card_pages —
+    страницы клетки, где заход ещё будет."""
 
-    def __init__(self, browser: Browser) -> None:
+    def __init__(
+        self,
+        browser: Browser,
+        rnd: random.Random,
+        cards_per_tile: tuple[int, int] | None,
+    ) -> None:
         self.browser = browser
         self.ticket = browser.ticket
+        self.rnd = rnd
+        self.cards_per_tile = cards_per_tile
         self.tab: Tab = None
         self.last_ids: frozenset = frozenset()
+        self.card_pages: set[int] = set()
 
     def load_page(self, key: str, ring: list, page: int) -> run_folder.PageAnswer:
-        """Страница по правилу way_to_page → PageAnswer; вкладка запомнена."""
+        """Страница по правилу way_to_page → PageAnswer; вкладка запомнена;
+        после страницы 1 — выбор страниц захода на карточку."""
         if way_to_page(self.tab, key, page) == "url":
             answer = load_by_url(self.browser, key, ring, page)
         else:
             answer = self.load_by_click(key, page)
         self.remember(answer)
+        if page == 1:
+            self.plan_cards(answer)
         return answer
+
+    def plan_cards(self, answer: run_folder.PageAnswer) -> None:
+        """Страницы захода новой клетки: по totalOffers и числу объявлений
+        удачной страницы 1; не удалась — заходов нет. Выбор зовётся по имени
+        модуля в момент вызова (точка подмены 21.98)."""
+        if self.cards_per_tile is None:
+            return
+        self.card_pages = set()
+        if answer.verdict == search_page.OK:
+            self.card_pages = plan_card_pages(
+                answer.total, len(answer.offers), self.cards_per_tile, self.rnd
+            )
+
+    def visit_card(self) -> run_folder.CardAnswer | None:
+        """Заход на карточку, если вкладка удачно открыла выбранную страницу и
+        захода на ней ещё не было; знание ЦИАН (шаблон ссылки, признаки
+        блока) — из search_page → CardAnswer; иначе None (21.98)."""
+        if self.tab is None:
+            return None
+        key, page, opened = self.tab
+        if not opened or page not in self.card_pages:
+            return None
+        self.card_pages.discard(page)
+        visit = self.browser.view_card(
+            search_page.OFFER_LINK_PATTERN, search_page.card_block_reason
+        )
+        return run_folder.CardAnswer(
+            key=key,
+            page=page,
+            url=visit.url,
+            traffic=visit.traffic,
+            seconds=visit.seconds,
+            verdict=visit.verdict,
+            detail=visit.detail,
+            body=visit.body,
+        )
 
     def load_by_click(self, key: str, page: int) -> run_folder.PageAnswer:
         """Клик «следующая страница»: ответ API — разбор JSON, документ — как

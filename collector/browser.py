@@ -1,12 +1,12 @@
 """
 browser.py — интерфейс браузера: что обход и загрузчик страницы знают о браузере.
 
-Browser — атрибут ticket, fetch(url, referer) → FetchedPage, клик
-click_and_catch и прокрутка scroll_page; реализации — HttpBrowser
-(http_browser.py, кликать не умеет) и ChromeBrowser (chrome_browser.py). Здесь
-же билет Ticket, ответ FetchedPage и нейтральные типы клика. Лист пакета:
+Browser — атрибут ticket, fetch(url, referer) → FetchedPage, клик click_and_catch,
+прокрутка scroll_page и заход на карточку view_card; реализации — HttpBrowser
+(http_browser.py, кликать не умеет) и ChromeBrowser (chrome_browser.py). Здесь же
+билет Ticket, ответ FetchedPage и нейтральные типы клика и карточки. Лист пакета:
 ничего из collector, без сети, часов, диска, сжатия и печати. Контракт —
-docs/reference/browser_contract.md, проверки — кейс 21.86.
+docs/reference/browser_contract.md, проверки — кейсы 21.86, 21.98.
 """
 
 from __future__ import annotations
@@ -70,6 +70,27 @@ class ClickedPage(NamedTuple):
     is_document: bool
 
 
+# признак блока открытой карточки по её адресу: деталь блока или None
+BlockReason = Callable[[str], str | None]
+# вердикт захода, который не удался: ошибка Playwright, ссылок на объявления
+# нет — заход не стоп, прогон идёт (решение Андрея 9)
+CARD_ERROR = "ERROR"
+
+
+class CardVisit(NamedTuple):
+    """Заход на карточку объявления: адрес без параметров, трафик вкладки в
+    байтах, длительность листания, с; verdict — OK, BLOCK (detail — признак
+    блока, body — тело вкладки для файла блока) или ERROR (detail — текст
+    ошибки); у OK detail «-» (DECISIONS, block/click-pages)."""
+
+    url: str
+    traffic: int
+    seconds: float
+    verdict: str
+    detail: str
+    body: str
+
+
 class Browser(Protocol):
     """Браузер для загрузчика страницы: вторая реализация — новый файл и
     сборка в cian_collect.py (строка BROWSERS); обход и загрузчик страницы
@@ -91,3 +112,9 @@ class Browser(Protocol):
     def scroll_page(self, seconds: float) -> None:
         """Пролистать открытую страницу до низа примерно за seconds секунд
         (21.86). Не умеет — BrowserCannotError."""
+
+    def view_card(self, link_pattern: str, block_reason: BlockReason) -> CardVisit:
+        """Зайти на случайное объявление открытой страницы (ссылка — по
+        шаблону link_pattern) в новой вкладке, пролистать её и закрыть;
+        блок карточки узнаёт block_reason по адресу (21.86, 21.98). Ошибка
+        Playwright за заход — CardVisit ERROR. Не умеет — BrowserCannotError."""

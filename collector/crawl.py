@@ -55,6 +55,11 @@ class Settings:
     chrome_port: int
     chrome_path: str
     chrome_profile: str
+    # заходы на карточки объявлений (флаг --cards, только с --page-loader
+    # click) и вкладка карточки на передний план (флаг --front); решение
+    # Андрея 9
+    cards: bool
+    front: bool
     # [E-42] totalOffers стр. 1 больше порога — клетка делится (0 — деления нет)
     split_threshold: int = 400
     # дно деления (10 км → 1,25 км): на дне клетка листается — защита от
@@ -72,6 +77,8 @@ class Settings:
         (150, 240),
         (300, 420),
     )
+    # --cards: заходов на карточки на клетку — от и до (решение Андрея 9)
+    cards_per_tile: tuple[int, int] = (1, 2)
 
     @property
     def tile_mode(self) -> bool:
@@ -533,9 +540,9 @@ class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
     (say); страницы и билет — только у загрузчика страницы loader (готовый
-    загрузчик из cian_collect.build_crawl), паузы между запросами — у него же
-    (stay_on_page), часы и сон перед повтором — через clock, случайность —
-    rnd."""
+    загрузчик из cian_collect.build_crawl), паузы между запросами и заходы
+    на карточки после них — у него же (stay_on_page, visit_card), часы и сон
+    перед повтором — через clock, случайность — rnd."""
 
     def __init__(
         self,
@@ -615,7 +622,8 @@ class Crawl:
                 if self.download_tile(key).stopped:
                     break  # прогон остановлен (провал пробы, блок, сеть, бюджет)
                 self.save_plan()
-                self.pause_between_tiles()
+                if self.pause_between_tiles().stopped:
+                    break  # блок на карточке объявления (21.98)
         except KeyboardInterrupt:
             if self.smoke_unanswered():
                 raise  # Ctrl+C до итога пробы — выход без сводки (21.51)
@@ -644,8 +652,11 @@ class Crawl:
                 return outcome  # родитель выбыл, дети в очереди
             page += 1
             # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
-            if not read_out(tile, page):
-                self.pause_between_pages()
+            if read_out(tile, page):
+                break
+            pause = self.pause_between_pages()
+            if pause.stopped:
+                return pause  # блок на карточке объявления (21.98)
         return outcome
 
     def download_page(self, key: str, page: int) -> PageOutcome:
@@ -703,19 +714,19 @@ class Crawl:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
         пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
         «билет сгорел»)."""
-        detail = burned_mark(
-            answer.verdict, answer.detail, self.loader.ticket.has_ticket
-        )
+        stopped = "smoke_failed" if on_smoke else answer.verdict.lower()
+        return self.stop_run(answer.verdict, answer.detail, stopped)
+
+    def stop_run(self, verdict: str, detail: str, stopped: str) -> str:
+        """Стоп прогона: класс verdict, деталь с пометкой «билет сгорел»,
+        причина stopped — в итог и строкой STOP в night.log. → деталь стопа."""
+        detail = burned_mark(verdict, detail, self.loader.ticket.has_ticket)
         state = self.state
-        state.stop_class, state.stop_detail = answer.verdict, detail
-        if on_smoke:
-            state.stopped = "smoke_failed"
-        else:
-            state.stopped = answer.verdict.lower()
+        state.stopped, state.stop_class, state.stop_detail = stopped, verdict, detail
         self.log(
             event="STOP",
-            reason=state.stopped,
-            cls=answer.verdict,
+            reason=stopped,
+            cls=verdict,
             detail=detail,
             spent=state.spent,
         )
@@ -842,31 +853,61 @@ class Crawl:
         """Остался ли бюджет запросов прогона."""
         return self.state.spent < self.settings.budget
 
-    def sleep_between(self, factor: float = 1.0) -> None:
+    def sleep_between(self, factor: float = 1.0) -> PageOutcome:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
         случайности (точка подмены теста 21.36); общий помощник
         pause_between_pages и pause_between_tiles. Длительность считает
-        обход, проводит её загрузчик на открытой странице (21.97)."""
+        обход, проводит её загрузчик на открытой странице (21.97); после неё
+        — заход на карточку, если загрузчик его сделал (21.98). → итог:
+        стоп — блок на карточке, иначе READ (обход идёт)."""
         if not self.budget_left():
-            return
+            return READ
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
         self.loader.stay_on_page(self.rnd.uniform(low, high))
+        card = self.loader.visit_card()
+        if card is None:
+            return READ
+        return self.record_card(card)
 
-    def pause_between_pages(self) -> None:
+    def pause_between_pages(self) -> PageOutcome:
         """Обычная пауза между запросами: средний интервал ± разброс."""
-        self.sleep_between()
+        return self.sleep_between()
 
-    def pause_between_tiles(self) -> None:
+    def pause_between_tiles(self) -> PageOutcome:
         """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
         state = self.state
         # проверка бюджета повторяет sleep_between, чтобы не звать случайность
         # для множителя впустую после последнего запроса
         if not state.pending or not self.budget_left():
-            return
+            return READ
         factor = self.rnd.uniform(*self.settings.inter_tile_pause)
-        self.sleep_between(factor)
+        return self.sleep_between(factor)
+
+    def record_card(self, card: run_folder.CardAnswer) -> PageOutcome:
+        """Заход на карточку — строка event=card; бюджет не тратит и в done не
+        идёт. BLOCK — деталь с приставкой card_, файл блока карточки и стоп
+        block (пометку «билет сгорел» ставит stop_run); OK и ERROR — обход
+        идёт (DECISIONS block/click-pages). → итог захода."""
+        if card.verdict == search_page.BLOCK:
+            card = replace(card, detail=run_folder.CARD_DETAIL_PREFIX + card.detail)
+        self.log(
+            event="card",
+            sector=card.key,
+            page=card.page,
+            url=card.url,
+            traffic=card.traffic,
+            view_s=f"{card.seconds:.1f}",
+            verdict=card.verdict,
+            err=card.detail,
+        )
+        if card.verdict != search_page.BLOCK:
+            return READ
+        self.folder.write_card_block(card, self.loader.ticket.ua, self._stamp_hms())
+        stopped = search_page.BLOCK.lower()
+        self.stop_run(search_page.BLOCK, card.detail, stopped)
+        return PageOutcome("stop", stopped)
 
     def pause_before_retry(self, key: str, page: int, attempts: int) -> None:
         """Пауза перед повтором номер attempts + 1 после сбоя сети."""
