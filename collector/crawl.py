@@ -244,7 +244,9 @@ def end_noted(tile: TileState, why: str) -> bool:
     чем прочитано. Прошлая страница при этом полная: после короткой клетка
     уже кончилась (short_page), и второй sector_end не пишется (mark_end).
     В прогоне через download_tile условие числа страниц всегда истинно:
-    решает, известен ли totalOffers."""
+    решает, известен ли totalOffers. Условие — буква решения Андрея 6 («по
+    totalOffers страниц больше, чем прочитано»): держится для чистой функции
+    и её теста."""
     if why == search_page.SAME_IDS:
         return True
     if why != search_page.NO_NEXT_PAGE or tile.pages_planned is None:

@@ -182,9 +182,9 @@ def links_with_href(page: Any, href: str) -> Any:
 
 
 def visible_links_with_href(page: Any, href: str) -> Any:
-    """Локатор видимых ссылок с href: карточка нажимается среди тех же
-    видимых, среди которых OFFER_LINKS_JS её выбрал (DECISIONS 2026-11-17,
-    ревью PR #9; 21.98)."""
+    """Локатор ссылок с href, видимых по Playwright (:visible); скрипт выбора
+    OFFER_LINKS_JS отбрасывает display:none (offsetParent) — для ссылок
+    карточек это совпадает, сверить на пробе (DECISIONS 2026-11-17; 21.98)."""
     return page.locator(f"{href_selector(href)}:visible")
 
 
@@ -216,8 +216,8 @@ def find_target(page: Any, target: ClickTarget) -> Any | None:
     href = page.evaluate(FIND_LINK_JS, [target.link_param, target.link_value])
     if href:
         return links_with_href(page, href).last
-    # exact=False и is_enabled() — как в пробе; сверка на первой пробе
-    # (DECISIONS block/click-pages, допущение (в) и строка 2026-11-17 о «Дальше»)
+    # exact=False и is_enabled() выбраны без пробы (на сервере её нет); сверить
+    # на первой пробе — DECISIONS block/click-pages, допущение (в), 2026-11-17
     buttons = page.get_by_text(target.else_text, exact=False)
     if buttons.count() and buttons.last.is_enabled():
         return buttons.last
@@ -402,9 +402,10 @@ class ChromeBrowser:
         no_offer_links. Ошибка Playwright — ERROR с первой строкой текста, а
         не исключение: до открытия закрываются вкладки, появившиеся за заход
         (вкладки человека не трогаем), после — сама карточка. С front в
-        конце выдача — один раз на передний план; его ошибка — тоже ERROR,
-        но первая ошибка захода не заменяется. Прочие исключения летят
-        (DECISIONS, block/click-pages; 2026-11-17)."""
+        конце выдача — один раз на передний план; его ошибка меняет только
+        удачный заход: OK → ERROR с первой строкой ошибки, адрес, трафик и
+        длительность — те же, тело пустое; BLOCK и ERROR захода остаются.
+        Прочие исключения летят (DECISIONS, block/click-pages; 2026-11-17)."""
         page = self.tab.page
         hrefs = page.evaluate(OFFER_LINKS_JS, link_pattern)
         if not hrefs:
@@ -412,9 +413,10 @@ class ChromeBrowser:
         link = visible_links_with_href(page, self.human.rnd.choice(hrefs)).first
         visit = self.open_and_look(link, block_reason)
         front_failure = self.search_to_front()
-        if visit.verdict == CARD_ERROR or front_failure is None:
+        # блок — стоп, поздняя ошибка вкладки его не прячет (DECISIONS 2026-11-17)
+        if front_failure is None or visit.verdict != search_page.OK:
             return visit
-        return card_error(front_failure, visit.url)
+        return visit._replace(verdict=CARD_ERROR, detail=front_failure, body="")
 
     def open_and_look(self, link: Any, block_reason: BlockReason) -> CardVisit:
         """Открыть карточку по ссылке link и посмотреть её → CardVisit; ошибка
