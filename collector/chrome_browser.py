@@ -168,12 +168,24 @@ class TabSettings:
     new_tab_key: str
 
 
-def links_with_href(page: Any, href: str) -> Any:
-    """Локатор ссылок, у которых атрибут href равен href как есть: с
+def href_selector(href: str) -> str:
+    """Селектор ссылок, у которых атрибут href равен href как есть: с
     экранированием «\\» и «"» селектор находит ту самую ссылку, отдельная
     проверка числа не нужна (DECISIONS, block/click-pages)."""
     quoted = href.replace("\\", "\\\\").replace('"', '\\"')
-    return page.locator(f'a[href="{quoted}"]')
+    return f'a[href="{quoted}"]'
+
+
+def links_with_href(page: Any, href: str) -> Any:
+    """Локатор всех ссылок с атрибутом href, равным href (пагинация, 21.93)."""
+    return page.locator(href_selector(href))
+
+
+def visible_links_with_href(page: Any, href: str) -> Any:
+    """Локатор видимых ссылок с href: карточка нажимается среди тех же
+    видимых, среди которых OFFER_LINKS_JS её выбрал (DECISIONS 2026-11-17,
+    ревью PR #9; 21.98)."""
+    return page.locator(f"{href_selector(href)}:visible")
 
 
 def plain_url(url: str) -> str:
@@ -204,8 +216,9 @@ def find_target(page: Any, target: ClickTarget) -> Any | None:
     href = page.evaluate(FIND_LINK_JS, [target.link_param, target.link_value])
     if href:
         return links_with_href(page, href).last
+    # exact=False и is_enabled() — как в пробе; сверка на первой пробе
+    # (DECISIONS block/click-pages, допущение (в) и строка 2026-11-17 о «Дальше»)
     buttons = page.get_by_text(target.else_text, exact=False)
-    # неактивная «Дальше» — нажимать нечего (DECISIONS block/click-pages, (в))
     if buttons.count() and buttons.last.is_enabled():
         return buttons.last
     return None
@@ -388,27 +401,46 @@ class ChromeBrowser:
         вкладке» → карточка (look_at_card). Ссылок нет — ERROR
         no_offer_links. Ошибка Playwright — ERROR с первой строкой текста, а
         не исключение: до открытия закрываются вкладки, появившиеся за заход
-        (вкладки человека не трогаем), после — сама карточка; с front
-        выдача снова впереди. Прочие исключения летят (DECISIONS,
-        block/click-pages)."""
+        (вкладки человека не трогаем), после — сама карточка. С front в
+        конце выдача — один раз на передний план; его ошибка — тоже ERROR,
+        но первая ошибка захода не заменяется. Прочие исключения летят
+        (DECISIONS, block/click-pages; 2026-11-17)."""
         page = self.tab.page
         hrefs = page.evaluate(OFFER_LINKS_JS, link_pattern)
         if not hrefs:
             return card_error(NO_OFFER_LINKS)
-        link = links_with_href(page, self.human.rnd.choice(hrefs)).first
+        link = visible_links_with_href(page, self.human.rnd.choice(hrefs)).first
+        visit = self.open_and_look(link, block_reason)
+        front_failure = self.search_to_front()
+        if visit.verdict == CARD_ERROR or front_failure is None:
+            return visit
+        return card_error(front_failure, visit.url)
+
+    def open_and_look(self, link: Any, block_reason: BlockReason) -> CardVisit:
+        """Открыть карточку по ссылке link и посмотреть её → CardVisit; ошибка
+        Playwright — ERROR, открытые за заход вкладки закрыты (21.98)."""
+        page = self.tab.page
         tabs_before = page.context.pages
         try:
             card = self.open_card(link)
         except self.tab.error as error:
             close_tabs_opened_since(page.context, tabs_before)
-            self.to_front(page)
             return card_error(one_line(error))
         try:
             return self.look_at_card(card, block_reason)
         except self.tab.error as error:
             card.close()
-            self.to_front(page)
             return card_error(one_line(error), plain_url(card.url))
+
+    def search_to_front(self) -> str | None:
+        """Вкладку выдачи — на передний план (с front), один раз и без
+        повтора → None; ошибка Playwright — её первая строка (правило 8
+        раздела 4а контракта: ошибка за заход — ERROR; DECISIONS 2026-11-17)."""
+        try:
+            self.to_front(self.tab.page)
+        except self.tab.error as error:
+            return one_line(error)
+        return None
 
     def open_card(self, link: Any) -> Any:
         """Прицел → ожидание новой вкладки → клик с клавишей new_tab_key:
@@ -475,10 +507,10 @@ class ChromeBrowser:
         return sizes
 
     def close_card(self, card: Any) -> None:
-        """Закрыть карточку, короткая пауза руки, выдача — на передний план."""
+        """Закрыть карточку и короткая пауза руки; выдачу вперёд выводит
+        view_card в конце захода."""
         card.close()
         self.human.pause(chrome_human.CARD_CLOSE_S)
-        self.to_front(self.tab.page)
 
     def to_front(self, page: Any) -> None:
         """Вкладку — на передний план, только с front: на Маке это выдёргивает

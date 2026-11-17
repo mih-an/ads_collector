@@ -220,7 +220,7 @@ def make_chrome_browser(
         # ожидаемая ошибка запуска — без трассировки, как файл клеток (З160)
         sys.exit(f"--browser chrome: {error}")
     ticket = read_chrome_ticket(tab)
-    settings_of_tab = chrome_browser.TabSettings(
+    tab_settings = chrome_browser.TabSettings(
         goto_timeout_ms=GOTO_TIMEOUT_MS,
         wait_until=WAIT_UNTIL,
         click_timeout_ms=CLICK_TIMEOUT_MS,
@@ -234,7 +234,7 @@ def make_chrome_browser(
     # time — по имени модуля в момент вызова: так часы подменяют тесты (21.90)
     human = chrome_human.Human(time.sleep, time.monotonic, rnd)
     return chrome_browser.ChromeBrowser(
-        tab, ticket, time.monotonic, settings_of_tab, human
+        tab, ticket, time.monotonic, tab_settings, human
     )
 
 

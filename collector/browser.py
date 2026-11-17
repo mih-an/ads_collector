@@ -42,16 +42,17 @@ class FetchedPage(NamedTuple):
 
 
 class BrowserCannotError(RuntimeError):
-    """Реализация не умеет этого действия (HttpBrowser не кликает и не
-    листает): в тексте — имя реализации и действие (21.86)."""
+    """Реализация не умеет этого действия (HttpBrowser не кликает, не
+    листает и не заходит на карточки): в тексте — имя реализации и действие
+    (21.86)."""
 
 
 @dataclass(frozen=True)
 class ClickTarget:
     """Что нажать: последнюю ссылку, у которой параметр адреса link_param
     равен link_value; нет такой — последний элемент с текстом else_text.
-    Знание сайта (какой параметр, какой текст) приходит отсюда, браузер его
-    не хранит (DECISIONS, block/click-pages)."""
+    Знание сайта (какой параметр, какой текст) приходит из search_page через
+    ClickPageLoader, браузер его не хранит (DECISIONS, block/click-pages)."""
 
     link_param: str
     link_value: str
@@ -115,6 +116,7 @@ class Browser(Protocol):
 
     def view_card(self, link_pattern: str, block_reason: BlockReason) -> CardVisit:
         """Зайти на случайное объявление открытой страницы (ссылка — по
-        шаблону link_pattern) в новой вкладке, пролистать её и закрыть;
+        шаблону link_pattern; шаблон понятен и JS RegExp, и re) в новой
+        вкладке, пролистать её и закрыть;
         блок карточки узнаёт block_reason по адресу (21.86, 21.98). Ошибка
         Playwright за заход — CardVisit ERROR. Не умеет — BrowserCannotError."""

@@ -101,7 +101,7 @@ class UrlPageLoader:
         self.sleep(seconds)
 
     def visit_card(self) -> run_folder.CardAnswer | None:
-        """Заходов на карточки по ссылке нет: открытой вкладки нет (21.98)."""
+        """Заходов нет: --cards только с --page-loader click (21.98)."""
         return None
 
 

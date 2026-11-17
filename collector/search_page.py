@@ -53,7 +53,8 @@ NO_NEXT_PAGE = "no_next_page"
 SAME_IDS = "same_ids"
 # Ссылка на объявление на странице выдачи — вхождение пути карточки: ссылки
 # ведут на поддомен с параметрами, krasnogorsk.cian.ru/sale/suburban/<число>/
-# ?context=… (21.92; DECISIONS block/click-pages)
+# ?context=… (21.92; DECISIONS block/click-pages). Шаблон уходит в JS RegExp
+# (OFFER_LINKS_JS в chrome_browser): только синтаксис, общий у JS и re
 OFFER_LINK_PATTERN = r"/sale/suburban/\d+/?"
 # Признаки блока открытой карточки (решение Андрея 9): капча в адресе (без
 # учёта регистра, как в пробе) или адрес не на cian.ru и не на его поддомене
@@ -343,9 +344,10 @@ def classify_click(
     code: int, body: str, neterr: str | None = None, page: int = 2
 ) -> Classified:
     """Ответ API выдачи на клик «следующая страница» (JSON): объявления —
-    data.offersSerialized, totalOffers — data.offerCount; коды и пустая
-    выдача — как у classify_page (21.92). → (вердикт, деталь, totalOffers,
-    offers)"""
+    data.offersSerialized, totalOffers — data.offerCount; коды — как у
+    classify_page, кроме 3xx (→ API_CHANGED http_<код>, DECISIONS
+    block/click-pages); пустая выдача — как у classify_page (21.92).
+    → (вердикт, деталь, totalOffers, offers)"""
     if neterr:
         return Classified(NET_ERROR, neterr, None, [])
     # 3xx ответа API тоже сюда: location разбору клика не передаётся
@@ -381,8 +383,10 @@ def offer_ids(offers: list) -> list[int]:
 
 def raw_ids(offers: list) -> frozenset:
     """Множество сырых id страницы — для сверки «те же id» при листании
-    кликом: без превращения в число, ошибку разбора id ловит обход после
-    записи файла [E-22] (DECISIONS block/click-pages)."""
+    кликом. Строит его загрузчик страницы до записи файла, без превращения в
+    число; ошибку разбора id ловит обход после записи [E-22] — это держится
+    на том, что id/cianId — число (data-checker: 955 из 955 — (int, int);
+    DECISIONS 2026-11-17)."""
     return frozenset(_raw_id(o) for o in offers) - {None}
 
 

@@ -121,7 +121,7 @@ class TileState:
 @dataclass
 class PageTask:
     """Задача обхода; порядок ключей задачи в done (plan.json) задаёт
-    task_entry; kind — как пришла страница последней попытки (ssr или click)."""
+    task_entry; kind — как пришла страница в этой попытке (ssr или click)."""
 
     sector: str
     page: int
@@ -155,7 +155,7 @@ class PageOutcome:
     "read" (прочитана), "end" (конец клетки) или "stop" (стоп прогона);
     reason — у стопа значение stopped (budget_exhausted, block, …)."""
 
-    kind: str
+    kind: str  # не путать с видом запроса ssr/click (PageTask.kind)
     reason: str = ""
 
     @property
@@ -242,7 +242,9 @@ def end_noted(tile: TileState, why: str) -> bool:
     """Помечать ли конец клетки в итоге stdout (решение Андрея 6): те же id
     — всегда; нажимать нечего — только если по totalOffers страниц больше,
     чем прочитано. Прошлая страница при этом полная: после короткой клетка
-    уже кончилась (short_page), и второй sector_end не пишется (mark_end)."""
+    уже кончилась (short_page), и второй sector_end не пишется (mark_end).
+    В прогоне через download_tile условие числа страниц всегда истинно:
+    решает, известен ли totalOffers."""
     if why == search_page.SAME_IDS:
         return True
     if why != search_page.NO_NEXT_PAGE or tile.pages_planned is None:
@@ -641,7 +643,7 @@ class Crawl:
         конца набора; между страницами — пауза. → итог последней страницы."""
         tile = self.tiles[key]
         page = 1
-        outcome = TILE_END  # читать нечего — клетка кончилась
+        outcome = TILE_END  # значение до первой страницы; цикл входит всегда
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
