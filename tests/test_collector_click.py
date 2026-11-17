@@ -306,11 +306,12 @@ def test_21_95_way_to_page(tab, page_no, expected):
 )
 def test_21_95_wrong_order_is_error(tab, page_no):
     """21.95 Любая другая просьба — громкая ошибка программы PageOrderError
-    (решение Андрея 3); в тексте — клетка и номер просьбы. Модуль 21."""
+    (решение Андрея 3); в тексте — номер просьбы рядом с клеткой
+    («страница N клетки K», как в сообщении PageOrderError), а не номер из
+    вкладки. Модуль 21."""
     with pytest.raises(page_loader.PageOrderError) as caught:
         page_loader.way_to_page(tab, KEY, page_no)
-    text = str(caught.value)
-    assert (KEY in text, str(page_no) in text) == (True, True)
+    assert f"страница {page_no} клетки {KEY}" in str(caught.value)
 
 
 def test_21_95_wrong_order_load_page():
@@ -528,6 +529,23 @@ def test_21_95_same_ids_by_click_document():
     )
 
 
+def test_21_95_same_ids_only_non_empty():
+    """21.95 «Те же id» сверяются только у непустых множеств: страница 1 по
+    ссылке — OK без объявлений (totalOffers 0), клик на страницу 2 — JSON с
+    пустым offersSerialized и offerCount 0 → OK, а не PAGE_END same_ids
+    (DECISIONS block/click-pages, classify_click). Модуль 21."""
+    empty_page_1 = status_fetched(200, search_page_html([], 0))
+    site = ClickBrowser([empty_page_1], [clicked_json([], 0)])
+    loader = click_loader(site)
+    loader.load_page(KEY, RING, 1)
+    answer = loader.load_page(KEY, RING, 2)
+    assert (answer.verdict, answer.detail, answer.kind) == (
+        search_page.OK,
+        "-",
+        run_folder.CLICK_KIND,
+    )
+
+
 @pytest.mark.parametrize(
     ("status", "headers", "expected"),
     [
@@ -680,16 +698,18 @@ SPARE_CLICKED = "T0611_p3.html.xz"
     ("fetched", "probe", "expected"),
     [
         (html_fetched, 2, "click"),
-        (lambda: NET_FETCHED, 1, "fetch"),
+        (lambda: NET_FETCHED, 2, "error"),
         (lambda: status_fetched(403, "запрет"), 2, "error"),
         (lambda: status_fetched(200, "<html>другое</html>"), 2, "error"),
     ],
-    ids=["OK → стр. 2 кликом", "сбой → стр. 1 снова", "BLOCK", "API_CHANGED"],
+    ids=["OK → стр. 2 кликом", "сбой → стр. 2 — ошибка", "BLOCK", "API_CHANGED"],
 )
 def test_21_95_memory_after_page_1(fetched, probe, expected):
     """21.95 Память вкладки поведением после страницы 1: OK — страница 2
-    кликом; сбой сети — тот же запрос снова переходом; BLOCK и API_CHANGED
-    — вкладка забыта: страница 2 — PageOrderError. Модуль 21."""
+    кликом; сбой сети — страница 1 открыта неудачно: страница 2 —
+    PageOrderError (повторить можно только страницу 1, а она всегда по
+    ссылке); BLOCK и API_CHANGED — вкладка забыта: страница 2 —
+    PageOrderError. Модуль 21."""
     site = ClickBrowser(
         [fetched(), html_fetched(SPARE_FETCHED)], [clicked_fixture(SPARE_CLICKED)]
     )
@@ -1578,11 +1598,19 @@ def test_21_98_plan_card_pages_capped():
     )
 
 
-def test_21_98_plan_card_pages_by_rnd():
-    """21.98 Выбор — только из переданного rnd: тот же seed — те же страницы.
-    Модуль 21."""
-    first = page_loader.plan_card_pages(1500, 28, PER_TILE, random.Random(5))
-    again = page_loader.plan_card_pages(1500, 28, PER_TILE, random.Random(5))
+def test_21_98_plan_card_pages_by_rnd(monkeypatch):
+    """21.98 Выбор — только из переданного rnd: тот же seed — те же
+    страницы, а функции модуля random (общий генератор) на время выбора
+    падают — к ним выбор не обращается. Модуль 21."""
+    first_rnd, again_rnd = random.Random(5), random.Random(5)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("21.98: выбор страниц взял модуль random, а не rnd")
+
+    for name in ("randint", "sample", "choice", "random", "uniform", "shuffle"):
+        monkeypatch.setattr(random, name, forbidden)
+    first = page_loader.plan_card_pages(1500, 28, PER_TILE, first_rnd)
+    again = page_loader.plan_card_pages(1500, 28, PER_TILE, again_rnd)
     assert first == again
 
 
@@ -1948,8 +1976,8 @@ def test_21_98_card_line_values(env):
     """21.98 Строка event=card — клетка и страница захода, адрес без
     параметров, трафик в байтах, длительность листания в секундах с одним
     знаком после запятой, вердикт и деталь (у OK — «-»; решение тимлида
-    block/click-pages, допущение (г)). Модуль 21."""
-    run, _ = card_crawl(env, single_pages(), [card_answer()])
+    block/click-pages, допущение (г)): 37,26 с → «37.3». Модуль 21."""
+    run, _ = card_crawl(env, single_pages(), [card_answer(seconds=37.26)])
     (line,) = events(collected(run), "card")
     assert line == {
         "event": "card",
@@ -1957,7 +1985,7 @@ def test_21_98_card_line_values(env):
         "page": "1",
         "url": CARD_PLAIN_URL,
         "traffic": str(CARD_TRAFFIC_BYTES),
-        "view_s": "37.0",
+        "view_s": "37.3",
         "verdict": "OK",
         "err": "-",
     }

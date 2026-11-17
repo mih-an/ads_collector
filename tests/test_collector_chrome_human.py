@@ -214,20 +214,23 @@ def straight_move(monkeypatch, seed: int, bend: tuple[float, float]):
 def test_21_94_move_bends_off_chord(monkeypatch, bend, curved):
     """21.94 Путь мыши — дуга: при изгибе BEND ≠ 0 точки отходят от прямой
     «старт — цель» больше чем на 10 px, при BEND = 0 (и без дрожания) лежат
-    на ней. Модуль 21."""
+    на ней (отклонение меньше 1e-6 px). Модуль 21."""
     page, _ = straight_move(monkeypatch, 1, bend)
     off_chord = max(abs(y - 400) for _, y in moves(page))
-    assert (off_chord > 10) is curved
+    assert (off_chord > 10, off_chord < 1e-6) == (curved, not curved)
 
 
 def test_21_94_move_eases_in_and_out(monkeypatch):
-    """21.94 Разгон и торможение: первый и последний шаг пути короче
-    среднего шага. Модуль 21."""
-    page, _ = straight_move(monkeypatch, 1, (0.1, 0.1))
-    points = [(100.0, 400.0), *moves(page)]
-    steps = [math.dist(a, b) for a, b in zip(points, points[1:], strict=False)]
-    mean = sum(steps) / len(steps)
-    assert (steps[0] < mean, steps[-1] < mean) == (True, True)
+    """21.94 Разгон и торможение: первый и последний шаг пути короче 0,3
+    среднего шага — при каждом seed. Модуль 21."""
+    results = []
+    for seed in SEEDS:
+        page, _ = straight_move(monkeypatch, seed, (0.1, 0.1))
+        points = [(100.0, 400.0), *moves(page)]
+        steps = [math.dist(a, b) for a, b in zip(points, points[1:], strict=False)]
+        mean = sum(steps) / len(steps)
+        results.append((steps[0] < 0.3 * mean, steps[-1] < 0.3 * mean))
+    assert set(results) == {(True, True)}
 
 
 def test_21_94_move_duration(monkeypatch):
@@ -458,16 +461,19 @@ def test_21_94_scroll_waits_at_bottom(monkeypatch):
     """21.94 Низ виден сразу (страница 900 px при окне 800 px), а время ещё
     есть: колесо не крутится, рука «смотрит» и двигает мышь в нижнюю часть
     окна (BOTTOM_SPOT_X, BOTTOM_SPOT_Y — здесь 90 % и 95 %: точка 1080, 760),
-    пока не пройдут 10 с. Модуль 21."""
+    пока не пройдут 10 с, — и не дольше: всего не больше 10 с + пауза в
+    конце (AFTER_SCROLL_S до 1,5 с) + одно движение мыши (до MOVE_MAX_S ×
+    MOVE_SPEED[1] × STEP_PAUSE[1] = 1,4 × 1,25 × 1,3 с). Модуль 21."""
     monkeypatch.setattr(chrome_human, "BOTTOM_SPOT_X", (0.9, 0.9))
     monkeypatch.setattr(chrome_human, "BOTTOM_SPOT_Y", (0.95, 0.95))
     page = FakePage([], scroll_height=900.0)
     human, clock = hand(page)
     human.scroll_page(page, 10.0)
+    longest = 10.0 + 1.5 + 1.4 * 1.25 * 1.3
     assert (
         wheels(page),
         near(moves(page)[-1], (1080.0, 760.0)),
-        clock.now >= 10,
+        10.0 <= clock.now <= longest,
     ) == (
         [],
         True,
@@ -527,15 +533,23 @@ def test_21_94_scroll_bottom_threshold(left, wheeled):
     assert bool(wheels(page)) is wheeled
 
 
-def test_21_94_scroll_stops_on_endless_page():
+def test_21_94_scroll_stops_on_endless_page(monkeypatch):
     """21.94 Бесконечная страница (низ отъезжает после каждого шага):
     прокрутка 10 с кончается по страховке — через 60 с сверх заданного
     времени. Отсчёт — с начала прокрутки, до первого движения мыши: по
-    часам руки 70–72 с с последним шагом и паузой в конце. Модуль 21."""
+    часам руки последний шаг колеса сделан раньше 70 с, а с его паузой
+    70 с уже прошли. Пауза докрутки HURRY_PAUSE_S здесь 0,05 с: отсчёт
+    после движения мыши (оно дольше 0,05 с) сдвинул бы последний шаг за
+    70 с. Модуль 21."""
+    monkeypatch.setattr(chrome_human, "HURRY_PAUSE_S", (0.05, 0.05))
     page = FakePage([], endless=True)
-    human, clock = hand(page)
+    human, _ = hand(page)
     human.scroll_page(page, 10.0)
-    assert 70.0 <= clock.now <= 72.0
+    kinds = [event[0] for event in page.events]
+    last_wheel = len(kinds) - 1 - kinds[::-1].index("wheel")
+    before = sum(e[1] for e in page.events[:last_wheel] if e[0] == "sleep")
+    _, its_pause = page.events[last_wheel + 1]
+    assert (before < 70.0, before + its_pause >= 70.0) == (True, True)
 
 
 # ---------- числа пробы ----------

@@ -221,7 +221,8 @@ class FakeElement:
     ошибка прокрутки к нему (scroll_error: её бросает
     scroll_into_view_if_needed, например тайм-аут). opens — вкладка
     карточки, которую открывает клик по ссылке с зажатой клавишей (Cmd/Ctrl
-    + клик Chrome), 21.98."""
+    + клик Chrome), 21.98. visible — виден ли элемент (скрытый: селектор с
+    :visible его не находит, скрипт ссылок на объявления — тоже)."""
 
     box: dict[str, float] | None
     href: str | None = None
@@ -229,6 +230,7 @@ class FakeElement:
     enabled: bool = True
     scroll_error: BaseException | None = None
     opens: "FakePage | None" = None
+    visible: bool = True
 
     def holds(self, x: float, y: float) -> bool:
         """Точка (x, y) внутри рамки элемента."""
@@ -505,7 +507,10 @@ class FakePage:
     Для карточек (21.98): context — FakeTabContext; клик с клавишей по
     ссылке с opens открывает вкладку карточки (ответа сайта нет);
     bring_to_front и close пишутся в журнал контекста (имя вкладки — name),
-    close — ещё и ("close",) в events; закрытая вкладка — closed и уходит из
+    bring_to_front — ещё и ("front",) в events и затем бросает front_error,
+    если она задана; close — ещё и ("close",) в events; селектор
+    'a[href="…"]:visible' находит только видимые ссылки (FakeElement.visible),
+    без :visible — все; закрытая вкладка — closed и уходит из
     context.pages; traffic — ранние события CDP вкладки (имя, параметры),
     sessions — её сессии CDP."""
 
@@ -538,6 +543,7 @@ class FakePage:
         self.held: set[str] = set()
         self.name = "выдача"
         self.closed = False
+        self.front_error: BaseException | None = None
         self.traffic: list[tuple[str, dict]] = []
         self.sessions: list[FakeCdpSession] = []
         self.context = FakeTabContext(self)
@@ -566,7 +572,11 @@ class FakePage:
         if found is None:
             raise AssertionError(f"подделка вкладки не знает селектор {selector}")
         href = found.group(1)
-        return FakeLocator(self, [e for e in self.elements if e.href == href])
+        items = [e for e in self.elements if e.href == href]
+        # псевдокласс Playwright :visible — только видимые элементы (21.98)
+        if selector.endswith(":visible"):
+            items = [e for e in items if e.visible]
+        return FakeLocator(self, items)
 
     def get_by_text(self, text: str, *, exact: bool = False) -> FakeLocator:
         def matches(element: FakeElement) -> bool:
@@ -597,6 +607,9 @@ class FakePage:
 
     def bring_to_front(self) -> None:
         self.context.log.append((self.name, "front"))
+        self.events.append(("front",))
+        if self.front_error is not None:
+            raise self.front_error
 
     def close(self, **kwargs: object) -> None:
         self.closed = True
@@ -661,11 +674,14 @@ class FakePage:
         return found
 
     def links_like(self, pattern: str) -> list[str]:
-        """href ссылок, в которых найден шаблон pattern, без повторов."""
+        """href видимых ссылок, в которых найден шаблон pattern, без
+        повторов (скрипт OFFER_LINKS_JS берёт только видимые)."""
         found: list[str] = []
         for element in self.elements:
             href = element.href
-            if href is not None and re.search(pattern, href) and href not in found:
+            if not element.visible or href is None or href in found:
+                continue
+            if re.search(pattern, href):
                 found.append(href)
         return found
 

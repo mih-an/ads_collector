@@ -726,14 +726,17 @@ def captcha_reason(url: str) -> str | None:
 def test_21_98_card_block():
     """21.98 Признак блока сработал (капча или чужой адрес) — CardVisit
     BLOCK с деталью признака, адресом карточки без параметров и телом
-    вкладки карточки (content) — для файла _block_*. Модуль 21."""
+    вкладки карточки (content) — для файла _block_*; трафик — полный, с
+    поздними событиями CDP (они приходят только при закрытии карточки с
+    блоком: её не листают). Модуль 21."""
     page, _ = card_page(FakeCardPage(url=CAPTCHA_CARD_URL))
     visit = view(page, captcha_reason)
-    assert (visit.verdict, visit.detail, visit.url, visit.body) == (
+    assert (visit.verdict, visit.detail, visit.url, visit.body, visit.traffic) == (
         "BLOCK",
         "captcha",
         CAPTCHA_CARD_PLAIN_URL,
         CARD_HTML,
+        CARD_TRAFFIC_BYTES,
     )
 
 
@@ -811,6 +814,27 @@ def test_21_98_front_flag(front, card_url, expected):
     page, _ = card_page(FakeCardPage(url=card_url))
     view(page, captcha_reason, front=front)
     assert page.context.log == expected
+
+
+def test_21_98_front_before_block_check_and_scroll():
+    """21.98 С front вкладка карточки выходит на передний план раньше
+    проверки блока (вызова признака block_reason) и раньше первого шага
+    колеса: признак блока и колесо пишут в события карточки после
+    ("front",). Модуль 21."""
+    card = FakeCardPage()
+
+    def reason(url: str) -> str | None:
+        card.events.append(("block_reason",))
+        return None
+
+    page, _ = card_page(card)
+    view(page, reason, front=True)
+    order = kinds(card)
+    front = order.index("front")
+    assert (front < order.index("block_reason"), front < order.index("wheel")) == (
+        True,
+        True,
+    )
 
 
 def test_21_98_card_pause_after_load():
@@ -907,6 +931,42 @@ def test_21_98_front_after_open_error():
     page.context.late = True
     view(page, front=True)
     assert page.context.log[-1] == ("выдача", "front")
+
+
+def test_21_98_card_link_clicked_among_visible():
+    """21.98 Ссылка карточки нажимается среди видимых — как и выбирается
+    (скрипт ссылок берёт только видимые): у адреса две ссылки, первая по
+    DOM скрыта, вторая видима — нажата видимая. Подделка вкладки понимает
+    псевдокласс Playwright :visible в селекторе 'a[href="…"]:visible'
+    (FakePage.locator); без него селектор находит обе ссылки (DECISIONS
+    block/click-pages, ревью PR #9). Модуль 21."""
+    card = FakeCardPage()
+    hidden = FakeElement(None, href=CARD_URL, text="Участок", opens=card, visible=False)
+    shown = offer_link(card)
+    page = FakePage([], [LISTING_LINK, hidden, shown])
+    view(page)
+    assert page.clicked == [shown]
+
+
+@pytest.mark.parametrize(
+    "card_url", [CARD_URL, CAPTCHA_CARD_URL], ids=["листание", "блок"]
+)
+def test_21_98_search_front_error_is_error(card_url):
+    """21.98 С front ошибка Playwright при выводе вкладки выдачи вперёд
+    после закрытия карточки — CardVisit ERROR, деталь — первая строка текста
+    ошибки, исключение не летит; вкладка выдачи выводится вперёд один раз —
+    после ошибки не повторяется; карточка закрыта (DECISIONS
+    block/click-pages, ревью PR #9). Модуль 21."""
+    page, card = card_page(FakeCardPage(url=card_url))
+    page.front_error = FakePlaywrightError(TAB_CLOSED + "\nCall log:\n  - x")
+    visit = view(page, captcha_reason, front=True)
+    fronts = page.context.log.count(("выдача", "front"))
+    assert (visit.verdict, visit.detail, fronts, card.closed) == (
+        "ERROR",
+        TAB_CLOSED,
+        1,
+        True,
+    )
 
 
 # ---------- функция-край connect_chrome_tab (21.89) ----------

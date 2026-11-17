@@ -1137,9 +1137,14 @@ def test_21_92_classify_click_not_json(body, expected):
 def test_21_92_classify_click_no_offers_list(body):
     """21.92 JSON клика без списка объявлений data.offersSerialized (нет
     ключа, не список, data не объект или нет, сам JSON не объект) →
-    API_CHANGED no_offers_serialized. Модуль 21."""
-    verdict, detail, _, offers = search_page.classify_click(200, body)
-    assert (verdict, detail, offers) == ("API_CHANGED", "no_offers_serialized", [])
+    API_CHANGED no_offers_serialized; totalOffers None, объявлений нет.
+    Модуль 21."""
+    assert search_page.classify_click(200, body) == (
+        "API_CHANGED",
+        "no_offers_serialized",
+        None,
+        [],
+    )
 
 
 @pytest.mark.parametrize(
@@ -5684,13 +5689,18 @@ def test_21_90_make_chrome_browser_human_clock(env, monkeypatch):
     ) == (True, True, True)
 
 
-def test_21_98_make_chrome_browser_card_settings(env, monkeypatch):
+@pytest.mark.parametrize(
+    ("platform", "keys"),
+    [("darwin", ("Meta",)), ("win32", ("Control",))],
+    ids=["Мак — Meta", "Windows — Control"],
+)
+def test_21_98_make_chrome_browser_card_settings(env, monkeypatch, platform, keys):
     """21.98 make_chrome_browser собирает настройки карточки в TabSettings:
     новая вкладка ждётся CARD_OPEN_TIMEOUT_MS, клавиша «в новой вкладке» —
-    по платформе sys.platform в момент сборки (на Windows — Control),
-    передний план — Settings.front (с front вкладка карточки, затем вкладка
-    выдачи — на передний план). Модуль 21."""
-    monkeypatch.setattr(cc.sys, "platform", "win32")
+    по платформе sys.platform в момент сборки (на Маке — Meta, на Windows —
+    Control), передний план — Settings.front (с front вкладка карточки,
+    затем вкладка выдачи — на передний план). Модуль 21."""
+    monkeypatch.setattr(cc.sys, "platform", platform)
     page = FakeChromePage(CHROME_UA, CHROME_COOKIES[:1])
     page.elements = [offer_link(FakeCardPage())]
     replace_connect_chrome_tab(monkeypatch, chrome_tab_of(page))
@@ -5700,7 +5710,7 @@ def test_21_98_make_chrome_browser_card_settings(env, monkeypatch):
     fronts = [entry for entry in page.context.log if entry[1] == "front"]
     assert (page.context.waits, page.context.opened_with, fronts) == (
         [cc.CARD_OPEN_TIMEOUT_MS],
-        [("Control",)],
+        [keys],
         [("карточка", "front"), ("выдача", "front")],
     )
 
