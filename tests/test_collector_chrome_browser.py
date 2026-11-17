@@ -969,6 +969,27 @@ def test_21_98_search_front_error_is_error(card_url):
     )
 
 
+def test_21_98_first_card_error_kept_when_front_fails():
+    """21.98 С front карточка падает ошибкой Playwright при листании, затем
+    падает вывод вкладки выдачи вперёд — CardVisit ERROR, деталь — первая
+    строка первой ошибки (листания), исключение не летит; вкладка выдачи
+    выводится вперёд один раз; карточка закрыта (DECISIONS block/click-pages,
+    ревью PR #9). Модуль 21."""
+    card = FakeCardPage()
+    card.crash = FakePlaywrightError("21.98 листание\nCall log:\n  - x")
+    card.crash_on = "wheel"
+    page, _ = card_page(card)
+    page.front_error = FakePlaywrightError("21.98 вперёд\nCall log:\n  - y")
+    visit = view(page, front=True)
+    fronts = page.context.log.count(("выдача", "front"))
+    assert (visit.verdict, visit.detail, fronts, card.closed) == (
+        "ERROR",
+        "21.98 листание",
+        1,
+        True,
+    )
+
+
 # ---------- функция-край connect_chrome_tab (21.89) ----------
 
 
