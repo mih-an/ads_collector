@@ -1,11 +1,12 @@
 """
 search_page.py — контракт выдачи ЦИАН: ссылка на страницу поиска и разбор ответа.
 
-Получает кольцо полигона и номер страницы (page_url) или код, тело и
-заголовки ответа (classify_page → Classified). Отдаёт ссылку, класс ответа
-(OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью, totalOffers и
-объявления, id объявлений и оценку числа страниц. Чистые функции: без
-сети, диска и часов.
+Получает кольцо полигона и номер страницы (page_url) или код, тело и заголовки
+ответа (classify_page, у ответа на клик — classify_click → Classified). Отдаёт
+ссылку, класс ответа (OK, PAGE_END, BLOCK, API_CHANGED, NET_ERROR) с деталью,
+totalOffers и объявления, id объявлений и оценку числа страниц; при листании
+кликом — что нажать, какой ответ ловить, признаки конца выдачи, ссылку на
+объявление и признаки блока карточки. Чистые функции: без сети, диска и часов.
 """
 
 from __future__ import annotations
@@ -31,6 +32,35 @@ MAX_PAGES = 54
 
 CIAN_BASE_URL = "https://www.cian.ru"
 POLYGON_NAME = "default_name_1"  # канонический вид (301-канонизация ЦИАН, 12.09)
+# Номер страницы выдачи в ссылке (p=N) и текст кнопки «следующая страница»:
+# что нажать при листании кликом (21.92; проба click_test.py)
+PAGE_PARAM = "p"
+NEXT_BUTTON_TEXT = "Дальше"
+# Ответ на клик «следующая страница»: JSON API выдачи (search-offers, xhr
+# или fetch) или загрузка документа. Блок рекомендаций грузится тем же API
+# (get-infinite-search-result) — это не следующая страница (21.92; проба)
+NEXT_PAGE_API = "search-offers"
+RECOMMENDATIONS_API = "get-infinite-search-result"
+API_REQUEST_KINDS = ("xhr", "fetch")
+# Ответ API на клик: объявления и счётчик (решение Андрея 5; путь —
+# допущение о данных, DECISIONS block/click-pages)
+CLICK_OFFERS_PATH = "data.offersSerialized"
+CLICK_TOTAL_PATH = "data.offerCount"
+# Конец выдачи при листании кликом (решение Андрея 6): нажимать нечего —
+# нет ни ссылки на следующую страницу, ни активной «Дальше»; клик принёс те
+# же id, что на прошлой странице
+NO_NEXT_PAGE = "no_next_page"
+SAME_IDS = "same_ids"
+# Ссылка на объявление на странице выдачи — вхождение пути карточки: ссылки
+# ведут на поддомен с параметрами, krasnogorsk.cian.ru/sale/suburban/<число>/
+# ?context=… (21.92; DECISIONS block/click-pages). Шаблон уходит в JS RegExp
+# (OFFER_LINKS_JS в chrome_browser): только синтаксис, общий у JS и re
+OFFER_LINK_PATTERN = r"/sale/suburban/\d+/?"
+# Признаки блока открытой карточки (решение Андрея 9): капча в адресе (без
+# учёта регистра, как в пробе) или адрес не на cian.ru и не на его поддомене
+CIAN_HOST = "cian.ru"
+CARD_CAPTCHA = "captcha"
+CARD_FOREIGN_URL = "foreign_url"
 
 CAPTCHA_MARKERS = (
     "geetest",
@@ -93,10 +123,34 @@ def page_url(ring, page: int = 1) -> str:
         ("offer_type", "suburban"),
     ]
     if page > 1:
-        params.append(("p", str(page)))
+        params.append((PAGE_PARAM, str(page)))
     params.append(("polygon_name[1]", POLYGON_NAME))
     query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
     return f"{CIAN_BASE_URL}/cat.php?" + query
+
+
+def is_next_page_response(url: str, resource_type: str) -> bool:
+    """Ответ ли это на клик «следующая страница»: документ — да (клик
+    загрузил страницу); xhr или fetch API выдачи — да, кроме блока
+    рекомендаций; прочее — нет (21.92). Фрейм документа проверяет браузер."""
+    if resource_type == "document":
+        return True
+    if RECOMMENDATIONS_API in url:
+        return False
+    return NEXT_PAGE_API in url and resource_type in API_REQUEST_KINDS
+
+
+def card_block_reason(url: str) -> str | None:
+    """Признак блока открытой карточки по её адресу (21.92): капча в адресе
+    — "captcha" (проверяется первой, и на чужом сайте); хост не cian.ru и не
+    *.cian.ru — "foreign_url" (cian.ru.evil.com и notcian.ru — чужие); иначе
+    None."""
+    if CARD_CAPTCHA in url.lower():
+        return CARD_CAPTCHA
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if host == CIAN_HOST or host.endswith("." + CIAN_HOST):
+        return None
+    return CARD_FOREIGN_URL
 
 
 # ──────────────────── РАЗБОР И КЛАССИФИКАЦИЯ ────────────────────────
@@ -265,29 +319,75 @@ def classify_page(  # noqa: PLR0913
         return Classified(hv[0], hv[1], None, [])
     state = extract_initial_state(body)
     if state is None:
-        # порядок важен: капчу и Servicepipe проверяем только когда офферов нет,
-        # иначе слово "recaptcha" в постороннем скрипте страницы даст ложный
-        # BLOCK. Servicepipe — раньше капчи, для страховки: если на его
-        # странице окажется маркер капчи (в 2 образцах 10.11 его нет), капча
-        # дала бы пометку «билет сгорел» вопреки решению Андрея 10.11 (З155).
-        # Признак ищется во всём теле, не в начале.
-        if SERVICEPIPE_MARKER in body:
-            return Classified(BLOCK, "servicepipe", None, [])
-        if _has_captcha(body):
-            return Classified(BLOCK, "captcha", None, [])
-        return Classified(API_CHANGED, "no_initial_state", None, [])
+        return _without_offers(body, "no_initial_state")
     res = state["results"]
     return _finish(res.get("totalOffers"), res.get("offers") or [], page)
+
+
+def _without_offers(body: str, detail: str) -> Classified:
+    """Ответ 200 без объявлений: проверка Servicepipe → BLOCK servicepipe,
+    капча → BLOCK captcha, иначе API_CHANGED с деталью detail."""
+    # порядок важен: капчу и Servicepipe проверяем только когда офферов нет,
+    # иначе слово "recaptcha" в постороннем скрипте страницы даст ложный
+    # BLOCK. Servicepipe — раньше капчи, для страховки: если на его
+    # странице окажется маркер капчи (в 2 образцах 10.11 его нет), капча
+    # дала бы пометку «билет сгорел» вопреки решению Андрея 10.11 (З155).
+    # Признак ищется во всём теле, не в начале.
+    if SERVICEPIPE_MARKER in body:
+        return Classified(BLOCK, "servicepipe", None, [])
+    if _has_captcha(body):
+        return Classified(BLOCK, "captcha", None, [])
+    return Classified(API_CHANGED, detail, None, [])
+
+
+def classify_click(
+    code: int, body: str, neterr: str | None = None, page: int = 2
+) -> Classified:
+    """Ответ API выдачи на клик «следующая страница» (JSON): объявления —
+    data.offersSerialized, totalOffers — data.offerCount; коды — как у
+    classify_page, кроме 3xx (→ API_CHANGED http_<код>, DECISIONS
+    block/click-pages); пустая выдача — как у classify_page (21.92).
+    → (вердикт, деталь, totalOffers, offers)"""
+    if neterr:
+        return Classified(NET_ERROR, neterr, None, [])
+    # 3xx ответа API тоже сюда: location разбору клика не передаётся
+    # (DECISIONS block/click-pages, ревью тестов П3)
+    hv = _classify_http(code)
+    if hv:
+        return Classified(hv[0], hv[1], None, [])
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return _without_offers(body, "click_not_json")
+    offers = get_path(payload, CLICK_OFFERS_PATH)
+    if not isinstance(offers, list):
+        return Classified(API_CHANGED, "no_offers_serialized", None, [])
+    return _finish(get_path(payload, CLICK_TOTAL_PATH), offers, page)
+
+
+def _raw_id(item):
+    """Сырой id объявления (id или cianId) как отдал ЦИАН; нет — None."""
+    if not isinstance(item, dict):
+        return None
+    return item.get("id") or item.get("cianId")
 
 
 def offer_ids(offers: list) -> list[int]:
     out = []
     for o in offers:
-        if isinstance(o, dict):
-            oid = o.get("id") or o.get("cianId")
-            if oid is not None:
-                out.append(int(oid))
+        oid = _raw_id(o)
+        if oid is not None:
+            out.append(int(oid))
     return out
+
+
+def raw_ids(offers: list) -> frozenset:
+    """Множество сырых id страницы — для сверки «те же id» при листании
+    кликом. Строит его загрузчик страницы до записи файла, без превращения в
+    число; ошибку разбора id ловит обход после записи [E-22] — это держится
+    на том, что id/cianId — число (data-checker: 955 из 955 — (int, int);
+    DECISIONS 2026-11-17)."""
+    return frozenset(_raw_id(o) for o in offers) - {None}
 
 
 def pages_for(total: int | None) -> int:

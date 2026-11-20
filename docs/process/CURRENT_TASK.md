@@ -4,34 +4,35 @@
 
 ---
 
-Задача: block/chrome-insert (ads_collector). Вставить готовый ChromeBrowser внешней реализации; все страницы — по ссылке; формат папки прогона прежний.
-Метка: [CHROME]
+Задача: block/click-pages (ads_collector). Страницы 2+ — кликом в Chrome с поведением человека, как в пробе Андрея; переименование «источника страниц» в загрузчик страницы.
+Метка: [КЛИКИ]
 Решения уровня 2 — Андрей, 16.11.2026.
 
-Цель: сборщик запускается с --browser chrome на Маке Андрея (проба сразу после слияния); источник «кликом» — следующим блоком.
+Цель: сборщик с --browser chrome --page-loader click листает выдачу как человек (образец — ../open_site/click_test.py и long_test.py, прогоны 16.11 без блокировок); формат главного файла страницы и land-monitor не меняются.
 
-Кейсы и правила: docs/reference/browser_contract.md (разделы 5–8), набор 21.86 на стендах http и chrome, страж 21.78, 21.87; новые кейсы — по плану planner, в TEST_PLAN.md (тесты внешней реализации переименовать под номера кейсов).
-Общие файлы: CLAUDE.md (§6), requirements.txt, tests/collector_support.py — если planner перенесёт туда подделки вкладки; .claude/settings.json, .github/ — нет.
+Кейсы и правила: модуль 21 (docs/TEST_PLAN.md), набор контракта 21.86 (стенды http и chrome), страж 21.78, эталоны ночей без перегенерации; новые кейсы — по плану planner. docs/CIAN_DATA_FORMAT.md — описать .click.gz и event=card.
+Общие файлы: CLAUDE.md (§6, §10), tests/collector_support.py — если planner решит; .claude/settings.json, .github/ — нет.
 
 Решения уровня 2:
-1. Основа — три файла внешней реализации из ~/chrome_browser_result.zip (читать unzip -p, писать Write): collector/chrome_browser.py, tests/test_collector_browser.py (ChromeStand и строка "chrome" в STANDS), tests/test_collector_chrome_browser.py. Порядок TDD: коммит «тесты» (тесты внешней реализации, красные без chrome_browser.py) → ревью тестов → коммит «код». Правки по ревью — coder; внешнюю LLM повторно не зовём.
-2. Правка внешнего кода: адрес подключения http://127.0.0.1:<port>, не localhost (Chrome слушает отладочный порт на 127.0.0.1; localhost может уйти в IPv6) — с тестом.
-3. ChromeTab(page, timeout_error, error) вместо голой вкладки — принято. Контракт поправить по списку отступлений внешней реализации: ChromeTab в разделах 6 и 8; poll_s — пятый аргумент connect_chrome_tab, настроек Chrome семь; билет — по tab.page; имена ChromeConnectError, ChromeNoResponseError; правила «goto без ответа» и «нет ответа первого шага редиректа» — исключение наружу; тело — response.body() с заменой битого UTF-8; подделки вкладки — где решит planner.
-4. make_chrome_browser в cian_collect.py (раздел 8 контракта): connect_chrome_tab → билет по решению 16.11 (ua — navigator.userAgent вкладки; cookie_header — cookies домена cian.ru из контекста вкладки строкой «a=1; b=2», нет — None; age_h = None) → ChromeBrowser; строка "chrome" в BROWSERS.
-5. Настройки Chrome: флаги --chrome-port (умолчание 9222), --chrome-path (умолчание — стандартный путь Chrome на macOS), --chrome-profile (умолчание — папка chrome-profile в текущей папке, рядом с runs/); тайм-аут перехода, событие загрузки (load), ожидание порта и шаг опроса — константы cian_collect.py, числа выбирает тимлид. При --browser chrome файлы --cookies/--ua не проверяются.
-6. playwright==1.65.2 — в requirements.txt (у Андрея уже стоит); ранняя проверка «playwright установлен» — код 2 до паузы старта, как у --transport httpx (21.81).
-7. Текст итога при age_h = None — «билет: есть» без часов (и «билет: нет»), с тестом; plan.json / summary.json — cookie_age_h null, как в контракте.
-8. collector/README.md — раздел «Запуск с Chrome на Маке»: готовая команда с --browser chrome и отдельной папкой профиля, что делать при «Chrome не открыл порт».
-9. «Мелочи» ROADMAP, пункт «под Windows»: start_new_session в Windows не действует — проверить, не закрывается ли Chrome вместе со сборщиком; при необходимости creationflags=DETACHED_PROCESS.
+1. Имена: PageSource → PageLoader (UrlPageLoader, ClickPageLoader), PAGE_SOURCES → PAGE_LOADERS, page_source.py → page_loader.py, get_page → load_page; флаг --page-loader url|click (умолчание url).
+2. Обход: download_page возвращает итог страницы (outcome: прочитана / конец / стоп с причиной), бригадир проверяет его вместо общей state.stopped; поведение обхода прежнее.
+3. ClickPageLoader: страница 1 — по ссылке; страница N — кликом, если во вкладке открыта N−1 той же клетки (помнит (клетка, страница) только после удачного ответа); любая другая просьба — громкая ошибка программы.
+4. Клик — метод click_and_catch(что нажать, какой ответ ловить) в общем интерфейсе Browser; HttpBrowser — понятная ошибка «не умею кликать»; --page-loader click с --browser http — код 2 при старте. Что нажимать (ссылка с p=N, иначе «Дальше») и какой ответ ловить (xhr/fetch search-offers, кроме get-infinite-search-result; или загрузка документа) — знание ЦИАН, в search_page.py. Контракт browser_contract.md и набор 21.86 — дополнить кликом.
+5. Файлы страницы кликом: главный raw/<клетка>_p<N>.json.gz того же вида (offers — из data.offersSerialized, totalOffers — из data.offerCount); рядом raw/<клетка>_p<N>.click.gz — полный JSON-ответ; .html.gz нет. Клик привёл к загрузке документа — страница как при ссылке (html.gz + json.gz).
+6. Конец выдачи: нет ссылки на следующую страницу и кнопки «Дальше» (или она неактивна) — конец (PAGE_END); прежние признаки остаются. Конец без кнопки на полной странице, когда по totalOffers страниц больше, — пометка в итоге прогона. Те же id, что на прошлой странице, — конец клетки с пометкой (как STALE в пробе).
+7. Клик без ответа за тайм-аут — сбой сети (код 0, причина click_timeout); повторы этой страницы — по ссылке, по прежним правилам повторов обхода; удачно — следующая снова кликом; 4 неудачи — стоп «сеть». Один load_page — один запрос; в night.log видно, кликом или по ссылке.
+8. Поведение человека — как в click_test.py: пауза между страницами проходит прокруткой страницы (human_scroll: шаги колесом, иногда назад, задержки «почитать», у низа — смотрит на нумерацию); прицеливание и плавное движение мыши (human_aim, human_move), клик с задержкой нажатия (human_click); после ответа — ожидание load и адреса с p=N, короткая пауза; одностраничная клетка тоже листается. Длительность паузы по-прежнему решает обход. Все задержки и вероятности — настройки, значения — из пробы. Новый интерфейс — если без него код непонятнее; обходных решений не городить.
+9. Карточки — флаг --cards (умолчание выкл.), поведение как open_random_card пробы: 1–2 карточки на клетку на случайных страницах, Cmd/Ctrl+клик в новую вкладку, листание 20–60 с, закрыть; капча или чужой адрес — BLOCK и стоп; ошибка открытия — не стоп, лишние вкладки закрыть. Флаг --front (умолчание выкл., на Windows включать) — вкладка на передний план. Заход — строка event=card в night.log (адрес, трафик, длительность). На боевом --cards не включать до задачи land-monitor «приём нового сборщика».
+10. Мелочь: в строке start night.log cookie_age_h при пустом возрасте — пустое значение, не «None» (как в контракте, раздел 5).
 
 Работа:
-- Сеть наружу не трогать, Chrome не запускать: тесты — на подделках; поиск — git grep в одинарных кавычках; временное — tmp_path / tempfile.
+- Сеть наружу не трогать, Chrome не запускать: тесты — на подделках; поиск — git grep в одинарных кавычках; временное — tmp_path / tempfile. Скрипты пробы ../open_site/*.py — только читать.
 - Проверки GitHub не работают: перед push — полный локальный прогон по CLAUDE.md §7, вывод — в раздел 4 описания PR.
 
 Готово, когда:
-- python -m collector.cian_collect --browser chrome собирает ChromeBrowser через connect_chrome_tab; --browser http — как раньше; эталоны ночей совпадают без перегенерации.
-- 21.86 зелёный на стендах http и chrome; покрытие collector/ 100 % с ветвлениями; ruff и mypy чистые; страж 21.78 разрешает playwright, subprocess и time только в connect_chrome_tab.
-- browser_contract.md совпадает с кодом; README — команда запуска с Chrome.
+- --browser chrome --page-loader click: страницы 2+ кликом с поведением пробы; --page-loader url и --browser http — как раньше; эталоны ночей совпадают.
+- Набор 21.86 зелёный на обоих стендах с кликом; покрытие collector/ 100 % с ветвлениями; ruff и mypy чистые.
+- CIAN_DATA_FORMAT.md описывает .click.gz и event=card; browser_contract.md — клик; README — команда запуска кликами с Chrome на Маке.
 - TEAMLEAD_REPORT.md записан, PR создан.
 
 Сливаю я.

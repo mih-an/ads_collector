@@ -5,8 +5,9 @@ cian_collect.py — запуск боевого сборщика ЦИАН и е�
 случайность по seed, файл клеток [E-42] и сетка (в stdout), часы crawl.Clock,
 пауза старта, вход на ЦИАН. enter_cian — браузер из BROWSERS (http: билет из
 файлов и транспорт make_transport; chrome: вкладка connect_chrome_tab и билет
-из неё) → источник страниц из PAGE_SOURCES. main запускает обход и печатает
-итог. Сети здесь нет; сервер и запуск — collector/README.md.
+из неё) → загрузчик страницы из PAGE_LOADERS (флаг --page-loader). main
+запускает обход и печатает итог. Сети здесь нет; сервер и запуск —
+collector/README.md.
 """
 
 from __future__ import annotations
@@ -23,15 +24,16 @@ from datetime import datetime
 
 from collector import (
     chrome_browser,
+    chrome_human,
     http_browser,
-    page_source,
+    page_loader,
     search_page,
     urllib_transport,
 )
 from collector.browser import Browser, Ticket
 from collector.crawl import Clock, Crawl, Settings
 from collector.geometry import TilesFile
-from collector.page_source import PageSource
+from collector.page_loader import PageLoader
 from collector.transport import Transport
 
 # ────────────────────────────── КОНФИГ ──────────────────────────────
@@ -61,6 +63,13 @@ GOTO_TIMEOUT_MS = 45_000
 WAIT_UNTIL = "load"
 PORT_WAIT_S = 30.0
 POLL_S = 0.5
+# клик вкладки: ожидание ответа, затем события load и адреса с номером
+# страницы — числа пробы click_test.py (DECISIONS, block/click-pages)
+CLICK_TIMEOUT_MS = 60_000
+LOAD_TIMEOUT_MS = 60_000
+URL_TIMEOUT_MS = 30_000
+# карточка объявления (--cards): ожидание новой вкладки — число пробы
+CARD_OPEN_TIMEOUT_MS = 30_000
 
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -185,12 +194,19 @@ def read_chrome_ticket(tab: chrome_browser.ChromeTab) -> Ticket:
     return Ticket(cookie_header=cookie_header, ua=ua, age_h=None)
 
 
+def new_tab_key(platform: str) -> str:
+    """Клавиша «открыть ссылку в новой вкладке»: Cmd на macOS, иначе Ctrl
+    (как в пробе click_test.py, 21.98)."""
+    return "Meta" if platform == "darwin" else "Control"
+
+
 def make_chrome_browser(
     settings: Settings, rnd: random.Random, transport_factory: TransportFactory
 ) -> Browser:
     """ChromeBrowser: вкладка Chrome (подключение по порту, при молчании —
-    запуск со своим профилем) → билет из неё → браузер с часами monotonic.
-    rnd и transport_factory не нужны: UA и сеть — у самого Chrome."""
+    запуск со своим профилем) → билет из неё → браузер с часами monotonic,
+    ожиданиями вкладки TabSettings и рукой человека Human (сон, часы и rnd
+    обхода). transport_factory не нужен: UA и сеть — у самого Chrome."""
     # connect_chrome_tab — по имени модуля в момент вызова: точка подмены 21.90
     try:
         tab = chrome_browser.connect_chrome_tab(
@@ -204,8 +220,21 @@ def make_chrome_browser(
         # ожидаемая ошибка запуска — без трассировки, как файл клеток (З160)
         sys.exit(f"--browser chrome: {error}")
     ticket = read_chrome_ticket(tab)
+    tab_settings = chrome_browser.TabSettings(
+        goto_timeout_ms=GOTO_TIMEOUT_MS,
+        wait_until=WAIT_UNTIL,
+        click_timeout_ms=CLICK_TIMEOUT_MS,
+        load_timeout_ms=LOAD_TIMEOUT_MS,
+        url_timeout_ms=URL_TIMEOUT_MS,
+        card_open_timeout_ms=CARD_OPEN_TIMEOUT_MS,
+        front=settings.front,
+        # sys.platform — в момент сборки: так клавишу подменяют тесты (21.98)
+        new_tab_key=new_tab_key(sys.platform),
+    )
+    # time — по имени модуля в момент вызова: так часы подменяют тесты (21.90)
+    human = chrome_human.Human(time.sleep, time.monotonic, rnd)
     return chrome_browser.ChromeBrowser(
-        tab, ticket, time.monotonic, GOTO_TIMEOUT_MS, WAIT_UNTIL
+        tab, ticket, time.monotonic, tab_settings, human
     )
 
 
@@ -213,11 +242,13 @@ def make_chrome_browser(
 class BrowserChoice:
     """Браузер флага --browser: library — модуль, который должен быть
     установлен (None — хватает стандартной библиотеки); ticket_files — билет
-    из файлов --cookies и --ua (их проверяет check_args); make — сборка."""
+    из файлов --cookies и --ua (их проверяет check_args); make — сборка;
+    clicks — умеет кликать (нужно --page-loader click, проверяет check_args)."""
 
     library: str | None
     ticket_files: bool
     make: BrowserMaker
+    clicks: bool = False
 
 
 # Одно место для списка браузеров, по образцу TRANSPORTS: из него choices
@@ -226,20 +257,47 @@ class BrowserChoice:
 BROWSERS: dict[str, BrowserChoice] = {
     "http": BrowserChoice(library=None, ticket_files=True, make=make_http_browser),
     "chrome": BrowserChoice(
-        library="playwright", ticket_files=False, make=make_chrome_browser
+        library="playwright", ticket_files=False, make=make_chrome_browser, clicks=True
     ),
 }
 
 
-# ───────────────────────── ИСТОЧНИКИ СТРАНИЦ ─────────────────────────
+# ──────────────────────── ЗАГРУЗЧИКИ СТРАНИЦЫ ────────────────────────
 
-# Одно место для списка источников страниц, по образцу TRANSPORTS. Словарь
-# и умолчание PAGE_SOURCE читаются в момент вызова: так 21.84 подставляет
-# свой создатель и своё имя. Флага запуска нет, пока реализация одна: имя
-# без выбора не проверить (DECISIONS, block/page-source).
-PAGE_SOURCE = "url"
-PAGE_SOURCES: dict[str, Callable[[Browser], PageSource]] = {
-    "url": page_source.UrlPageSource,
+# загрузчик по умолчанию — «по ссылке»: прежние аргументы — прежний обход
+PAGE_LOADER = "url"
+
+# создание загрузчика по браузеру, Settings, rnd и часам обхода (DECISIONS,
+# block/click-pages)
+PageLoaderMaker = Callable[[Browser, Settings, random.Random, Clock], PageLoader]
+
+
+def make_url_loader(
+    browser: Browser, settings: Settings, rnd: random.Random, clock: Clock
+) -> PageLoader:
+    """Загрузчик «по ссылке» над браузером; пауза — сон часов обхода (21.97:
+    эталоны ночей не меняются). Settings и rnd не нужны — сигнатура общая
+    для всех создателей PAGE_LOADERS."""
+    return page_loader.UrlPageLoader(browser, clock.sleep)
+
+
+def make_click_loader(
+    browser: Browser, settings: Settings, rnd: random.Random, clock: Clock
+) -> PageLoader:
+    """Загрузчик «кликом» над браузером, который умеет кликать (проверка —
+    check_args); пауза — прокрутка страницы браузером. С --cards — заходы
+    на карточки: rnd обхода и Settings.cards_per_tile; без него — None,
+    заходов нет (21.98)."""
+    cards_per_tile = settings.cards_per_tile if settings.cards else None
+    return page_loader.ClickPageLoader(browser, rnd, cards_per_tile)
+
+
+# Одно место для списка загрузчиков страницы, по образцу TRANSPORTS: из него
+# choices флага --page-loader и создание загрузчика. Читается в момент
+# вызова: так 21.84 добавляет в него свой создатель.
+PAGE_LOADERS: dict[str, PageLoaderMaker] = {
+    "url": make_url_loader,
+    "click": make_click_loader,
 }
 
 
@@ -275,6 +333,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=BROWSER,
         help="реализация браузера",
     )
+    ap.add_argument(
+        "--page-loader",
+        choices=list(PAGE_LOADERS),
+        default=PAGE_LOADER,
+        help="как загружать страницы выдачи",
+    )
+    ap.add_argument(
+        "--cards",
+        action="store_true",
+        help="заходить на карточки объявлений (только с --page-loader click)",
+    )
+    ap.add_argument(
+        "--front",
+        action="store_true",
+        help="вкладку карточки на передний план (окно Chrome выскакивает поверх)",
+    )
     ap.add_argument("--cookies", help=f"файл кук билета (умолчание {COOKIES_FILE})")
     ap.add_argument("--ua", help=f"файл UA билета (умолчание {UA_FILE})")
     ap.add_argument(
@@ -296,12 +370,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def check_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Ошибки запуска, которых argparse сам не видит, — выход с кодом 2 до
-    паузы старта (21.45, 21.81, 21.82, 21.87)."""
+    паузы старта (21.45, 21.81, 21.82, 21.84, 21.87, 21.98)."""
     # прогона без запросов нет: smoke в законченном прогоне — всегда словарь
     # (21.45; DECISIONS, block/simplify-2, ревью PR #4)
     if args.budget < 1:
         ap.error(f"--budget {args.budget}: нужен хотя бы 1 запрос")
     browser = BROWSERS[args.browser]
+    if args.page_loader == "click" and not browser.clicks:
+        clickers = ", ".join(name for name, choice in BROWSERS.items() if choice.clicks)
+        ap.error(
+            f"--page-loader click: браузер --browser {args.browser} кликать не "
+            f"умеет (умеют: {clickers})"
+        )
+    # карточку открывают кликом во вкладке выдачи (решение Андрея 9, 21.98)
+    if args.cards and args.page_loader != "click":
+        ap.error(
+            f"--cards: заходы на карточки только с --page-loader click "
+            f"(сейчас --page-loader {args.page_loader})"
+        )
     libraries = (
         ("--transport", args.transport, TRANSPORTS[args.transport].library),
         ("--browser", args.browser, browser.library),
@@ -348,6 +434,7 @@ def read_settings(argv: list[str]) -> Settings:
         seed=seed,
         transport=args.transport,
         browser=args.browser,
+        page_loader=args.page_loader,
         cookies_file=args.cookies or COOKIES_FILE,
         ua_file=args.ua or UA_FILE,
         chrome_port=args.chrome_port,
@@ -355,6 +442,8 @@ def read_settings(argv: list[str]) -> Settings:
         # абсолютный путь: не зависит от того, как Chrome понимает
         # относительный --user-data-dir, и виден в ошибке (DECISIONS)
         chrome_profile=os.path.abspath(args.chrome_profile),
+        cards=args.cards,
+        front=args.front,
     )
 
 
@@ -380,18 +469,21 @@ def pause_before_start(settings: Settings, rnd: random.Random, clock: Clock) -> 
 
 
 def enter_cian(
-    settings: Settings, rnd: random.Random, transport_factory: TransportFactory
-) -> PageSource:
+    settings: Settings,
+    rnd: random.Random,
+    transport_factory: TransportFactory,
+    clock: Clock,
+) -> PageLoader:
     """Вход на ЦИАН: браузер флага --browser из BROWSERS (со своим билетом)
-    → источник страниц PAGE_SOURCES[PAGE_SOURCE] над ним."""
+    → загрузчик страницы флага --page-loader из PAGE_LOADERS над ним."""
     browser = BROWSERS[settings.browser].make(settings, rnd, transport_factory)
-    return PAGE_SOURCES[PAGE_SOURCE](browser)
+    return PAGE_LOADERS[settings.page_loader](browser, settings, rnd, clock)
 
 
 def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Crawl:
     """Обход, собранный для запуска: случайность по seed, клетки и сетка, часы,
     пауза старта (первый вызов случайности после seed), затем вход на ЦИАН
-    (билет, транспорт, браузер) — готовый источник страниц для обхода."""
+    (билет, транспорт, браузер) — готовый загрузчик страницы для обхода."""
     rnd = random.Random(settings.seed)
     if not os.path.exists(settings.tiles_path):
         sys.exit(f"не найден {settings.tiles_path}")
@@ -408,15 +500,15 @@ def build_crawl(settings: Settings, transport_factory: TransportFactory) -> Craw
     clock = Clock(now=now_local, sleep=time.sleep)
     pause_before_start(settings, rnd, clock)
     # билет — после паузы старта: возраст кук и UA (порядок случайности)
-    source = enter_cian(settings, rnd, transport_factory)
-    return Crawl(settings, tiles_file, source, clock, rnd)
+    loader = enter_cian(settings, rnd, transport_factory, clock)
+    return Crawl(settings, tiles_file, loader, clock, rnd)
 
 
 def main(transport_factory: TransportFactory = make_transport) -> None:
     """Запуск прогона; transport_factory — точка подмены транспорта в тестах."""
     settings = read_settings(sys.argv[1:])
     # вся сборка внешнего мира: часы, rnd, пауза старта, билет, транспорт,
-    # источник страниц
+    # загрузчик страницы
     crawl = build_crawl(settings, transport_factory)
     crawl.collect()
     crawl.print_summary()

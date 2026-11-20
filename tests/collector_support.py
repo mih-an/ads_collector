@@ -2,18 +2,21 @@
 
 Используются tests/test_collector.py, tests/test_collector_nights.py,
 tests/test_collector_transport.py, tests/test_collector_browser.py,
-tests/test_collector_chrome_browser.py и tests/test_collector_status.py.
+tests/test_collector_chrome_browser.py, tests/test_collector_chrome_human.py,
+tests/test_collector_click.py и tests/test_collector_status.py.
 Здесь две группы. Общее для нескольких файлов: запрет сети (no_network —
-во всех шести файлах), предохранитель от настоящего Chrome (no_chrome — в
+во всех восьми файлах), предохранитель от настоящего Chrome (no_chrome — в
 test_collector.py, test_collector_nights.py, test_collector_transport.py,
-test_collector_browser.py, test_collector_chrome_browser.py; не
+test_collector_browser.py, test_collector_chrome_browser.py,
+test_collector_chrome_human.py, test_collector_click.py; не
 подключается только в test_collector_status.py — status.py сам зовёт
 subprocess), подставные часы (FakeTime, frozen_datetime), билет во
 временной папке, ответ ЦИАН Reply, фальшивый транспорт FakeTransport
 (сценарии обхода test_collector.py и стенд HttpBrowser в контракте
 браузера test_collector_browser.py). И подмены сети одного файла,
-собранные рядом с общими: подделка источника страниц FakePageSource —
-только сценарии обхода test_collector.py; проигрыватель ответов ЦИАН
+собранные рядом с общими: подделка загрузчика страницы FakePageLoader —
+сценарии обхода test_collector.py и паузы на странице test_collector_click.py
+(21.97); проигрыватель ответов ЦИАН
 CianPlayer с фабрикой player_transport — только эталонные ночи
 test_collector_nights.py (на настоящем UrllibTransport). Кода сборщика не
 меняет.
@@ -32,7 +35,8 @@ test_collector_status.py, а status.py — отдельный скрипт, ко
 импортирует (CLAUDE.md §6); его тесты берут отсюда только запрет сети и
 часы и не должны падать оттого, что пакет collector сломан или не
 собирается. Подсказки типов HttpReply, Ticket и PageAnswer — только для
-проверки типов (TYPE_CHECKING), при запуске тестов не импортируются.
+проверки типов (TYPE_CHECKING), при запуске тестов не импортируются (как и
+CardAnswer).
 """
 
 import http.client
@@ -45,6 +49,7 @@ import sys
 import urllib.parse
 import urllib.request
 import urllib.response
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
@@ -54,7 +59,7 @@ import pytest
 
 if TYPE_CHECKING:
     from collector.browser import Ticket
-    from collector.run_folder import PageAnswer
+    from collector.run_folder import CardAnswer, PageAnswer
     from collector.transport import HttpReply
 
 # Допуск сверки вершин ссылки с кольцом клетки. Почему 2e-5: jitter_ring
@@ -315,29 +320,52 @@ class FakeTransport:
         return HttpReply(status=reply.status, headers=lowered, body=reply.body)
 
 
-class FakePageSource:
-    """Подделка источника страниц (page_source.PageSource) для обхода над
-    любым источником (21.85): готовые ответы run_folder.PageAnswer по
+class FakePageLoader:
+    """Подделка загрузчика страницы (page_loader.PageLoader) для обхода над
+    любым загрузчиком (21.85): готовые ответы run_folder.PageAnswer по
     (ключ клетки, страница) вместо ссылок, браузера и разбора.
 
-    get_page(key, ring, page) записывает вызов в asked — (ключ, страница,
+    load_page(key, ring, page) записывает вызов в asked — (ключ, страница,
     кольцо) по порядку — и отдаёт первый ответ из очереди (key, page);
     очередь пуста — AssertionError с ключом и страницей. ticket — билет,
-    который обход читает у источника (source.ticket).
+    который обход читает у загрузчика (loader.ticket). stay_on_page(секунды)
+    — пауза обхода на открытой странице (21.97): длительность пишется в
+    stayed и уходит в переданный сон sleep (не дан — только запись).
+    visit_card() — заход на карточку после паузы (21.98): отдаёт первый
+    заход из очереди cards (run_folder.CardAnswer или None — захода нет),
+    очередь пуста — None; в card_calls пишется, сколько пауз stay_on_page
+    было к этому вызову.
     """
 
     def __init__(
-        self, ticket: "Ticket", pages: dict[tuple[str, int], list["PageAnswer"]]
+        self,
+        ticket: "Ticket",
+        pages: dict[tuple[str, int], list["PageAnswer"]],
+        sleep: Callable[[float], None] | None = None,
+        cards: list["CardAnswer | None"] | None = None,
     ) -> None:
         self.ticket = ticket
         self.pages = pages
+        self.sleep = sleep
+        self.cards = list(cards or [])
         self.asked: list[tuple[str, int, list]] = []
+        self.stayed: list[float] = []
+        self.card_calls: list[int] = []
 
-    def get_page(self, key: str, ring: list, page: int) -> "PageAnswer":
+    def stay_on_page(self, seconds: float) -> None:
+        self.stayed.append(seconds)
+        if self.sleep is not None:
+            self.sleep(seconds)
+
+    def visit_card(self) -> "CardAnswer | None":
+        self.card_calls.append(len(self.stayed))
+        return self.cards.pop(0) if self.cards else None
+
+    def load_page(self, key: str, ring: list, page: int) -> "PageAnswer":
         self.asked.append((key, page, ring))
         queue = self.pages.get((key, page))
         if not queue:
-            raise AssertionError(f"у подделки источника нет ответа на {key} p{page}")
+            raise AssertionError(f"у подделки загрузчика нет ответа на {key} p{page}")
         return queue.pop(0)
 
 

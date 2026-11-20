@@ -1,13 +1,13 @@
 """
 run_folder.py — папка прогона сборщика ЦИАН: имена, кодировки, порядок записи.
 
-Создаёт папку прогона (RunFolder.create), получает готовые словари и ответ на
-запрос (PageAnswer, его создаёт источник страниц); пишет папку
-<runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke], night.log (say — печать обхода в stdout: эхо
-night.log, итог), plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz,
-_broken_* с .note.txt, _block_*.txt, снимок охвата polygons.geojson.gz и
-summary.json (последним). Тексты служебных файлов — чистыми функциями;
-время модуль сам не берёт: метка и штамп приходят аргументом.
+Создаёт папку прогона (RunFolder.create), получает готовые словари, ответ на
+запрос PageAnswer и заход на карточку CardAnswer (их создаёт загрузчик страницы);
+пишет <runs>/ГГГГ-ММ-ДД_ЧЧММ[-smoke]: night.log (say — печать обхода в stdout),
+plan.json (атомарно), страницы raw/<клетка>_p<N>.json.gz и .html.gz (у клика —
+.click.gz), _broken_* с .note.txt, _block_*.txt (и у карточки), снимок охвата
+polygons.geojson.gz и summary.json (последним). Тексты служебных файлов — чистыми
+функциями; время модуль сам не берёт: метка и штамп приходят аргументом.
 """
 
 from __future__ import annotations
@@ -20,20 +20,33 @@ from dataclasses import dataclass
 from datetime import datetime
 
 # вид запроса в night.log, plan.json, имени и записке _broken_*: поле наших
-# файлов ради совместимости формата, не контракт ЦИАН — все страницы GET cat.php
+# файлов ради совместимости формата, не контракт ЦИАН — страница по ссылке
+# (GET cat.php) — ssr, страница кликом — click (DECISIONS block/click-pages)
 PAGE_KIND = "ssr"
+CLICK_KIND = "click"
+# вид файла тела страницы: <клетка>_p<N>.html.gz — ответ по ссылке или
+# документ клика; <клетка>_p<N>.click.gz — ответ API на клик целиком
+# (решение Андрея 5)
+HTML_BODY = "html"
+CLICK_BODY = "click"
+# приставка детали блока на карточке объявления в night.log, файле блока и
+# stop_detail: card_captcha, card_foreign_url (DECISIONS block/click-pages, (г))
+CARD_DETAIL_PREFIX = "card_"
+# начало тела в файле блока: дальше для разбора не нужно
+BLOCK_BODY_CHARS = 100_000
 
 
 @dataclass(frozen=True)
 class PageAnswer:
-    """Ответ на один запрос выдачи: создаёт источник страниц (page_source),
+    """Ответ на один запрос выдачи: создаёт загрузчик страницы (page_loader),
     обход пишет по нему файлы, строку лога и учитывает страницу. offers —
-    объявления как отдал ЦИАН; ids у источника пусты — их заполняет обход
+    объявления как отдал ЦИАН; ids у загрузчика пусты — их заполняет обход
     после записи файла (21.36). На входе записи detail — деталь разбора
     ответа, без хвоста «|saved:<имя файла>» и без пометки
     «|cookie_expired_or_burned». Хвост ночь добавляет к ответу после записи
     _broken_* (Crawl._write_answer), пометку — только к итогу при стопе
-    (crawl.burned_mark)."""
+    (crawl.burned_mark). kind — как пришла страница (PAGE_KIND или
+    CLICK_KIND), body_ext — вид файла тела (HTML_BODY или CLICK_BODY)."""
 
     key: str
     page: int
@@ -47,6 +60,26 @@ class PageAnswer:
     ms: float
     body: str
     headers: dict
+    kind: str = PAGE_KIND
+    body_ext: str = HTML_BODY
+
+
+@dataclass(frozen=True)
+class CardAnswer:
+    """Заход на карточку объявления (--cards, 21.98): создаёт загрузчик
+    страницы — клетка и страница открытой вкладки и заход браузера
+    (browser.CardVisit: адрес без параметров, трафик, длительность листания,
+    вердикт OK / BLOCK / ERROR, деталь, тело вкладки у блока). Обход пишет
+    по нему строку event=card и у BLOCK — файл блока; бюджет заход не тратит."""
+
+    key: str
+    page: int
+    url: str
+    traffic: int
+    seconds: float
+    verdict: str
+    detail: str
+    body: str
 
 
 def folder_label(started_at: datetime, smoke_only: bool) -> str:
@@ -72,7 +105,7 @@ def broken_note(answer: PageAnswer, ua: str) -> str:
     без пометки «|cookie_expired_or_burned» (их добавляет ночь после записи)."""
     return (
         f"verdict=API_CHANGED detail={answer.detail} http={answer.code} "
-        f"kind={PAGE_KIND}\n"
+        f"kind={answer.kind}\n"
         f"sector={answer.key} page={answer.page} ua={ua}\n"
     )
 
@@ -95,8 +128,24 @@ def block_text(answer: PageAnswer, ua: str) -> str:
     ):
         if k in answer.headers:
             text += f"{k}: {answer.headers[k]}\n"
-    body = answer.body
-    return text + "\n" + (body[:100_000] if body else "<пустое тело>") + "\n"
+    return text + body_excerpt(answer.body)
+
+
+def card_block_text(card: CardAnswer, ua: str) -> str:
+    """Текст _block_* карточки — по образцу файла блока страницы: вердикт,
+    деталь (с приставкой card_, без пометки «билет сгорел») и http=0 —
+    ответа страницы нет; вместо заголовков — адрес карточки; начало тела
+    вкладки (DECISIONS block/click-pages, допущение (а))."""
+    return (
+        f"verdict=BLOCK detail={card.detail} http=0\n"
+        f"sector={card.key} page={card.page} ua={ua}\n\n"
+        f"url: {card.url}\n" + body_excerpt(card.body)
+    )
+
+
+def body_excerpt(body: str) -> str:
+    """Хвост файла блока: пустая строка и начало тела (или «<пустое тело>»)."""
+    return "\n" + (body[:BLOCK_BODY_CHARS] if body else "<пустое тело>") + "\n"
 
 
 @dataclass(frozen=True)
@@ -141,23 +190,28 @@ class RunFolder:
             json.dump(payload, fh, ensure_ascii=False, indent=1)
         os.replace(tmp, self.plan)
 
-    def write_page(self, key: str, page: int, data: dict, body: str) -> None:
+    def write_page(
+        self, key: str, page: int, data: dict, body: str, body_ext: str = HTML_BODY
+    ) -> None:
         """Страница выдачи в raw/ [E-22, E-41]: <клетка>_p<N>.json.gz — блок
-        объявлений как отдал ЦИАН, без отбора полей; <клетка>_p<N>.html.gz — тело
-        ответа целиком, как есть (страховка от тихой поломки вырезки). Тело —
-        любой текст, не обязательно HTML (решение Андрея 15.11; DECISIONS,
-        block/page-source); имя файла — по формату. Прогоны до 18.09 —
-        исторический формат (.json, HTML только у p1)."""
+        объявлений как отдал ЦИАН, без отбора полей; тело ответа целиком, как
+        есть (страховка от тихой поломки вырезки) — <клетка>_p<N>.html.gz или,
+        у ответа API на клик (body_ext CLICK_BODY), <клетка>_p<N>.click.gz.
+        Тело — любой текст, не обязательно HTML (решение Андрея 15.11;
+        DECISIONS, block/page-source); имя файла — по формату. Прогоны до
+        18.09 — исторический формат (.json, HTML только у p1)."""
         base = os.path.join(self.raw, f"{key}_p{page}")
         with gzip.open(base + ".json.gz", "wt", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False)
-        with gzip.open(base + ".html.gz", "wt", encoding="utf-8") as fh:
+        with gzip.open(f"{base}.{body_ext}.gz", "wt", encoding="utf-8") as fh:
             fh.write(body)
 
     def write_broken(self, answer: PageAnswer, ua: str, hms: str) -> str:
         """API_CHANGED: сохраняем ответ ЦЕЛИКОМ — по нему разбираем новый формат;
-        hms — время ЧЧММСС. → имя файла с телом (без пути)."""
-        name = f"_broken_{answer.key}_p{answer.page}_{PAGE_KIND}_{answer.code}_{hms}"
+        hms — время ЧЧММСС; вид запроса в имени — answer.kind, расширение
+        .html.gz у любого тела (DECISIONS block/click-pages). → имя файла с
+        телом (без пути)."""
+        name = f"_broken_{answer.key}_p{answer.page}_{answer.kind}_{answer.code}_{hms}"
         path = os.path.join(self.raw, name + ".html.gz")
         with gzip.open(path, "wt", encoding="utf-8") as fh:
             fh.write(answer.body)
@@ -172,6 +226,13 @@ class RunFolder:
         name = f"_block_{answer.key}_p{answer.page}_{answer.code}_{hms}"
         with open(os.path.join(self.raw, name + ".txt"), "w", encoding="utf-8") as fh:
             fh.write(block_text(answer, ua))
+
+    def write_card_block(self, card: CardAnswer, ua: str, hms: str) -> None:
+        """BLOCK на карточке: raw/_block_<клетка>_p<N>_0_<ЧЧММСС>.txt — код 0,
+        ответа страницы нет (DECISIONS block/click-pages); hms — ЧЧММСС."""
+        name = f"_block_{card.key}_p{card.page}_0_{hms}"
+        with open(os.path.join(self.raw, name + ".txt"), "w", encoding="utf-8") as fh:
+            fh.write(card_block_text(card, ua))
 
     def write_polygons(self, rings: dict[str, list]) -> None:
         """Снимок охвата: канонические кольца клеток (7 знаков), gzip без имени

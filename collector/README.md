@@ -19,18 +19,19 @@ land-monitor): тот же
 
 | Файл | Что делает |
 |---|---|
-| `cian_collect.py` | запуск и края: разбирает аргументы в `Settings` (`read_settings`; в том числе `--transport`, `--browser`, `--cookies`, `--ua`, `--chrome-port`, `--chrome-path`, `--chrome-profile`); ранние проверки `check_args` — код 2 до паузы старта (бюджет, библиотеки `--transport` и `--browser`, файлы билета у браузера `http`); `build_crawl` выбирает seed, собирает часы `Clock`, случайность и файл клеток `TilesFile`, печатает сетку, делает паузу старта (`pause_before_start`), затем зовёт край `enter_cian` и отдаёт обходу готовый источник страниц; `enter_cian` — две строки: браузер из словаря `BROWSERS` (`BrowserChoice`: библиотека, файлы билета, сборка) по флагу `--browser` и над ним источник страниц из словаря `PAGE_SOURCES` (умолчание `PAGE_SOURCE` — `url`, флага запуска нет, пока реализация одна); сборка `HttpBrowser` — `make_http_browser`: входной билет (`read_ticket` → `Ticket`), транспорт (`make_transport`), браузер; сборка `ChromeBrowser` — `make_chrome_browser`: вкладка Chrome (`chrome_browser.connect_chrome_tab`), билет из неё (`read_chrome_ticket`), браузер; `main` — четыре строки: настройки, сборка, `collect`, итог |
+| `cian_collect.py` | запуск и края: разбирает аргументы в `Settings` (`read_settings`; в том числе `--transport`, `--browser`, `--page-loader`, `--cards`, `--front`, `--cookies`, `--ua`, `--chrome-port`, `--chrome-path`, `--chrome-profile`); ранние проверки `check_args` — код 2 до паузы старта (бюджет, `--page-loader click` с браузером без кликов, `--cards` без `--page-loader click`, библиотеки `--transport` и `--browser`, файлы билета у браузера `http`); `build_crawl` выбирает seed, собирает часы `Clock`, случайность и файл клеток `TilesFile`, печатает сетку, делает паузу старта (`pause_before_start`), затем зовёт край `enter_cian` и отдаёт обходу готовый загрузчик страницы; `enter_cian` — две строки: браузер из словаря `BROWSERS` (`BrowserChoice`: библиотека, файлы билета, сборка, `clicks` — умеет ли кликать) по флагу `--browser` и над ним загрузчик страницы из словаря `PAGE_LOADERS` по флагу `--page-loader` (умолчание `PAGE_LOADER` — `url`, создатель `make_url_loader` — `UrlPageLoader` со сном часов обхода; `click` — `make_click_loader`); сборка `HttpBrowser` — `make_http_browser`: входной билет (`read_ticket` → `Ticket`), транспорт (`make_transport`), браузер; сборка `ChromeBrowser` — `make_chrome_browser`: вкладка Chrome (`chrome_browser.connect_chrome_tab`), билет из неё (`read_chrome_ticket`), ожидания вкладки `TabSettings` из констант (у карточки — ещё `--front` и клавиша «в новой вкладке» `new_tab_key` по платформе), рука человека `chrome_human.Human` (сон и часы модуля `time`, случайность обхода), браузер; `main` — четыре строки: настройки, сборка, `collect`, итог |
 | `transport.py` | интерфейс сети и общие помощники реализаций: `Transport` (один метод `get`), ответ как с провода `HttpReply`, сбой `NetworkFailure`, тайм-аут `HTTP_TIMEOUT_S`, разбор строки кук, заголовки в нижнем регистре; без сети |
 | `urllib_transport.py` | транспорт на urllib (по умолчанию): банк кук с ротацией из `Set-Cookie`, без редиректов, тайм-аут; приносит байты, не распаковывая |
 | `httpx_transport.py` | транспорт на внешней библиотеке httpx (`--transport httpx`): то же поведение, что у urllib; httpx импортируется только здесь |
-| `browser.py` | интерфейс браузера: `Browser` (билет `ticket` и `fetch(url, referer)` → `FetchedPage`), входной билет `Ticket`, ответ `FetchedPage`; лист пакета, без сети, диска и сжатия; контракт для реализаций — `docs/reference/browser_contract.md` |
-| `http_browser.py` | браузер над транспортом `HttpBrowser` — запрос страницы поиска над любым транспортом: заголовки браузера, распаковка тела, длительность запроса; сбой сети и битое сжатие ответа 2xx — ответ с кодом 0 и деталью |
-| `chrome_browser.py` | браузер над вкладкой Chrome `ChromeBrowser` (`--browser chrome`): один `fetch` — один переход вкладки, тело — ответ сервера, у редиректа — первый ответ цепочки, тайм-аут и `net::ERR_*` — ответ с кодом 0; функция-край `connect_chrome_tab` подключается к Chrome по отладочному порту на 127.0.0.1, а если порт молчит — запускает Chrome со своей папкой профиля и ждёт порт; playwright импортируется только внутри неё, поэтому модуль импортируется и без playwright |
-| `page_source.py` | источник страниц: интерфейс `PageSource` (билет `ticket` и `get_page(ключ клетки, кольцо, страница)` → `run_folder.PageAnswer`) и реализация «по ссылке» `UrlPageSource`: ссылка страницы и Referer, запрос через интерфейс `Browser`, разбор ответа (`search_page.classify_page`); один `get_page` — один запрос, повторы — в обходе; вторая реализация — новый файл; в `cian_collect.py` — строка словаря `PAGE_SOURCES`, флаг, проверка библиотеки и сборка источника; `crawl.py` не трогается |
-| `crawl.py` | обход: данные (`Settings` с умолчаниями чисел правил ночи, `Clock`, состояние клеток и ночи), правила обхода функциями без внешнего мира (деление, паузы, «билет сгорел», итог пробы `smoke_entry`, учёт страницы, дочитанность, ступень, словари `plan.json` и `summary.json`, текст итога `summary_text`) и класс `Crawl`: `collect` — открыть прогон, очередь клеток (проба — страница 1 первой клетки), `download_tile` и `download_page` (листание, повторы; страница — одним вызовом источника страниц `get_page`), деление на четверти, бюджет, стоп, Ctrl+C; итог — `report` и `print_summary` |
-| `search_page.py` | контракт ЦИАН: ссылка на страницу поиска, разбор `initialState`, обязательные поля, классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`), id объявлений, число страниц; без сети и диска |
+| `browser.py` | интерфейс браузера: `Browser` (билет `ticket`, `fetch(url, referer)` → `FetchedPage`, клик `click_and_catch` → `ClickedPage` или `None`, прокрутка `scroll_page`, заход на карточку `view_card` → `CardVisit`), входной билет `Ticket`, ответ `FetchedPage`, типы клика (`ClickTarget`, `ResponseWanted`, `ClickedPage`, `BrowserCannotError`) и карточки (`BlockReason`, `CardVisit`); лист пакета, без сети, диска и сжатия; контракт для реализаций — `docs/reference/browser_contract.md` |
+| `http_browser.py` | браузер над транспортом `HttpBrowser` — запрос страницы поиска над любым транспортом: заголовки браузера, распаковка тела, длительность запроса; сбой сети и битое сжатие ответа 2xx — ответ с кодом 0 и деталью; кликать, листать и заходить на карточки не умеет — `BrowserCannotError` |
+| `chrome_browser.py` | браузер над вкладкой Chrome `ChromeBrowser` (`--browser chrome`): один `fetch` — один переход вкладки, тело — ответ сервера, у редиректа — первый ответ цепочки, тайм-аут и `net::ERR_*` — ответ с кодом 0; `click_and_catch` — найти ссылку следующей страницы (нет её — «Дальше»), навести мышь и кликнуть рукой человека, поймать ответ (тайм-аут — код 0, `click_timeout`), дождаться загрузки и адреса; `scroll_page` — прокрутка рукой; `view_card` — случайное объявление открытой страницы Cmd/Ctrl+кликом в новой вкладке, трафик по CDP, листание 20–60 с, закрыть (капча или чужой адрес — `BLOCK`, ошибка Playwright — `ERROR`, лишние вкладки захода закрываются); ожидания вкладки — `TabSettings`; функция-край `connect_chrome_tab` подключается к Chrome по отладочному порту на 127.0.0.1, а если порт молчит — запускает Chrome со своей папкой профиля и ждёт порт; playwright импортируется только внутри неё, поэтому модуль импортируется и без playwright |
+| `chrome_human.py` | рука человека `Human` над вкладкой Chrome: движение мыши по дуге с разгоном и торможением, прицел в элемент, клик с задержкой нажатия, прокрутка колесом до низа за заданное время, паузы (и у карточки: взгляд после загрузки, листание 20–60 с, пауза после закрытия); перенос пробы `click_test.py`, числа — константы вверху модуля; сон, часы и случайность приходят аргументами |
+| `page_loader.py` | загрузчик страницы: интерфейс `PageLoader` (билет `ticket`, `load_page(ключ клетки, кольцо, страница)` → `run_folder.PageAnswer`, пауза на открытой странице `stay_on_page` и заход на карточку `visit_card` → `run_folder.CardAnswer` или `None`) и две реализации. «По ссылке» `UrlPageLoader`: ссылка страницы и Referer, запрос через интерфейс `Browser`, разбор ответа (`search_page.classify_page`), пауза — сон. «Кликом» `ClickPageLoader`: страница 1 и повтор после сбоя — по ссылке, следующая — клик `click_and_catch` (ответ API — `search_page.classify_click` и тело для `.click.gz`, документ — как по ссылке; нажимать нечего или те же id — конец клетки), правило `way_to_page`, просьба не по порядку — `PageOrderError`, пауза — прокрутка `scroll_page`; с `--cards` после удачной страницы 1 выбирает страницы захода (`plan_card_pages`), на них `visit_card` зовёт `view_card` браузера (у «по ссылке» заходов нет); один `load_page` — одно обращение к браузеру, повторы — в обходе; новая реализация — строка словаря `PAGE_LOADERS` в `cian_collect.py` и её создатель; `crawl.py` не трогается |
+| `crawl.py` | обход: данные (`Settings` с умолчаниями чисел правил ночи, `Clock`, состояние клеток и ночи), правила обхода функциями без внешнего мира (деление, паузы, «билет сгорел», итог пробы `smoke_entry`, учёт страницы, дочитанность, ступень, словари `plan.json` и `summary.json`, текст итога `summary_text`) и класс `Crawl`: `collect` — открыть прогон, очередь клеток (проба — страница 1 первой клетки), `download_tile` и `download_page` (листание, повторы; страница — одним вызовом загрузчика страницы `load_page`; паузы между страницами и клетками — у загрузчика `stay_on_page`, после паузы — заход на карточку `visit_card` и его запись `record_card`: строка `event=card`, у `BLOCK` — файл блока и стоп; сон перед повтором — часы), деление на четверти, бюджет, стоп, Ctrl+C; итог — `report` и `print_summary` |
+| `search_page.py` | контракт ЦИАН: ссылка на страницу поиска, разбор `initialState`, обязательные поля, классы ответа (`OK`, `PAGE_END`, `BLOCK`, `API_CHANGED`, `NET_ERROR`), id объявлений, число страниц; при листании кликом — что нажать (`PAGE_PARAM`, `NEXT_BUTTON_TEXT`), какой ответ ловить (`is_next_page_response`), разбор ответа на клик (`classify_click`) и признаки конца выдачи (`NO_NEXT_PAGE`, `SAME_IDS`); у карточек — шаблон ссылки на объявление `OFFER_LINK_PATTERN` и признак блока `card_block_reason` (капча, чужой адрес); без сети и диска |
 | `geometry.py` | геометрия клеток: джиттер, сетка, базовый квадрат, четверти, отсечение, площадь, уплотнение, дети деления; внизу — файл клеток `TilesFile`: чтение (`tiles`, `grid()`) и атомарная перезапись при делении (`record_split`) |
-| `run_folder.py` | папка прогона `RunFolder` (`create`, методы записи) и `say` — единственная печать обхода; имена, кодировки и порядок записи — `night.log` с эхом в stdout, `plan.json`, страницы `raw/`, `_broken_*`, `_block_*`, снимок охвата, `summary.json` последним |
+| `run_folder.py` | папка прогона `RunFolder` (`create`, методы записи) и `say` — единственная печать обхода; имена, кодировки и порядок записи — `night.log` с эхом в stdout, `plan.json`, страницы `raw/` (тело — `.html.gz`, у ответа на клик — `.click.gz`), `_broken_*`, `_block_*` (у блока на карточке — `_block_<клетка>_p<N>_0_<ЧЧММСС>.txt`, `write_card_block`), снимок охвата, `summary.json` последним |
 | `__init__.py` | пустой: делает папку пакетом |
 | `status.py` | отдельный скрипт: идёт ли процесс сборщика, итоги трёх последних прогонов; пакет не импортирует. Серверный файл ищет процесс `pgrep -af cian_calib.py`, этот — `cian_collect.py` (поиск меняется при выкатке) |
 
@@ -41,7 +42,9 @@ land-monitor): тот же
 (`RUNS_DIR`, `BUDGET`, `WINDOW_HOURS`, `TRANSPORT`, `BROWSER`,
 `COOKIES_FILE`, `UA_FILE`, `CHROME_PORT`, `CHROME_PATH`, `CHROME_PROFILE`)
 и настройки перехода и ожидания Chrome (`GOTO_TIMEOUT_MS`, `WAIT_UNTIL`,
-`PORT_WAIT_S`, `POLL_S`) — в `cian_collect.py`; потолок страниц (`MAX_PAGES`) и размер
+`PORT_WAIT_S`, `POLL_S`, `CLICK_TIMEOUT_MS`, `LOAD_TIMEOUT_MS`,
+`URL_TIMEOUT_MS`, `CARD_OPEN_TIMEOUT_MS`) — в `cian_collect.py`; задержки и вероятности руки
+человека — в `chrome_human.py`; потолок страниц (`MAX_PAGES`) и размер
 страницы выдачи (`OFFERS_PER_PAGE`) — в `search_page.py`.
 
 Слово `calib` в путях и слово «ступень» (`ladder`) в итоге — наследие
@@ -52,7 +55,7 @@ land-monitor): тот же
 Только как модуль, из папки, где лежит `collector/`:
 
 ```
-python3 -m collector.cian_collect --geojson <файл клеток> [--budget N] [--window-hours H] [--runs-dir runs] [--smoke-only] [--no-start-delay] [--seed N] [--transport urllib|httpx] [--browser http|chrome] [--cookies <файл кук>] [--ua <файл UA>] [--chrome-port N] [--chrome-path <программа Chrome>] [--chrome-profile <папка профиля>]
+python3 -m collector.cian_collect --geojson <файл клеток> [--budget N] [--window-hours H] [--runs-dir runs] [--smoke-only] [--no-start-delay] [--seed N] [--transport urllib|httpx] [--browser http|chrome] [--page-loader url|click] [--cards] [--front] [--cookies <файл кук>] [--ua <файл UA>] [--chrome-port N] [--chrome-path <программа Chrome>] [--chrome-profile <папка профиля>]
 ```
 
 `--geojson` обязательный. `--budget` — не меньше 1 (иначе выход с кодом 2 до
@@ -71,6 +74,22 @@ python3 -m collector.cian_collect --geojson <файл клеток> [--budget N]
   на Маке»); незнакомое имя — выход argparse с кодом 2. `chrome` требует
   внешнюю библиотеку playwright (`requirements.txt`): без неё — сразу
   выход с кодом 2 и подсказкой установки.
+- `--page-loader` — как загружать страницы выдачи (словарь
+  `cian_collect.PAGE_LOADERS`): `url` (по умолчанию — каждая страница
+  переходом по ссылке, пауза между запросами — сон) или `click` (страница 1
+  по ссылке, дальше — клик «следующая страница» во вкладке, пауза — прокрутка
+  открытой страницы; раздел «Запуск кликами с Chrome на Маке»). `click`
+  только с браузером, который умеет кликать (`--browser chrome`): с
+  `--browser http` — выход с кодом 2 до паузы старта.
+- `--cards` — заходы на карточки объявлений (умолчание — выключен): 1–2
+  карточки на клетку, только с `--page-loader click` (иначе выход с кодом 2
+  до паузы старта); раздел «Запуск кликами с Chrome на Маке». **На боевом
+  (сервер, cron) `--cards` не включать** до задачи land-monitor «приём
+  нового сборщика» (решение Андрея 9).
+- `--front` — вкладку карточки, а после её закрытия снова выдачу, выводить
+  на передний план (умолчание — выключен): на Маке окно Chrome при этом
+  выскакивает поверх других. **На Windows `--front` включать** (решение
+  Андрея 9). Без `--cards` ни на что не влияет.
 - `--cookies`, `--ua` — пути к файлам входного билета (только у
   `--browser http`). Без флагов — как раньше: `cookies.txt` и `ua.txt` из
   папки запуска (пустой или отсутствующий `cookies.txt` — без билета).
@@ -146,6 +165,63 @@ land-monitor, положенная в `~/cian_chrome/`: обычный прог�
 - `--chrome-profile` — отдельная папка, не основной профиль Chrome
   (`~/Library/Application Support/Google/Chrome`): с основным профилем
   Chrome отладочный порт не открывает.
+
+## Запуск кликами с Chrome на Маке
+
+Тот же Chrome, что в разделе выше, но страницы 2 и дальше сборщик листает
+кликом, как человек (`--page-loader click`): страница 1 клетки — переходом
+по ссылке, следующая — клик по ссылке с её номером (нет её — по кнопке
+«Дальше») во вкладке. Запускает только Андрей, вручную (правило 6 ниже);
+подготовка (playwright, копия файла клеток, папка профиля) — как в разделе
+выше.
+
+Из корня репозитория:
+
+```
+.venv/bin/python -m collector.cian_collect --browser chrome --page-loader click --chrome-profile ~/cian_chrome/profile --geojson ~/cian_chrome/cian_collect_tiles.geojson --runs-dir ~/cian_chrome/runs --no-start-delay
+```
+
+`--budget` и `--window-hours` — как у обычного прогона (паузы между
+запросами — окно / бюджет); `--smoke-only` здесь смысла не
+имеет — проба читает только страницу 1, а она всегда по ссылке. Папка
+профиля — отдельная папка вне репозитория, не основной профиль Chrome.
+
+Что меняется по сравнению с `--page-loader url`:
+
+1. Пауза между запросами проходит на открытой странице: вместо сна Chrome
+   листает её колесом до низа за то же время (и между клетками тоже).
+2. Клик без ответа за 60 с — сбой сети (`click_timeout`): та же страница
+   повторяется переходом по ссылке, следующая — снова кликом.
+3. Нажимать нечего (нет ни ссылки на следующую страницу, ни активной
+   «Дальше») или клик принёс те же объявления, что прошлая страница, —
+   конец клетки: в `night.log` — `sector_end why=no_next_page` или
+   `why=same_ids`, в итоге stdout — строка «КОНЕЦ КЛИКОМ <клетка>: …» (у
+   `no_next_page` — только если прошлая страница была полной и по
+   `totalOffers` страниц больше, чем прочитано).
+4. В папке прогона у страницы, пришедшей кликом, — `raw/<клетка>_p<N>.json.gz`
+   и полный ответ клика `raw/<клетка>_p<N>.click.gz` (вместо `.html.gz`);
+   в строке запроса `night.log` и задаче `plan.json` — `kind=click`
+   (`docs/CIAN_DATA_FORMAT.md`).
+
+С `--browser http` загрузчик `click` не запускается: выход с кодом 2 до
+паузы старта.
+
+С карточками объявлений — та же команда плюс `--cards` (на Windows ещё
+`--front`):
+
+```
+.venv/bin/python -m collector.cian_collect --browser chrome --page-loader click --cards --chrome-profile ~/cian_chrome/profile --geojson ~/cian_chrome/cian_collect_tiles.geojson --runs-dir ~/cian_chrome/runs --no-start-delay
+```
+
+Как у пробы `click_test.py`: после страницы 1 клетки сборщик выбирает 1–2
+её страницы (у клетки из одной-двух страниц — страницу 1) и на каждой после
+паузы открывает случайное объявление Cmd+кликом (на Windows — Ctrl+кликом)
+в новой вкладке, листает его 20–60 с и закрывает. Заход бюджет не тратит;
+в `night.log` — строка `event=card` (адрес, трафик, длительность, вердикт;
+`docs/CIAN_DATA_FORMAT.md`). Карточка открылась капчей или на чужом сайте —
+`BLOCK`: файл `raw/_block_<клетка>_p<N>_0_<ЧЧММСС>.txt` и стоп прогона.
+Карточка не открылась или вкладка сломалась — `verdict=ERROR`, прогон идёт.
+На боевом `--cards` не включать (см. «Запуск»).
 
 ## Проба с Mac своим билетом
 
@@ -301,7 +377,8 @@ land-monitor, положенная в `~/cian_chrome/`: обычный прог�
 - Локально (сессии разработки) — только тесты pytest с подменённой сетью
   (решение Андрея 10.11): `tests/test_collector.py`,
   `tests/test_collector_transport.py`, `tests/test_collector_browser.py`,
-  `tests/test_collector_chrome_browser.py`, `tests/test_collector_nights.py`,
+  `tests/test_collector_chrome_browser.py`, `tests/test_collector_chrome_human.py`,
+  `tests/test_collector_nights.py`,
   `tests/test_collector_status.py`.
 
 ## 45 секторов — заморожено

@@ -84,16 +84,25 @@ runs/<YYYY-MM-DD_HHMM>/        один прогон (метка = время с
                                до 18.09 писались как .json — после массового
                                сжатия 18.09 они тоже стали .json.gz)
         <sector>_p<N>.html.gz  сырой HTML КАЖДОЙ страницы (с 18.09; в прогонах
-                               до 18.09 HTML есть только у страниц 1)
+                               до 18.09 HTML есть только у страниц 1); у страницы,
+                               пришедшей кликом (kind=click), — только если клик
+                               загрузил документ (тогда всё как по ссылке)
+        <sector>_p<N>.click.gz полный ответ API на клик «следующая страница» (JSON,
+                               как есть) — у страницы kind=click, пришедшей ответом
+                               API; .html.gz у такой страницы нет (block/click-pages,
+                               --page-loader click; решение Андрея 5)
         _broken_*.html.gz      ответ при API_CHANGED (поломка контракта), тело целиком;
                                у обхода (kind=ssr) и у пробы (kind=smoke) (block/collector-fixes, PR #122);
-                               kind=smoke — до block/simplify-2, с PR #4 проба — kind=ssr
+                               kind=smoke — до block/simplify-2, с PR #4 проба — kind=ssr;
+                               у страницы кликом — _broken_<sector>_p<N>_click_<код>_<ЧЧММСС>.html.gz
+                               (расширение прежнее, внутри — JSON ответа на клик)
         _broken_*.json.gz      только старые прогоны: проба до починки писала
                                HTML под этим именем
         _broken_*.note.txt     пояснение к ответу: verdict, detail, http, kind, sector,
                                page, ua (текст, не сжат)
         _block_*.txt           тело+заголовки при BLOCK, в том числе для страницы
-                               Servicepipe (деталь servicepipe)
+                               Servicepipe (деталь servicepipe); блок на карточке
+                               объявления (--cards) — _block_<sector>_p<N>_0_<ЧЧММСС>.txt (§4)
 runs_mini/                     ручные мини-тесты — та же структура
 ```
 
@@ -135,6 +144,14 @@ runs_mini/                     ручные мини-тесты — та же с
 ```
 (gzip-обёртка; ЗАГРУЗЧИК ОБЯЗАН читать и `.json.gz`, и голый `.json` — на случай
 несжатых остатков в исторических каталогах.)
+
+Откуда `totalOffers` и `offers`: у страницы по ссылке (и у документа, загруженного
+кликом) — из `initialState.results` HTML; у страницы, пришедшей ответом API на клик
+(`kind=click`, рядом `.click.gz`), — `totalOffers` = `data.offerCount`, `offers` =
+`data.offersSerialized` этого ответа (block/click-pages, решение Андрея 5). Вид файла
+тот же. Путь `data.offersSerialized` / `data.offerCount` и совпадение полей объявлений
+с выдачей по ссылке — допущение о данных: на сырье ещё не проверены (DECISIONS,
+block/click-pages).
 
 - `<sector>` — ключ полигона из geojson: сектор (`41`, `D3`) или клетка сбора (`T0706`, `T0713ca` — см. §8); **внутри файла имени сектора НЕТ**,
   ключ только в имени файла. Название/статус сектора — в `plan.json`/`summary.json`
@@ -242,7 +259,8 @@ runs_mini/                     ручные мини-тесты — та же с
   прогон не грузится. `summary.json → sectors` содержит только полигоны с прочитанными
   страницами (`pages_done`).
 - `sectors` — словарь по ключу, как в summary.json; `done` — список задач
-  `{sector, page, kind, origin, attempts, state, detail}`.
+  `{sector, page, kind, origin, attempts, state, detail}`; `kind` — `ssr` (страница
+  по ссылке) или `click` (страница кликом, block/click-pages; вид запроса этой попытки — каждая попытка своя задача в `done`).
 - `pending_sectors` — список строк-ключей (`["T0713", "T0706"]`): полигоны, до которых
   прогон ещё не дошёл. Дети нарезки вставляются в него такими же строками в СЛУЧАЙНУЮ
   позицию; порядок списка ничего не значит. В законченном полном прогоне пуст (ФАКТ:
@@ -255,12 +273,42 @@ runs_mini/                     ручные мини-тесты — та же с
   `sectors` и в `pending_sectors`; для загрузчика это один полигон по записи summary.
 
 `night.log` — строки `ISO-время \t k=v \t k=v ...`. Запросы:
-`n= sector= page= kind=(smoke|ssr) http= ms= offers= bytes= total= verdict= err=`
-(`kind=smoke` — до block/simplify-2; с PR #4 всегда `ssr`).
-События: `event=start` (budget, window_h, ticket, cookie_age_h, order),
-`event=sector_end` (why=short_page|redirect_to_p1_301|empty_page|smoke_empty;
-`smoke_empty` — до block/simplify-2),
-`event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent).
+`n= sector= page= kind=(smoke|ssr|click) http= ms= offers= bytes= total= verdict= err=`
+(`kind=smoke` — до block/simplify-2; с PR #4 `ssr` — страница по ссылке; `click` —
+страница кликом при `--page-loader click`, block/click-pages: страница 1 и повтор
+после сбоя идут по ссылке — `ssr`). «Нажимать нечего» (нет ни ссылки на следующую
+страницу, ни активной «Дальше») — обычная попытка: `kind=click http=0
+verdict=PAGE_END err=no_next_page`, задача `page_end` в `done`, единица бюджета.
+События: `event=start` (budget, window_h, ticket, cookie_age_h, order; у
+`cookie_age_h` без возраста кук — нет билета или билет из Chrome — пустое
+значение `cookie_age_h=`, раньше было `cookie_age_h=None`; решение Андрея 10,
+block/click-pages),
+`event=sector_end` (why=short_page|redirect_to_p1_301|empty_page|smoke_empty|no_next_page|same_ids;
+`smoke_empty` — до block/simplify-2; `no_next_page` — при листании кликом нажимать
+нечего, `same_ids` — клик принёс те же id, что прошлая страница, эта страница не
+сохраняется; оба — block/click-pages, решение Андрея 6; строка `sector_end` пишется
+всегда, а пометка строкой в итоге stdout — у `same_ids` всегда, у `no_next_page`
+только если прошлая страница клетки полная и по `totalOffers` страниц больше, чем
+прочитано; новых ключей `summary.json` нет),
+`event=retry` (attempt, of, after_s), `event=STOP` (reason, cls, detail, spent),
+`event=card` — заход на карточку объявления при `--cards` (block/click-pages,
+решение Андрея 9): поля по порядку `sector page url traffic view_s verdict err`;
+`sector` и `page` — открытая страница выдачи, `url` — адрес карточки без
+параметров (`?context=…` отрезан), `traffic` — байт по сети за заход, `view_s` —
+длительность листания, с, с одним знаком; `verdict` — `OK` (`err=-`), `ERROR`
+(не удалось открыть или ошибка вкладки, `err` — первая строка текста ошибки;
+на странице нет ссылок на объявления — `err=no_offer_links`; прогон идёт) или
+`BLOCK` (`err=card_captcha` — капча в адресе, `err=card_foreign_url` — адрес не
+на cian.ru и не на его поддомене). Строка `BLOCK` пишется перед строкой
+`event=STOP reason=block cls=BLOCK`; деталь стопа — та же, у капчи с билетом — с
+пометкой `|cookie_expired_or_burned`. Заход бюджет не тратит (`spent` и `n=` не
+растут) и в `done` не идёт. Блок на карточке пишет
+`raw/_block_<sector>_p<N>_0_<ЧЧММСС>.txt` (код 0 — ответа страницы нет): первая
+строка `verdict=BLOCK detail=card_<признак> http=0`, вторая `sector= page= ua=`,
+пустая строка, `url: <адрес карточки без параметров>`, пустая строка, начало
+тела вкладки карточки (как у страницы: первые 100 000 знаков, пустое —
+`<пустое тело>`). Все поля `event=card` и файл блока карточки — допущение
+(DECISIONS, block/click-pages).
 Вердикты: OK, PAGE_END (не отказ), BLOCK, API_CHANGED, NET_ERROR.
 
 ## 5. Правила бэкфила (обсуждены 18.09)

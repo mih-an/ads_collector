@@ -340,13 +340,17 @@ def test_21_73_fixtures_fit_size_limit():
 
 RUN_NAME = re.compile(r"\d{4}-\d\d-\d\d_\d{4}(-smoke)?")
 # Маски имён в raw/; ключ клетки — без «_». Маска страницы делит имя на
-# клетку, номер и вид (json или html).
-PAGE_FILE = re.compile(r"([^_]+)_p(\d+)\.(json|html)\.gz")
+# клетку, номер и вид (json, html или click — ответ клика целиком,
+# block/click-pages).
+PAGE_FILE = re.compile(r"([^_]+)_p(\d+)\.(json|html|click)\.gz")
 RAW_NAMES = (
     PAGE_FILE,
-    re.compile(r"_broken_[^_]+_p\d+_(smoke|ssr)_\d+_\d{6}\.(html\.gz|note\.txt)"),
+    re.compile(r"_broken_[^_]+_p\d+_(smoke|ssr|click)_\d+_\d{6}\.(html\.gz|note\.txt)"),
     re.compile(r"_block_[^_]+_p\d+_\d+_\d{6}\.txt"),
 )
+# Вид запроса в строке запроса night.log: smoke — старые прогоны, ssr — по
+# ссылке, click — кликом (block/click-pages).
+LOG_KINDS = frozenset({"smoke", "ssr", "click"})
 ISO_WITH_ZONE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d")
 
 # Таблицы «ключ → допустимое» в порядке ключей файла: кортеж — типы
@@ -453,7 +457,7 @@ PLAN_SECTOR_KEYS = {
 TASK_KEYS = {
     "sector": (str,),
     "page": (int,),
-    "kind": frozenset({"ssr"}),
+    "kind": frozenset({"ssr", "click"}),
     "origin": frozenset({"seed", "expanded"}),
     "attempts": (int,),
     "state": frozenset({"done", "page_end", "net_error", "failed"}),
@@ -473,6 +477,8 @@ LOG_FIELDS = {
     "split_skip": ("event", "sector", "note"),
     "retry": ("event", "sector", "page", "attempt", "of", "after_s"),
     "STOP": ("event", "reason", "cls", "detail", "spent"),
+    # заход на карточку (--cards, block/click-pages П4; DECISIONS, допущение (г))
+    "card": ("event", "sector", "page", "url", "traffic", "view_s", "verdict", "err"),
 }
 
 
@@ -593,7 +599,7 @@ def log_record(fields: list[str]) -> dict[str, str]:
 
 def line_violations(number: int, stamp: str, fields: list[str]) -> list[str]:
     """Строка night.log: время с поясом, известное событие, его поля по
-    порядку."""
+    порядку; у строки запроса — вид kind из LOG_KINDS."""
     where = f"night.log, строка {number}"
     found = []
     if not ISO_WITH_ZONE.fullmatch(stamp):
@@ -605,6 +611,8 @@ def line_violations(number: int, stamp: str, fields: list[str]) -> list[str]:
         return found + [f"{where}: неизвестное событие {name}"]
     if keys != list(LOG_FIELDS[name]):
         found.append(f"{where}: поля {keys}, ждали {list(LOG_FIELDS[name])}")
+    if name == "request" and record.get("kind") not in LOG_KINDS:
+        found.append(f"{where}: kind={record.get('kind')} — не {described(LOG_KINDS)}")
     return found
 
 
@@ -715,16 +723,43 @@ def page_files(run_dir: Path, kind: str) -> set[tuple[str, str]]:
 
 
 def pages_violations(run_dir: Path, log: list[dict]) -> list[str]:
-    """У каждой строки verdict=OK есть .json.gz и .html.gz страницы, и
-    наоборот. Страница сравнивается строкой: page=x не роняет проверку."""
-    ok = {(r["sector"], r["page"]) for r in log if r.get("verdict") == "OK"}
-    found = []
-    for kind in ("json", "html"):
-        files = page_files(run_dir, kind)
-        found += [
-            f"raw/{key}_p{page}.{kind}.gz: нет файла, а в night.log строка verdict=OK"
-            for key, page in sorted(ok - files)
-        ]
+    """У каждой строки verdict=OK есть .json.gz страницы и файл тела —
+    .html.gz (по ссылке или документ клика) или .click.gz (ответ клика),
+    но не оба; и наоборот: файла страницы без строки OK нет. Страница
+    сравнивается строкой: page=x не роняет проверку. Считаются только
+    строки запросов (с n=): строка event=card verdict=OK — заход на
+    карточку, а не страница."""
+    requests = [r for r in log if "n" in r]
+    ok = {(r["sector"], r["page"]) for r in requests if r.get("verdict") == "OK"}
+    files_of = {kind: page_files(run_dir, kind) for kind in ("json", "html", "click")}
+    html, click = files_of["html"], files_of["click"]
+    found = [
+        f"raw/{key}_p{page}.json.gz: нет файла, а в night.log строка verdict=OK"
+        for key, page in sorted(ok - files_of["json"])
+    ]
+    found += [
+        f"raw/{key}_p{page}.html.gz: нет файла (и .click.gz нет), а в night.log "
+        "строка verdict=OK"
+        for key, page in sorted(ok - html - click)
+    ]
+    found += [
+        f"raw/{key}_p{page}: и .html.gz, и .click.gz — тело страницы одно"
+        for key, page in sorted(html & click)
+    ]
+    # .click.gz — только у страницы, пришедшей кликом (kind=click); у
+    # страницы по ссылке тело — .html.gz
+    not_click = {
+        (r["sector"], r["page"], r.get("kind", ""))
+        for r in requests
+        if r.get("verdict") == "OK" and r.get("kind") != "click"
+    }
+    found += [
+        f"raw/{key}_p{page}.click.gz: у строки verdict=OK kind={kind} тело — "
+        ".html.gz, а не .click.gz"
+        for key, page, kind in sorted(not_click)
+        if (key, page) in click
+    ]
+    for kind, files in files_of.items():
         found += [
             f"raw/{key}_p{page}.{kind}.gz: файл есть, а строки verdict=OK в "
             "night.log нет"
@@ -1101,6 +1136,43 @@ SPOILS = {
         ),
         ("raw/T1307_p3.json.gz:", "файл есть"),
     ),
+    ".click.gz без .json.gz": (
+        lambda d: [
+            (d / "raw" / "T1307_p2.html.gz").rename(d / "raw" / "T1307_p2.click.gz"),
+            (d / "raw" / "T1307_p2.json.gz").unlink(),
+        ],
+        ("raw/T1307_p2.json.gz:", "нет файла"),
+    ),
+    "и .html.gz, и .click.gz": (
+        lambda d: shutil.copyfile(
+            d / "raw" / "T1307_p2.html.gz", d / "raw" / "T1307_p2.click.gz"
+        ),
+        ("raw/T1307_p2:", "и .html.gz, и .click.gz"),
+    ),
+    ".click.gz без строки OK": (
+        lambda d: shutil.copyfile(
+            d / "raw" / "T1307_p2.html.gz", d / "raw" / "T1307_p9.click.gz"
+        ),
+        ("raw/T1307_p9.click.gz:", "файл есть"),
+    ),
+    "тело .click.gz у страницы по ссылке": (
+        lambda d: (d / "raw" / "T1307_p2.html.gz").rename(
+            d / "raw" / "T1307_p2.click.gz"
+        ),
+        ("raw/T1307_p2.click.gz:", "kind=ssr"),
+    ),
+    "kind=xhr в done": (
+        lambda d: edit_json(d / "plan.json", lambda p: p["done"][0].update(kind="xhr")),
+        ("plan.json, done[0]", "kind"),
+    ),
+    "kind=xhr в строке запроса": (
+        lambda d: edit_text(
+            d / "night.log",
+            "sector=T0611\tpage=1\tkind=ssr",
+            "sector=T0611\tpage=1\tkind=xhr",
+        ),
+        ("night.log, строка", "kind=xhr"),
+    ),
     "ребёнок деления не в sectors и pending": (
         lambda d: edit_json(
             d / "summary.json",
@@ -1128,9 +1200,26 @@ def test_21_79_contract_allows_clean_run(clean_run):
     assert run_folder_violations(clean_run) == []
 
 
+def as_click_page(run_dir: Path, key: str, page: int) -> None:
+    """Страница key p<page> чистой ночи — как пришедшая кликом
+    (block/click-pages): тело — .click.gz вместо .html.gz, в строке запроса
+    night.log и в задаче done plan.json — kind=click."""
+    raw = run_dir / "raw"
+    (raw / f"{key}_p{page}.html.gz").rename(raw / f"{key}_p{page}.click.gz")
+    request = f"sector={key}\tpage={page}\tkind="
+    edit_text(run_dir / "night.log", request + "ssr", request + "click")
+
+    def mark_task(plan: dict) -> None:
+        for task in plan["done"]:
+            if (task["sector"], task["page"]) == (key, page):
+                task["kind"] = "click"
+
+    edit_json(run_dir / "plan.json", mark_task)
+
+
 # Верные образцы видов, которых не дают проигрывания: подставляются в папку
 # чистой ночи, инвариантов не задевают (smoke они не читают, строки событий
-# не несут kind и verdict).
+# не несут kind и verdict; страница кликом меняет только вид тела и kind).
 RARE_KINDS = {
     "строка smoke_empty": lambda d: append_text(
         d / "night.log",
@@ -1152,13 +1241,25 @@ RARE_KINDS = {
             smoke={"sector": "T0611", "verdict": "BLOCK", "detail": "http_403"}
         ),
     ),
+    "страница кликом": lambda d: as_click_page(d, "T1307", 2),
+    "_broken_ кликом": lambda d: [
+        (d / "raw" / "_broken_T0611_p2_click_200_001320.html.gz").write_bytes(
+            gzip.compress(b'{"data": {}}')
+        ),
+        write_text(
+            d / "raw" / "_broken_T0611_p2_click_200_001320.note.txt",
+            "verdict=API_CHANGED detail=no_offers_serialized http=200 kind=click\n"
+            "sector=T0611 page=2 ua=x\n",
+        ),
+    ],
 }
 
 
 @pytest.mark.parametrize("put", list(RARE_KINDS.values()), ids=list(RARE_KINDS))
 def test_21_79_contract_allows_rare_kinds(clean_run, put):
     """21.79 Верные образцы видов, которых не дают проигрывания (строки
-    smoke_empty и split_skip, smoke вида EMPTY и вида «провал пробы»), —
-    нарушений нет: таблицы этих видов не ловят лишнего. Модуль 21."""
+    smoke_empty и split_skip, smoke вида EMPTY и вида «провал пробы»,
+    страница кликом — .click.gz и kind=click, _broken_ клика), — нарушений
+    нет: таблицы этих видов не ловят лишнего. Модуль 21."""
     put(clean_run)
     assert run_folder_violations(clean_run) == []

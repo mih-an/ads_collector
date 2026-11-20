@@ -1,14 +1,15 @@
 """
 crawl.py — обход выдачи ЦИАН: данные, правила обхода и класс обхода Crawl.
 
-Данные: Settings, Clock (часы и сон), TileState, PageTask, CrawlState.
-Правила — функции без внешнего мира: интервал и паузы, деление [E-42],
-«билет сгорел», итог пробы, учёт страницы, дочитанность [E-21], ступень,
-повторы, словари plan.json и summary.json, текст итога. Crawl ведёт прогон:
-очередь (проба — стр. 1 первой клетки), листание, деление, бюджет, стоп;
-пауза старта и вход на ЦИАН — до обхода, в cian_collect.build_crawl;
-внешний мир — только источник страниц (page_source.PageSource), Clock, rnd,
-run_folder (запись и печать say) и TilesFile.record_split.
+Данные: Settings, Clock (часы и сон), TileState, PageTask, CrawlState,
+итог страницы PageOutcome. Правила — функции без внешнего мира: интервал и
+паузы, деление [E-42], «билет сгорел», итог пробы, учёт страницы,
+дочитанность [E-21], ступень, повторы, итог страницы, словари plan.json и
+summary.json, текст итога. Crawl ведёт прогон: очередь (проба — стр. 1
+первой клетки), листание, деление, бюджет, стоп; пауза старта и вход на
+ЦИАН — до обхода, в cian_collect.build_crawl; внешний мир — только
+загрузчик страницы (page_loader.PageLoader), Clock, rnd, run_folder (запись
+и печать say) и TilesFile.record_split.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from datetime import datetime
 
 from collector import geometry, run_folder, search_page
 from collector.browser import Ticket
-from collector.page_source import PageSource
+from collector.page_loader import PageLoader
 
 # ─────────────────────────────── данные ───────────────────────────────
 
@@ -42,6 +43,9 @@ class Settings:
     transport: str
     # браузер: реализация из cian_collect.BROWSERS (флаг --browser)
     browser: str
+    # загрузчик страницы: создатель из cian_collect.PAGE_LOADERS (флаг
+    # --page-loader)
+    page_loader: str
     # «входной билет»: куки и UA браузера, прошедшего проверку WAF (флаги
     # --cookies и --ua; умолчания — в cian_collect)
     cookies_file: str
@@ -51,6 +55,11 @@ class Settings:
     chrome_port: int
     chrome_path: str
     chrome_profile: str
+    # заходы на карточки объявлений (флаг --cards, только с --page-loader
+    # click) и вкладка карточки на передний план (флаг --front); решение
+    # Андрея 9
+    cards: bool
+    front: bool
     # [E-42] totalOffers стр. 1 больше порога — клетка делится (0 — деления нет)
     split_threshold: int = 400
     # дно деления (10 км → 1,25 км): на дне клетка листается — защита от
@@ -68,6 +77,8 @@ class Settings:
         (150, 240),
         (300, 420),
     )
+    # --cards: заходов на карточки на клетку — от и до (решение Андрея 9)
+    cards_per_tile: tuple[int, int] = (1, 2)
 
     @property
     def tile_mode(self) -> bool:
@@ -109,8 +120,8 @@ class TileState:
 
 @dataclass
 class PageTask:
-    """Задача обхода: поля в порядке ключей задачи в done (plan.json); ключ
-    kind в done не поле задачи, а run_folder.PAGE_KIND (task_entry)."""
+    """Задача обхода; порядок ключей задачи в done (plan.json) задаёт
+    task_entry; kind — как пришла страница в этой попытке (ssr или click)."""
 
     sector: str
     page: int
@@ -118,11 +129,14 @@ class PageTask:
     attempts: int = 0
     state: str = "pending"
     detail: str = ""
+    kind: str = run_folder.PAGE_KIND
 
 
 @dataclass
 class CrawlState:
-    """Изменяемое состояние ночи; pending — очередь ключей клеток."""
+    """Изменяемое состояние ночи; pending — очередь ключей клеток; end_notes —
+    клетки, листание которых кликом кончилось без кнопки или на тех же id, и
+    причина (пометка итога в stdout, в summary.json не идёт)."""
 
     spent: int = 0
     stopped: str | None = None
@@ -132,6 +146,26 @@ class CrawlState:
     split_events: list[dict] = field(default_factory=list)
     done: list[PageTask] = field(default_factory=list)
     pending: list[str] = field(default_factory=list)
+    end_notes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PageOutcome:
+    """Итог страницы (и клетки) для обхода (решение Андрея 2, 21.91): kind —
+    "read" (прочитана), "end" (конец клетки) или "stop" (стоп прогона);
+    reason — у стопа значение stopped (budget_exhausted, block, …)."""
+
+    kind: str  # не путать с видом запроса ssr/click (PageTask.kind)
+    reason: str = ""
+
+    @property
+    def stopped(self) -> bool:
+        """Прогон остановлен: дальше ни страниц, ни клеток."""
+        return self.kind == "stop"
+
+
+READ = PageOutcome("read")
+TILE_END = PageOutcome("end")
 
 
 # ─────────────────────────────── правила ───────────────────────────────
@@ -204,6 +238,22 @@ def absorb_page(tile: TileState, page: int, total: int | None, ids: list[int]) -
     return 0 < len(ids) < search_page.OFFERS_PER_PAGE
 
 
+def end_noted(tile: TileState, why: str) -> bool:
+    """Помечать ли конец клетки в итоге stdout (решение Андрея 6): те же id
+    — всегда; нажимать нечего — только если по totalOffers страниц больше,
+    чем прочитано. Прошлая страница при этом полная: после короткой клетка
+    уже кончилась (short_page), и второй sector_end не пишется (mark_end).
+    В прогоне через download_tile условие числа страниц всегда истинно:
+    решает, известен ли totalOffers. Условие — буква решения Андрея 6 («по
+    totalOffers страниц больше, чем прочитано»): держится для чистой функции
+    и её теста."""
+    if why == search_page.SAME_IDS:
+        return True
+    if why != search_page.NO_NEXT_PAGE or tile.pages_planned is None:
+        return False
+    return len(tile.pages_done) < tile.pages_planned
+
+
 def is_complete(tile: TileState) -> bool:
     """Клетка выкачана: все страницы по оценке или упёрлись в конец набора.
     [E-21, E-42] разрезанный родитель не выкачан — его покрытие в детях."""
@@ -231,6 +281,16 @@ def task_state(verdict: str, attempts: int, retries: int) -> str:
     if verdict == search_page.NET_ERROR and attempts <= retries:
         return "net_error"
     return "failed"
+
+
+def page_outcome(state: str, stopped: str | None) -> PageOutcome:
+    """Итог страницы по окончательному состоянию задачи (21.91): done —
+    прочитана, page_end — конец клетки, failed — стоп с причиной stopped."""
+    if state == "done":
+        return READ
+    if state == "page_end":
+        return TILE_END
+    return PageOutcome("stop", stopped or "")
 
 
 # «Ступень» — наследие калибровки ЦИАН-контура: ступень бюджета пройдена —
@@ -316,7 +376,7 @@ def task_entry(task: PageTask) -> dict:
     return {
         "sector": task.sector,
         "page": task.page,
-        "kind": run_folder.PAGE_KIND,
+        "kind": task.kind,
         "origin": task.origin,
         "attempts": task.attempts,
         "state": task.state,
@@ -429,8 +489,12 @@ def ticket_text(has_ticket: bool, age_h: float | None) -> str:
     return f"есть, {age_h} ч"
 
 
-def summary_text(report: dict, path: str) -> str:
-    """Текст итога прогона: шапка и клетки по убыванию totalOffers."""
+def summary_text(
+    report: dict, path: str, end_notes: dict[str, str] | None = None
+) -> str:
+    """Текст итога прогона: шапка, деления, пометки конца листания кликом
+    end_notes (клетка → причина, решение Андрея 6) и клетки по убыванию
+    totalOffers."""
     ticket = ticket_text(report["ticket"], report["cookie_age_h"])
     # первая строка пустая: она отделяет итог от строк stdout выше
     lines = [
@@ -448,6 +512,8 @@ def summary_text(report: dict, path: str) -> str:
             f"РАЗРЕЗАНА {ev['parent']} (total={ev['total_offers']}) → "
             f"{', '.join(ev['children'])}"
         )
+    for key, why in (end_notes or {}).items():
+        lines.append(f"КОНЕЦ КЛИКОМ {key}: {why}")
     lines.append(
         f"секторов затронуто {report['sectors_touched']}, "
         f"полностью выкачано {report['sectors_complete']}, "
@@ -477,22 +543,23 @@ def summary_text(report: dict, path: str) -> str:
 class Crawl:
     """Обход (прогон): проба, очередь клеток, листание, деление, бюджет, повторы,
     стоп, Ctrl+C. Правила — функции выше, запись файлов и печать — run_folder
-    (say); страницы и билет — только у источника страниц source (готовый
-    источник из cian_collect.build_crawl), часы и сон — через clock,
-    случайность — rnd."""
+    (say); страницы и билет — только у загрузчика страницы loader (готовый
+    загрузчик из cian_collect.build_crawl), паузы между запросами и заходы
+    на карточки после них — у него же (stay_on_page, visit_card), часы и сон
+    перед повтором — через clock, случайность — rnd."""
 
     def __init__(
         self,
         settings: Settings,
         tiles_file: geometry.TilesFile,
-        source: PageSource,
+        loader: PageLoader,
         clock: Clock,
         rnd: random.Random,
     ) -> None:
         """Только запоминает входы: часы, случайность и диск — в collect."""
         self.settings = settings
         self.tiles_file = tiles_file
-        self.source = source
+        self.loader = loader
         self.clock = clock
         self.rnd = rnd
         self.tile_mode = settings.tile_mode
@@ -555,11 +622,12 @@ class Crawl:
         try:
             while state.pending and self.budget_left():
                 key = state.pending.pop(0)
-                self.download_tile(key)
-                if state.stopped:
+                # решает итог клетки, а не общая state.stopped (решение 2, 21.91)
+                if self.download_tile(key).stopped:
                     break  # прогон остановлен (провал пробы, блок, сеть, бюджет)
                 self.save_plan()
-                self.pause_between_tiles()
+                if self.pause_between_tiles().stopped:
+                    break  # блок на карточке объявления (21.98)
         except KeyboardInterrupt:
             if self.smoke_unanswered():
                 raise  # Ctrl+C до итога пробы — выход без сводки (21.51)
@@ -572,33 +640,38 @@ class Crawl:
 
     # ── клетка ────────────────────────────────────────────────────
 
-    def download_tile(self, key: str) -> None:
+    def download_tile(self, key: str) -> PageOutcome:
         """Клетка целиком: стр. 1 → стоп / деление на четверти / стр. 2…N до
-        конца набора; между страницами — пауза. Стоп прогона — в state.stopped."""
+        конца набора; между страницами — пауза. → итог последней страницы."""
         tile = self.tiles[key]
         page = 1
+        outcome = TILE_END  # значение до первой страницы; цикл входит всегда
         # потолок вне проверки дочитанности: после страницы 54 пауза ещё
         # делается (тест 21.39)
         while not read_out(tile, page) and page <= search_page.MAX_PAGES:
-            self.download_page(key, page)
-            if self.state.stopped:
-                return  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
+            outcome = self.download_page(key, page)
+            if outcome.stopped:
+                return outcome  # бюджет / BLOCK / API_CHANGED / NET_ERROR ×4
             if page == 1 and self.split_into_quarters(key):
-                return  # родитель выбыл, дети в очереди
+                return outcome  # родитель выбыл, дети в очереди
             page += 1
             # конец набора (PAGE_END, короткая страница) гасит паузу и цикл
-            if not read_out(tile, page):
-                self.pause_between_pages()
+            if read_out(tile, page):
+                break
+            pause = self.pause_between_pages()
+            if pause.stopped:
+                return pause  # блок на карточке объявления (21.98)
+        return outcome
 
-    def download_page(self, key: str, page: int) -> None:
+    def download_page(self, key: str, page: int) -> PageOutcome:
         """Одна страница клетки; сбой сети — повторы с растущей паузой, сколько
         пауз в Settings.net_retry_pauses. Каждая попытка — запрос, строка
-        night.log, задача plan.json и единица бюджета."""
+        night.log, задача plan.json и единица бюджета. → итог страницы (21.91)."""
         attempts = 0  # повторов этой страницы уже было
         while True:
             if not self.budget_left():
                 self.state.stopped = "budget_exhausted"
-                return
+                return PageOutcome("stop", self.state.stopped)
             origin = "seed" if page == 1 else "expanded"
             task = PageTask(sector=key, page=page, origin=origin, attempts=attempts)
             verdict = self.try_page(task)
@@ -606,7 +679,7 @@ class Crawl:
                 self.mark_end(key, task.detail)
             answered = task.state != "net_error"  # окончательный ответ страницы
             if answered:
-                return
+                return page_outcome(task.state, self.state.stopped)
             self.pause_before_retry(key, page, attempts)
             attempts += 1  # та же страница, пауза растёт
 
@@ -621,6 +694,7 @@ class Crawl:
         self.state.spent += 1
         task.attempts += 1
         task.detail = answer.detail
+        task.kind = answer.kind
         self._log_request(answer)
         retries = len(self.settings.net_retry_pauses)
         task.state = task_state(answer.verdict, task.attempts, retries)
@@ -644,19 +718,19 @@ class Crawl:
         """Стоп ночи по ответу обхода: итог и строка STOP в night.log; стоп на
         пробе (on_smoke) — smoke_failed (21.32). → деталь стопа (с пометкой
         «билет сгорел»)."""
-        detail = burned_mark(
-            answer.verdict, answer.detail, self.source.ticket.has_ticket
-        )
+        stopped = "smoke_failed" if on_smoke else answer.verdict.lower()
+        return self.stop_run(answer.verdict, answer.detail, stopped)
+
+    def stop_run(self, verdict: str, detail: str, stopped: str) -> str:
+        """Стоп прогона: класс verdict, деталь с пометкой «билет сгорел»,
+        причина stopped — в итог и строкой STOP в night.log. → деталь стопа."""
+        detail = burned_mark(verdict, detail, self.loader.ticket.has_ticket)
         state = self.state
-        state.stop_class, state.stop_detail = answer.verdict, detail
-        if on_smoke:
-            state.stopped = "smoke_failed"
-        else:
-            state.stopped = answer.verdict.lower()
+        state.stopped, state.stop_class, state.stop_detail = stopped, verdict, detail
         self.log(
             event="STOP",
-            reason=state.stopped,
-            cls=answer.verdict,
+            reason=stopped,
+            cls=verdict,
             detail=detail,
             spent=state.spent,
         )
@@ -675,14 +749,16 @@ class Crawl:
             return
         tile.served_end = True
         self.log(event="sector_end", sector=key, why=why)
+        if end_noted(tile, why):
+            self.state.end_notes[key] = why
 
     # ── один запрос ───────────────────────────────────────────────
 
     def request_page(self, key: str, page: int) -> run_folder.PageAnswer:
-        """Сам запрос, без решений: страница у источника одним вызовом
-        (`source.get_page`), запись файла страницы, `_broken_*` или `_block_*`,
+        """Сам запрос, без решений: страница у загрузчика одним вызовом
+        (`loader.load_page`), запись файла страницы, `_broken_*` или `_block_*`,
         id объявлений. Бюджет, очередь и стоп не трогает."""
-        answer = self.source.get_page(key, self.tiles[key].ring, page)
+        answer = self.loader.load_page(key, self.tiles[key].ring, page)
         answer = self._write_answer(answer)
         # id считаются после записи: сбой разбора id не отменяет уже
         # записанный файл (тест 21.36)
@@ -691,7 +767,7 @@ class Crawl:
     def _write_answer(self, answer: run_folder.PageAnswer) -> run_folder.PageAnswer:
         """Файл ответа: страница у OK, _broken_* у API_CHANGED с телом (к детали —
         хвост «|saved:<имя>»), _block_* у BLOCK. → ответ с итоговой деталью."""
-        ua = self.source.ticket.ua
+        ua = self.loader.ticket.ua
         if answer.verdict == search_page.OK:
             # тело каждой страницы как есть [E-22]
             self.folder.write_page(
@@ -699,6 +775,7 @@ class Crawl:
                 answer.page,
                 {"totalOffers": answer.total, "offers": answer.offers},
                 answer.body,
+                answer.body_ext,
             )
         elif answer.verdict == search_page.API_CHANGED and answer.body:
             name = self.folder.write_broken(answer, ua, self._stamp_hms())
@@ -780,30 +857,61 @@ class Crawl:
         """Остался ли бюджет запросов прогона."""
         return self.state.spent < self.settings.budget
 
-    def sleep_between(self, factor: float = 1.0) -> None:
+    def sleep_between(self, factor: float = 1.0) -> PageOutcome:
         """Пауза между запросами; бюджет исчерпан — без паузы и без вызова
         случайности (точка подмены теста 21.36); общий помощник
-        pause_between_pages и pause_between_tiles."""
+        pause_between_pages и pause_between_tiles. Длительность считает
+        обход, проводит её загрузчик на открытой странице (21.97); после неё
+        — заход на карточку, если загрузчик его сделал (21.98). → итог:
+        стоп — блок на карточке, иначе READ (обход идёт)."""
         if not self.budget_left():
-            return
+            return READ
         low, high = pause_bounds(
             self.mean_interval_s, factor, self.settings.interval_spread
         )
-        self.clock.sleep(self.rnd.uniform(low, high))
+        self.loader.stay_on_page(self.rnd.uniform(low, high))
+        card = self.loader.visit_card()
+        if card is None:
+            return READ
+        return self.record_card(card)
 
-    def pause_between_pages(self) -> None:
+    def pause_between_pages(self) -> PageOutcome:
         """Обычная пауза между запросами: средний интервал ± разброс."""
-        self.sleep_between()
+        return self.sleep_between()
 
-    def pause_between_tiles(self) -> None:
+    def pause_between_tiles(self) -> PageOutcome:
         """Длинная пауза: «полистал район — ушёл смотреть другой» (inter_tile_pause)."""
         state = self.state
         # проверка бюджета повторяет sleep_between, чтобы не звать случайность
         # для множителя впустую после последнего запроса
         if not state.pending or not self.budget_left():
-            return
+            return READ
         factor = self.rnd.uniform(*self.settings.inter_tile_pause)
-        self.sleep_between(factor)
+        return self.sleep_between(factor)
+
+    def record_card(self, card: run_folder.CardAnswer) -> PageOutcome:
+        """Заход на карточку — строка event=card; бюджет не тратит и в done не
+        идёт. BLOCK — деталь с приставкой card_, файл блока карточки и стоп
+        block (пометку «билет сгорел» ставит stop_run); OK и ERROR — обход
+        идёт (DECISIONS block/click-pages). → итог захода."""
+        if card.verdict == search_page.BLOCK:
+            card = replace(card, detail=run_folder.CARD_DETAIL_PREFIX + card.detail)
+        self.log(
+            event="card",
+            sector=card.key,
+            page=card.page,
+            url=card.url,
+            traffic=card.traffic,
+            view_s=f"{card.seconds:.1f}",
+            verdict=card.verdict,
+            err=card.detail,
+        )
+        if card.verdict != search_page.BLOCK:
+            return READ
+        self.folder.write_card_block(card, self.loader.ticket.ua, self._stamp_hms())
+        stopped = search_page.BLOCK.lower()
+        self.stop_run(search_page.BLOCK, card.detail, stopped)
+        return PageOutcome("stop", stopped)
 
     def pause_before_retry(self, key: str, page: int, attempts: int) -> None:
         """Пауза перед повтором номер attempts + 1 после сбоя сети."""
@@ -826,14 +934,18 @@ class Crawl:
 
     def _log_start(self) -> None:
         """Первая строка night.log: с чем прогон стартует."""
+        ticket = self.loader.ticket
+        # нет возраста кук (нет билета или билет из Chrome) — пустое значение,
+        # не «None»; 0.0 остаётся 0.0 (решение Андрея 10, block/click-pages)
+        age_h = "" if ticket.age_h is None else ticket.age_h
         self.log(
             event="start",
             budget=self.settings.budget,
             sectors=len(self.tiles),
             window_h=self.settings.window_hours,
             mean_interval_s=int(self.mean_interval_s),
-            ticket=int(self.source.ticket.has_ticket),
-            cookie_age_h=self.source.ticket.age_h,
+            ticket=int(ticket.has_ticket),
+            cookie_age_h=age_h,
             order="sectors_shuffled_pages_sequential",
             dry_run=0,  # режим убран, поле осталось в формате
         )
@@ -845,7 +957,7 @@ class Crawl:
             n=self.state.spent,
             sector=answer.key,
             page=answer.page,
-            kind=run_folder.PAGE_KIND,
+            kind=answer.kind,
             http=answer.code,
             ms=int(answer.ms),
             offers=len(answer.ids),
@@ -860,7 +972,7 @@ class Crawl:
             plan_payload(
                 self.state,
                 self.settings,
-                self.source.ticket,
+                self.loader.ticket,
                 self.started_at,
                 self.tiles,
             ),
@@ -871,7 +983,7 @@ class Crawl:
         self.state.stopped = stop_reason(self.state, self.settings.smoke_only)
         self.save_plan()
         report = summary_report(
-            self.state, self.settings, self.source.ticket, self.started_at, self.tiles
+            self.state, self.settings, self.loader.ticket, self.started_at, self.tiles
         )
         # R-1 (19.09): снимок канонической геометрии охвата — единственный
         # носитель геометрии прогона [E-20, E-21, E-30, E-42]; ключи = ключам
@@ -883,4 +995,6 @@ class Crawl:
 
     def print_summary(self) -> None:
         """Итог прогона в stdout."""
-        run_folder.say(summary_text(self.report, self.folder.path))
+        run_folder.say(
+            summary_text(self.report, self.folder.path, self.state.end_notes)
+        )
