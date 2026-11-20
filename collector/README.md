@@ -43,7 +43,7 @@ land-monitor): тот же
 `COOKIES_FILE`, `UA_FILE`, `CHROME_PORT`, `CHROME_PATH`, `CHROME_PROFILE`)
 и настройки перехода и ожидания Chrome (`GOTO_TIMEOUT_MS`, `WAIT_UNTIL`,
 `PORT_WAIT_S`, `POLL_S`, `CLICK_TIMEOUT_MS`, `LOAD_TIMEOUT_MS`,
-`URL_TIMEOUT_MS`) — в `cian_collect.py`; задержки и вероятности руки
+`URL_TIMEOUT_MS`, `CARD_OPEN_TIMEOUT_MS`) — в `cian_collect.py`; задержки и вероятности руки
 человека — в `chrome_human.py`; потолок страниц (`MAX_PAGES`) и размер
 страницы выдачи (`OFFERS_PER_PAGE`) — в `search_page.py`.
 
